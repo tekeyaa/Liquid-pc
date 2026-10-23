@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('liquid', {
     send: (payload) => ipcRenderer.send('claude:send', payload),
     abort: (id) => ipcRenderer.send('claude:abort', id),
     check: (info) => ipcRenderer.invoke('claude:check', info),
+    onPopupCheck: on('guard:popup'), popupResult: (id, r) => ipcRenderer.send('guard:popup-result', { id, r }),
     onChunk: on('claude:chunk'),
     onDone: on('claude:done'),
     onError: on('claude:error'),

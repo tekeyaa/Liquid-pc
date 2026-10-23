@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,9 +29,57 @@ func appExe() string  { return filepath.Join(appDir(), "Liquid.exe") }
 
 // ---------- тихое фоновое обновление (--silent): без окна, Liquid подменяется, когда его закроют ----------
 var silent bool
-var engineOnly bool // --engine: только обновить движок Electron внутри своей ветки (код Liquid тот же)
+var engineOnly bool      // --engine: только обновить движок Electron (код Liquid тот же)
+var engineVersion string // --electron=45.1.2: поставить ровно эту версию движка (браузер сам выбирает её)
 
-func statusPath() string  { return filepath.Join(baseDir(), "update-status.json") }
+func enginePinPath() string { return filepath.Join(baseDir(), "engine.txt") }
+
+// installElectron ставит движок: точную версию от браузера; иначе — запомненную ветку, если она новее той,
+// что в package.json (браузер уже переходил на поддерживаемую ветку); иначе последний выпуск ветки из package.json
+func installElectron(env []string) error {
+	if engineVersion != "" {
+		if err := run(srcDir(), env, "cmd", "/c", "npm", "install", "electron@"+engineVersion, "--no-save", "--no-fund", "--no-audit"); err != nil {
+			return fmt.Errorf("не удалось поставить Electron %s: %v", engineVersion, err)
+		}
+		if got := installedElectron(); got != engineVersion {
+			return fmt.Errorf("npm поставил Electron %s вместо %s", got, engineVersion)
+		}
+		os.WriteFile(enginePinPath(), []byte(strings.SplitN(engineVersion, ".", 2)[0]), 0644)
+		return nil
+	}
+	pin, _ := os.ReadFile(enginePinPath())
+	pinMajor, _ := strconv.Atoi(strings.TrimSpace(string(pin)))
+	pkgMajor, _ := strconv.Atoi(strings.SplitN(strings.TrimLeft(packageElectron(), "^~"), ".", 2)[0])
+	if pinMajor > pkgMajor {
+		return run(srcDir(), env, "cmd", "/c", "npm", "install", fmt.Sprintf("electron@^%d.0.0", pinMajor), "--no-save", "--no-fund", "--no-audit")
+	}
+	if pinMajor != 0 {
+		os.Remove(enginePinPath()) // новая версия Liquid сама на новой ветке — память о переходе больше не нужна
+	}
+	// последний выпуск закреплённой ветки (например, 45.x) — с исправлениями безопасности Chromium
+	if err := run(srcDir(), env, "cmd", "/c", "npm", "update", "electron", "--no-fund", "--no-audit"); err != nil {
+		logf("npm update electron: %v", err)
+	}
+	return nil
+}
+
+func installedElectron() string {
+	var p struct{ Version string }
+	b, _ := os.ReadFile(filepath.Join(srcDir(), "node_modules", "electron", "package.json"))
+	json.Unmarshal(b, &p)
+	return p.Version
+}
+
+func packageElectron() string {
+	var p struct {
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	b, _ := os.ReadFile(filepath.Join(srcDir(), "package.json"))
+	json.Unmarshal(b, &p)
+	return p.DevDependencies["electron"]
+}
+
+func statusPath() string   { return filepath.Join(baseDir(), "update-status.json") }
 func relaunchFlag() string { return filepath.Join(baseDir(), "relaunch.flag") }
 func lockPath() string     { return filepath.Join(baseDir(), "update.lock") }
 
@@ -41,7 +90,9 @@ func writeStatus(state, version, msg string) {
 }
 
 func payloadVersion() string {
-	var p struct{ Version string `json:"version"` }
+	var p struct {
+		Version string `json:"version"`
+	}
 	if b, err := os.ReadFile(filepath.Join(srcDir(), "package.json")); err == nil {
 		json.Unmarshal(b, &p)
 	}
@@ -56,7 +107,7 @@ func liquidRunning() bool {
 // takeLock — одно фоновое обновление за раз (зависший замок старше 3 часов не считается)
 func takeLock() bool {
 	os.MkdirAll(baseDir(), 0755)
-	if fi, err := os.Stat(lockPath()); err == nil && time.Since(fi.ModTime()) < 3*time.Hour {
+	if fi, err := os.Stat(lockPath()); err == nil && time.Since(fi.ModTime()) < 10*time.Minute {
 		return false
 	}
 	return os.WriteFile(lockPath(), []byte(fmt.Sprint(os.Getpid())), 0644) == nil
@@ -67,6 +118,14 @@ func runSilent() {
 		return
 	}
 	defer os.Remove(lockPath())
+	// пока установщик жив (в том числе ждёт закрытия браузера), замок свежий — второй установщик не запустится
+	go func() {
+		for {
+			time.Sleep(time.Minute)
+			now := time.Now()
+			os.Chtimes(lockPath(), now, now)
+		}
+	}()
 	if err := runInstall(); err != nil {
 		writeStatus("error", payloadVersion(), err.Error())
 		return
@@ -418,9 +477,8 @@ func runInstall() (err error) {
 	if err = run(srcDir(), env, "cmd", "/c", "npm", "install", "--no-fund", "--no-audit"); err != nil {
 		return fmt.Errorf("не удалось скачать Electron. Проверь интернет (можно включить VPN в системе) и нажми «Повторить».\n%v", err)
 	}
-	// последний выпуск закреплённой ветки (например, 45.x) — с исправлениями безопасности Chromium
-	if err = run(srcDir(), env, "cmd", "/c", "npm", "update", "electron", "--no-fund", "--no-audit"); err != nil {
-		logf("npm update electron: %v", err)
+	if err = installElectron(env); err != nil {
+		return err
 	}
 
 	setStep("Скачиваю xray-core для VPN", .70, .78, 15)
@@ -432,7 +490,8 @@ func runInstall() (err error) {
 
 	setStep("Собираю браузер", .78, .93, 40)
 	os.RemoveAll(filepath.Join(srcDir(), "dist"))
-	if err = run(srcDir(), env, "cmd", "/c", "npx", "electron-builder", "--win", "dir"); err != nil {
+	// собираем ровно на том движке, что лежит в node_modules (он может быть новее ветки из package.json)
+	if err = run(srcDir(), env, "cmd", "/c", "npx", "electron-builder", "--win", "dir", "-c.electronVersion="+installedElectron()); err != nil {
 		return fmt.Errorf("сборка не удалась: %v", err)
 	}
 

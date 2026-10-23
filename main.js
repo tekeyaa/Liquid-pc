@@ -16,6 +16,29 @@ let game = null;
 const PARTITION = 'persist:liquid';
 const UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 app.userAgentFallback = UA;
+// Код приложения для Windows: без него (и без такого же кода в ярлыке «Пуска») Windows прячет уведомления
+const AUMID = 'app.liquid.browser';
+if (process.platform === 'win32') app.setAppUserModelId(AUMID);
+function fixShortcuts() {
+  if (process.platform !== 'win32' || !app.isPackaged) return;
+  const target = process.execPath;
+  const links = [
+    [path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Liquid.lnk'), true],  // «Пуск» — нужен всегда
+    [path.join(app.getPath('desktop'), 'Liquid.lnk'), false],                                                   // рабочий стол — только если уже есть
+  ];
+  for (const [lnk, must] of links) {
+    try {
+      let cur = null; try { cur = shell.readShortcutLink(lnk); } catch {}
+      if (!cur && !must) continue;
+      if (cur && cur.appUserModelId === AUMID && path.resolve(cur.target || '') === path.resolve(target)) continue;
+      const ico = path.join(path.dirname(path.dirname(target)), 'icon.ico');
+      shell.writeShortcutLink(lnk, cur ? 'replace' : 'create', {
+        target, cwd: path.dirname(target), appUserModelId: AUMID, description: 'Liquid browser',
+        ...(fs.existsSync(ico) ? { icon: ico, iconIndex: 0 } : {}),
+      });
+    } catch (e) { try { diag.log('warn', 'ярлык', e.message); } catch {} }
+  }
+}
 
 // Google не пускает во «встроенные» браузеры (Electron), а Firefox пускает.
 // Поэтому только на страницах входа Google представляемся свежим Firefox.
@@ -367,15 +390,46 @@ function applyRtcPolicy(wc, url) {
 }
 
 // настоящие всплывающие окна (вход, оплата): в заголовке — адрес сайта, лишние окна внутри блокируются
+// Проверка страницы в окне входа: тот же разбор, что у вкладок (renderer/app.js guardScan), вердикт считает окно браузера
+const GUARD_SCAN = `(() => {
+  const q = (s) => Array.from(document.querySelectorAll(s));
+  const pass = q('input[type=password]').length;
+  const card = q('input[autocomplete^="cc-"], input[name*="card" i], input[id*="card" i], input[placeholder*="карт" i], input[name*="cvv" i], input[name*="cvc" i]').length;
+  const actions = Array.from(new Set(q('form').map(f => { try { return new URL(f.action, location.href).host; } catch { return ''; } }).filter(Boolean)));
+  return { pass, card, actions, title: document.title, text: (document.body ? document.body.innerText : '').slice(0, 2500) };
+})()`;
+let guardSeq = 0;
+const guardWait = new Map();
+async function popupGuard(w, openerHost) {
+  if (w.isDestroyed() || loadSettings().guard === false || !openerHost || openerHost.isDestroyed()) return;
+  const wc = w.webContents, url = wc.getURL();
+  if (!/^https?:/.test(url) || (w.__guard && w.__guard.url === url)) return;
+  let info; try { info = await wc.executeJavaScript(GUARD_SCAN, true); } catch { return; }
+  if (!info || (!info.pass && !info.card) || w.isDestroyed()) return;
+  const id = ++guardSeq;
+  const r = await new Promise((res) => { guardWait.set(id, res); openerHost.send('guard:popup', { id, url, info }); setTimeout(() => { guardWait.delete(id); res(null); }, 30000); });
+  if (!r || w.isDestroyed() || wc.getURL() !== url) return;
+  w.__guard = { url, verdict: r.verdict };
+  try { w.__show && w.__show(); } catch {}
+  if (r.verdict === 'danger') {
+    const { response } = await dialog.showMessageBox(w, { type: 'warning', title: 'Liquid: опасная страница',
+      message: 'Похоже на мошеннический сайт', detail: `${new URL(url).hostname}\n\n${r.reason || ''}\n\nНе вводи здесь пароль и данные карты.`,
+      buttons: ['Закрыть окно', 'Всё равно продолжить'], defaultId: 0, cancelId: 0, noLink: true });
+    if (response === 0 && !w.isDestroyed()) w.close();
+  }
+}
+
 function setupPopup(w, openerHost) {
   const wc = w.webContents;
   const show = () => {
     let u = ''; try { u = new URL(wc.getURL()); } catch {}
     const host = u ? u.hostname : '';
-    const lock = u && u.protocol === 'https:' ? '🔒' : '⚠ НЕ ЗАЩИЩЕНО';
+    const g = w.__guard && w.__guard.url === wc.getURL() ? w.__guard.verdict : '';
+    const lock = g === 'danger' ? '⛔ ОПАСНО' : g === 'caution' ? '⚠ ОСТОРОЖНО' : u && u.protocol === 'https:' ? '🔒' : '⚠ НЕ ЗАЩИЩЕНО';
     w.setTitle(`${lock} ${host}${wc.getTitle() && wc.getTitle() !== host ? ' — ' + wc.getTitle() : ''}`);
   };
   wc.on('page-title-updated', (e) => { e.preventDefault(); show(); });
+  w.__guard = null; w.__show = show;
   wc.on('did-navigate', show); wc.on('did-navigate-in-page', show);
   applyRtcPolicy(wc);
   wc.on('did-start-navigation', (d) => { if (d.isMainFrame) applyRtcPolicy(wc, d.url); });
@@ -383,9 +437,19 @@ function setupPopup(w, openerHost) {
   wc.on('input-event', (_e, ie) => { if (/^(mouseDown|keyDown|rawKeyDown|char|gestureTap)$/.test(ie.type)) lastInput = Date.now(); });
   wc.setWindowOpenHandler(({ url }) => {
     if (Date.now() - lastInput > 5000) { diag.log('info', 'попап', 'Заблокировано окно из окна входа', ''); return { action: 'deny' }; }
-    if (/^https?:/.test(url)) openerHost?.send('tab:open', { url, background: false });
-    return { action: 'deny' };
+    if (!/^https?:/.test(url)) return { action: 'deny' };
+    // 3-D Secure и подтверждения внутри окна оплаты ждут ответа от своего окна — открываем дочерним окном, связанным с ним
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        width: 520, height: 720, autoHideMenuBar: true, parent: w, backgroundColor: '#ffffff',
+        webPreferences: { preload: WEBVIEW_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false },
+      },
+    };
   });
+  wc.on('did-create-window', (child) => { try { setupPopup(child, openerHost); } catch {} });
+  // защита от фишинга: окна входа и оплаты проверяем так же, как вкладки
+  wc.on('did-stop-loading', () => popupGuard(w, openerHost));
   show();
 }
 
@@ -608,6 +672,14 @@ function releaseNotes(body) {
 }
 const liquidBase = () => path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Liquid');
 const updStatusFile = () => path.join(liquidBase(), 'update-status.json');
+// установщик уже работает или собрал обновление и ждёт закрытия браузера. «ready» не устаревает: он ждёт до недели
+function installerBusy() {
+  const st = readUpdStatus();
+  if (!st) return null;
+  if (st.state === 'ready') return st;
+  if (st.state === 'working' && Date.now() / 1000 - st.at < 3 * 3600) return st;
+  return null;
+}
 function readUpdStatus() { try { return JSON.parse(fs.readFileSync(updStatusFile(), 'utf8')); } catch { return null; } }
 function sendUpd() { broadcast('update:state', { ...upd, poll: undefined, current: app.getVersion(), auto: loadSettings().autoUpdate !== false }); }
 
@@ -631,7 +703,9 @@ function markFailed(version) {
 async function checkUpdates(manual = false) {
   const s = loadSettings();
   upd.checkedAt = Date.now();
-  if (['download', 'building', 'ready'].includes(upd.state) && !manual) return;
+  // обновление уже скачивается, собирается или ждёт перезапуска — второй установщик не запускаем даже по кнопке
+  if (['download', 'building', 'ready'].includes(upd.state)) return;
+  if (installerBusy()) { watchInstaller(installerBusy().version); return; }
   try {
     const j = await fetchJson(RELEASES);
     const version = String(j.tag_name || '').replace(/^v/, '');
@@ -643,8 +717,6 @@ async function checkUpdates(manual = false) {
       await checkEngine(manual);
       return;
     }
-    const st = readUpdStatus();
-    if (st && st.version === version && ['working', 'ready'].includes(st.state) && Date.now() / 1000 - st.at < 3 * 3600) { watchInstaller(version); return; }
     if (s.autoUpdate === false || !app.isPackaged || process.platform !== 'win32') {
       if (s.updSnooze && Date.now() < s.updSnooze && !manual) return;
       pendingSetup = { version, asset, sum };
@@ -666,19 +738,24 @@ async function checkUpdates(manual = false) {
 async function checkEngine(manual) {
   if (!app.isPackaged || process.platform !== 'win32' || loadSettings().autoUpdate === false) return;
   try {
-    const major = process.versions.electron.split('.')[0];
+    const curMajor = Number(process.versions.electron.split('.')[0]);
     const r = await net.fetch('https://registry.npmjs.org/electron', { headers: { accept: 'application/vnd.npm.install-v1+json' }, cache: 'no-store' });
     if (!r.ok) return;
-    const vers = Object.keys((await r.json()).versions || {}).filter((v) => v.startsWith(major + '.') && !v.includes('-'));
-    const best = vers.sort((a, b) => (newer(a, b) ? 1 : newer(b, a) ? -1 : 0)).pop();
+    const meta = await r.json();
+    const stable = Object.keys(meta.versions || {}).filter((v) => !v.includes('-'));
+    const latestMajor = Number(String((meta['dist-tags'] || {}).latest || '').split('.')[0]) || curMajor;
+    // Electron поддерживает 3 последние ветки. Наша вышла из поддержки — переходим на самую старую из поддерживаемых:
+    // она дольше всех получала исправления и ближе всего к нашей
+    const major = latestMajor - curMajor >= 3 ? latestMajor - 2 : curMajor;
+    const best = stable.filter((v) => Number(v.split('.')[0]) === major).sort((a, b) => (newer(a, b) ? 1 : newer(b, a) ? -1 : 0)).pop();
     if (!best || !newer(best, process.versions.electron)) return;
     const local = path.join(liquidBase(), 'Liquid-Setup.exe');
     if (!fs.existsSync(local) || (!manual && failedRecently('engine-' + best))) return;
-    const st = readUpdStatus();
-    if (st && st.engine && ['working', 'ready'].includes(st.state) && Date.now() / 1000 - st.at < 3 * 3600) return;
+    if (installerBusy()) return;
     const s = loadSettings(); s.engineTarget = best; saveSettings(s);
-    spawn(local, ['--silent', '--engine'], { cwd: liquidBase(), detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    diag.log('info', 'обновление', `Обновляю движок Electron ${process.versions.electron} → ${best} в фоне`);
+    // точная версия: если npm её не найдёт, установщик честно завершится ошибкой, а не соберёт старый движок
+    spawn(local, ['--silent', '--engine', '--electron=' + best], { cwd: liquidBase(), detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    diag.log('info', 'обновление', `Обновляю движок Electron ${process.versions.electron} → ${best}${major !== curMajor ? ' (переход на поддерживаемую ветку)' : ''} в фоне`);
     upd.engine = best;
     watchInstaller(app.getVersion());
   } catch (e) { diag.log('warn', 'обновление', 'движок: ' + e.message); }
@@ -727,7 +804,7 @@ async function backgroundUpdate(version, asset, sumAsset) {
 function watchInstaller(version) {
   upd.state = 'building'; upd.version = version; sendUpd();
   clearInterval(upd.poll);
-  upd.poll = setInterval(() => {
+  const tick = () => {
     const st = readUpdStatus();
     if (!st || st.version !== version) return;
     if (st.state === 'ready' && upd.state !== 'ready') {
@@ -747,12 +824,24 @@ function watchInstaller(version) {
       markFailed(upd.engine ? 'engine-' + upd.engine : version);
       diag.log('error', 'обновление', upd.error, 'журнал: ' + path.join(liquidBase(), 'install.log'));
     }
-  }, 10000);
+  };
+  upd.poll = setInterval(tick, 10000);
+  tick(); // уже собранное обновление показываем «готовым» сразу, без ожидания опроса
 }
 
 // при запуске: сообщаем, что обновились
 function announceUpdate() {
   const st = readUpdStatus();
+  // обновление движка «удалось», а движок прежний (npm поставил не ту версию) — считаем неудачей, иначе пересборка каждые 3 часа
+  const s0 = loadSettings();
+  if (s0.engineTarget && st && st.engine && st.state === 'done') {
+    if (process.versions.electron !== s0.engineTarget) {
+      markFailed('engine-' + s0.engineTarget);
+      diag.log('warn', 'обновление', `Движок не обновился: ждали ${s0.engineTarget}, стоит ${process.versions.electron}`);
+      st.announced = true; try { fs.writeFileSync(updStatusFile(), JSON.stringify(st)); } catch {}
+    }
+    const s1 = loadSettings(); delete s1.engineTarget; saveSettings(s1);
+  }
   if (st && st.state === 'done' && st.version === app.getVersion() && !st.announced) {
     st.announced = true; try { fs.writeFileSync(updStatusFile(), JSON.stringify(st)); } catch {}
     // после перезапуска карточка показывает «обновился» и что нового
@@ -1068,6 +1157,7 @@ function registerIpc() {
   ipcMain.on('claude:send', (e, payload) => claudeStream(e.sender, payload));
   ipcMain.on('claude:abort', (_e, id) => claudeJobs.get(id)?.abort());
   ipcMain.handle('claude:check', (_e, info) => guardCheck(info));
+  ipcMain.on('guard:popup-result', (_e, { id, r }) => { const f = guardWait.get(id); if (f) { guardWait.delete(id); f(r); } });
   ipcMain.handle('display:info', (e) => {
     const w0 = BrowserWindow.fromWebContents(e.sender) || win;
     const d = w0 ? screen.getDisplayMatching(w0.getBounds()) : screen.getPrimaryDisplay();
@@ -1229,6 +1319,7 @@ app.whenReady().then(async () => {
   game.enabled = loadSettings().gameMode !== false;
   setTimeout(() => game.start(), 6000);
   announceUpdate();
+  fixShortcuts();
   setTimeout(() => checkUpdates(), 60_000);          // через минуту после запуска
   setInterval(() => checkUpdates(), 3 * 3600e3);     // и раз в 3 часа
 

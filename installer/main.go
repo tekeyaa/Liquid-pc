@@ -7,6 +7,7 @@ import (
 	"image"
 	"math"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -460,6 +461,10 @@ func main() {
 			mode, silent = "update", true
 		case "engine":
 			engineOnly = true
+		default:
+			if v, ok := strings.CutPrefix(strings.TrimLeft(a, "-/"), "electron="); ok && regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(v) {
+				engineVersion = v
+			}
 		case "uninstall":
 			uninstall()
 			return

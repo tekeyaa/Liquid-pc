@@ -606,6 +606,24 @@ function renderGuard(tab) {
   $('#shield').title = GUARD_TITLE[g.verdict] + (g.reason ? '\n' + g.reason : '');
   if (g.verdict !== 'danger') $('#danger').classList.remove('open');
 }
+// окна входа и оплаты: страницу разбирает основной процесс, вердикт считаем здесь теми же правилами, что для вкладок
+L.claude.onPopupCheck(async ({ id, url, info }) => {
+  let r = { verdict: 'unknown' };
+  try {
+    const u = new URL(url);
+    if (guardCache.has(u.origin)) r = guardCache.get(u.origin);
+    else if (isTrusted(u.hostname)) r = { verdict: 'safe', reason: `${u.hostname} — известный сайт.` };
+    else if (u.protocol === 'http:') r = { verdict: 'caution', reason: 'Сайт без шифрования (http) просит пароль или карту — данные могут перехватить.' };
+    else {
+      if (settings.hasClaudeKey) r = await L.claude.check({ url, host: u.hostname, title: info.title, passwordFields: info.pass, cardFields: info.card, formTargets: info.actions, text: info.text });
+      if (!r || r.verdict === 'unknown') r = localGuard(u, info);
+      if (r.verdict !== 'unknown') guardCache.set(u.origin, r);
+    }
+    if (['danger', 'caution'].includes(r.verdict)) window.ideasTrack && window.ideasTrack('guard');
+  } catch {}
+  L.claude.popupResult(id, r);
+});
+
 function showDanger(reason) { $('#dangerText').textContent = reason; $('#danger').classList.add('open'); }
 
 $('#shield').onclick = () => {
