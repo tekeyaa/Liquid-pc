@@ -26,7 +26,9 @@
   .tile:hover { transform: translate3d(0, -4px, 0) scale(1.04); background: linear-gradient(180deg, rgba(255,255,255,.19), rgba(255,255,255,.07)); }
   .tile:active { transform: scale(.94); }
   .tile .ic { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; font-weight: 800; font-size: 17px; color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 6px 16px -6px rgba(0,0,0,.6); overflow: hidden; }
-  .tile .ic img { width: 24px; height: 24px; }
+  .tile .ic { width: 40px; height: 40px; border-radius: 12px; }
+  .tile .ic img { width: 26px; height: 26px; object-fit: contain; }
+  .tile .ic.full img { width: 100%; height: 100%; object-fit: cover; } /* крупный значок (как на айфоне) — на всю плашку */
   .tile .nm { max-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tile.add { color: rgba(255,255,255,.5); border-style: dashed; background: rgba(255,255,255,.03); box-shadow: none; }
   .tile.add .ic { background: rgba(255,255,255,.08); box-shadow: none; font-weight: 300; font-size: 24px; }
@@ -59,6 +61,15 @@
   .dlg button:active { transform: scale(.94); }
   .dlg button.primary { color: #fff; border: 0; background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo)); }
 
+  .sbox { position: relative; width: min(640px, 92vw); animation: rise .85s var(--spring); }
+  .sbox #f { width: 100%; animation: none; }
+  #sug { position: absolute; left: 0; right: 0; top: calc(100% + 8px); z-index: 5; display: none; padding: 6px; border-radius: 18px;
+    background: linear-gradient(180deg, rgba(40,38,52,.94), rgba(24,22,32,.96)); backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,.14); box-shadow: 0 24px 60px -20px rgba(0,0,0,.8); }
+  #sug.open { display: block; }
+  #sug div { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 12px; cursor: pointer; font-size: 14.5px; color: rgba(255,255,255,.82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sug div.sel, #sug div:hover { background: rgba(255,255,255,.08); }
+  #sug svg { width: 16px; height: 16px; flex: none; fill: none; stroke: rgba(255,255,255,.5); stroke-width: 2; stroke-linecap: round; }
+  #sug b { color: #fff; font-weight: 650; }
   @keyframes rise { from { opacity: 0; transform: translate3d(0, 18px, 0) scale(.97); } }
 </style>
 </head>
@@ -69,10 +80,13 @@
       <div class="clock" id="clock">00:00</div>
       <div class="date" id="date"></div>
     </div>
-    <form class="glass" id="f">
-      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></svg>
-      <input id="q" placeholder="Поиск или адрес сайта" autofocus spellcheck="false" />
-    </form>
+    <div class="sbox">
+      <form class="glass" id="f">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></svg>
+        <input id="q" placeholder="Поиск или адрес сайта" autofocus spellcheck="false" autocomplete="off" />
+      </form>
+      <div id="sug"></div>
+    </div>
     <div class="tiles" id="tiles"></div>
   </main>
 
@@ -115,6 +129,45 @@
     if (!/\s/.test(s) && /^[^\s/]+\.[a-zа-яё]{2,}(:\d+)?(\/.*)?$/i.test(s)) return 'https://' + s;
     return null;
   }
+  // ---------- подсказки поисковика ----------
+  const sg = { items: [], sel: -1, seq: 0, t: 0 };
+  const escH = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const ICO = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></svg>';
+  function sgRender() {
+    const box = $('sug'), typed = $('q').value.trim().toLowerCase();
+    if (!sg.items.length) { box.classList.remove('open'); box.textContent = ''; return; }
+    const parts = [];
+    sg.items.forEach((t, i) => {
+      const lo = t.toLowerCase();
+      const txt = typed && lo.startsWith(typed) ? escH(t.slice(0, typed.length)) + '<b>' + escH(t.slice(typed.length)) + '</b>' : escH(t);
+      parts.push(`<div data-i="${i}" class="${i === sg.sel ? 'sel' : ''}">${ICO}<span>${txt}</span></div>`);
+    });
+    box.innerHTML = parts.join('');
+    box.classList.add('open');
+  }
+  function sgHide() { sg.items = []; sg.sel = -1; sg.seq++; sgRender(); }
+  function go(s) { s = s.trim(); if (!s) return; location.href = toUrl(s) || (engines[engine] || engines.google) + encodeURIComponent(s); }
+  $('q').addEventListener('input', () => {
+    clearTimeout(sg.t);
+    const q = $('q').value.trim(); const seq = ++sg.seq;
+    if (!q || PRIV || !window.liquidNewtab || !window.liquidNewtab.suggest || toUrl(q)) { sg.items = []; sg.sel = -1; sgRender(); return; }
+    sg.t = setTimeout(async () => {
+      let list = []; try { list = await window.liquidNewtab.suggest(q); } catch {}
+      if (seq !== sg.seq) return;
+      sg.items = (list || []).slice(0, 8); sg.sel = -1; sgRender();
+    }, 90);
+  });
+  $('q').addEventListener('keydown', (e) => {
+    if (!sg.items.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      sg.sel = sg.sel < 0 && e.key === 'ArrowUp' ? sg.items.length - 1 : (sg.sel + (e.key === 'ArrowDown' ? 1 : -1) + sg.items.length) % sg.items.length;
+      $('q').value = sg.items[sg.sel]; sgRender();
+    } else if (e.key === 'Escape') sgHide();
+  });
+  $('q').addEventListener('blur', () => setTimeout(sgHide, 150));
+  $('sug').addEventListener('mousedown', (e) => { const d = e.target.closest('[data-i]'); if (d) { e.preventDefault(); const t = sg.items[+d.dataset.i]; sgHide(); go(t); } });
+
   $('f').addEventListener('submit', (e) => {
     e.preventDefault();
     const s = $('q').value.trim();
@@ -157,10 +210,10 @@
       ic.className = 'ic';
       ic.style.background = t.color || colorFor(t.url);
       ic.textContent = t.ic || (t.name || host(t.url))[0].toUpperCase();
-      if (!t.ic) {
-        // настоящая иконка сайта; если не загрузится — остаётся буква
+      {
+        // настоящий значок сайта (и у стандартных плиток тоже); если не загрузится — остаётся буква
         const img = new Image();
-        img.onload = () => { if (img.naturalWidth > 16) { ic.textContent = ''; ic.style.background = 'rgba(255,255,255,.92)'; ic.appendChild(img); } };
+        img.onload = () => { if (img.naturalWidth >= 16) { ic.textContent = ''; ic.style.background = 'rgba(255,255,255,.94)'; ic.classList.add('img'); if (img.naturalWidth >= 96 && !/svg/.test(img.src.slice(0, 30))) ic.classList.add('full'); ic.appendChild(img); } };
         // значок качает само приложение — без куки и с кэшем
         if (window.liquidNewtab && window.liquidNewtab.icons) window.liquidNewtab.icons([host(t.url)]).then((m) => { const d = m && m[host(t.url)]; if (d) img.src = d; }).catch(() => {});
       }

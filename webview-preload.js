@@ -6,7 +6,7 @@
 const { contextBridge, webFrame, ipcRenderer } = require('electron');
 // стартовая страница хранит избранное в настройках приложения, а не в localStorage (его стирает «Очистить данные»)
 if (location.protocol === 'file:' && /\/newtab\.html$/.test(location.pathname)) {
-  try { contextBridge.exposeInMainWorld('liquidNewtab', { tiles: (t) => ipcRenderer.invoke('newtab:tiles', t), icons: (h) => ipcRenderer.invoke('newtab:icons', h) }); } catch {}
+  try { contextBridge.exposeInMainWorld('liquidNewtab', { tiles: (t) => ipcRenderer.invoke('newtab:tiles', t), icons: (h) => ipcRenderer.invoke('newtab:icons', h), suggest: (q) => ipcRenderer.invoke('search:suggest', q) }); } catch {}
 }
 
 const toHost = (msg) => { try { ipcRenderer.sendToHost('liquid', msg); } catch {} };
@@ -480,7 +480,7 @@ function videoCmd(m) {
     if (m.sr != null) { vt.sr = m.sr; vt.srHdr = !!m.srHdr; srSync(); }
     return;
   }
-  if (m.op === 'overlay') { const v0 = mainVideo(); if (v0) { barShow(v0, true); barExpand(true); } return; }
+  if (m.op === 'overlay') { const v0 = mainVideo(); if (v0) { barShow(v0, true); barOpen(!bar.open); } return; }
   if (m.op === 'pip') { pipToggle(); return; }
   if (!v) { toHost({ type: 'videoState', has: false }); return; }
   try {
@@ -666,70 +666,84 @@ function srSync() {
 document.addEventListener('play', () => setTimeout(srSync, 50), true);
 document.addEventListener('loadeddata', () => setTimeout(srSync, 50), true);
 
-// ---------- 8. Панель на видео: всплывает сверху при наведении ----------
+// ---------- 8. Кнопка на видео: кружок в углу, по нажатию — компактная панель ----------
 const BAR_CSS = `
 :host { all: initial; }
-.bar { position: fixed; z-index: 2147483647; display: flex; flex-direction: column; gap: 8px; padding: 6px; border-radius: 18px;
-  background: linear-gradient(180deg, rgba(40,38,52,.72), rgba(22,20,30,.78)); backdrop-filter: blur(18px) saturate(170%);
-  border: 1px solid rgba(255,255,255,.18); box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 14px 34px -14px rgba(0,0,0,.7);
-  font: 12.5px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: rgba(255,255,255,.92);
-  opacity: 0; transform: translate(-50%, -10px) scale(.96); transition: opacity .2s, transform .35s cubic-bezier(.2,.9,.25,1.15); pointer-events: none; user-select: none; }
-.bar.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
-.row { display: flex; align-items: center; gap: 4px; }
-.sep { width: 1px; height: 20px; background: rgba(255,255,255,.14); margin: 0 3px; }
-button { all: unset; cursor: pointer; height: 30px; min-width: 30px; padding: 0 9px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; color: rgba(255,255,255,.85); transition: background .15s, transform .3s cubic-bezier(.2,.9,.25,1.2); white-space: nowrap; }
+.dot, .bar { position: fixed; z-index: 2147483647; box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(40,38,52,.74), rgba(22,20,30,.8)); backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(255,255,255,.18); box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 12px 30px -12px rgba(0,0,0,.7);
+  font: 12px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: rgba(255,255,255,.92); user-select: none; }
+.dot { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; cursor: pointer; padding: 0;
+  opacity: 0; transform: scale(.8); pointer-events: none; transition: opacity .2s, transform .35s cubic-bezier(.2,.9,.25,1.2), background .2s; }
+.dot.vis { opacity: 1; transform: none; pointer-events: auto; }
+.dot:hover, .dot.open { background: linear-gradient(180deg, #e88a68, #c9633f); }
+.dot svg { width: 18px; height: 18px; }
+.bar { width: 268px; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 16px;
+  opacity: 0; transform: translateY(-6px) scale(.96); transform-origin: top right; transition: opacity .18s, transform .3s cubic-bezier(.2,.9,.25,1.15); pointer-events: none; }
+.bar.on { opacity: 1; transform: none; pointer-events: auto; }
+.row { display: flex; align-items: center; gap: 3px; }
+.grow { flex: 1; }
+button { all: unset; cursor: pointer; height: 28px; min-width: 28px; padding: 0 7px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; box-sizing: border-box; color: rgba(255,255,255,.85); transition: background .15s, transform .3s cubic-bezier(.2,.9,.25,1.2); white-space: nowrap; }
 button:hover { background: rgba(255,255,255,.12); color: #fff; }
-button:active { transform: scale(.9); }
+button:active { transform: scale(.92); }
 button.on { background: linear-gradient(180deg, #e88a68, #c9633f); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3); }
-button.sr.on { background: linear-gradient(180deg, #34d399, #059669); }
-svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.val { min-width: 42px; text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
-input[type=range] { -webkit-appearance: none; appearance: none; width: 96px; height: 4px; border-radius: 4px; background: rgba(255,255,255,.2); outline: none; }
-input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.5); }
-.more { display: none; flex-direction: column; gap: 8px; padding: 6px 6px 4px; border-top: 1px solid rgba(255,255,255,.1); }
+button.sr { width: 98px; } button.sr.on { background: linear-gradient(180deg, #34d399, #059669); }
+button.sr i { font-style: normal; font-size: 10px; font-weight: 700; opacity: .85; }
+svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.val { width: 36px; text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
+input[type=range] { -webkit-appearance: none; appearance: none; flex: 1; min-width: 0; height: 4px; border-radius: 4px; background: rgba(255,255,255,.2); outline: none; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.5); }
+.more { display: none; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,.1); }
 .bar.x .more { display: flex; }
-.more label { display: flex; align-items: center; gap: 10px; color: rgba(255,255,255,.65); }
-.more label span { width: 92px; } .more label b { width: 40px; text-align: right; color: #fff; font-weight: 600; }
-.more .row { flex-wrap: wrap; }`;
+.more label { display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,.65); }
+.more label span { width: 92px; } .more label b { width: 34px; text-align: right; color: #fff; font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; } .chips button { height: 26px; font-size: 11.5px; background: rgba(255,255,255,.06); }`;
 const IC = {
   minus: '<svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg>', plus: '<svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg>',
   vol: '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
   pip: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><rect x="12" y="11.5" width="7" height="5.5" rx="1.2" fill="currentColor" stroke="none"/></svg>',
   sr: '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M18.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>',
-  more: '<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
+  more: '<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/></svg>',
+  dot: '<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
 };
-const bar = { host: null, root: null, el: null, v: null, hideT: 0, hover: false };
+const bar = { host: null, root: null, el: null, dot: null, v: null, hideT: 0, hover: false, open: false };
 function barBuild() {
   if (bar.host) return;
   bar.host = document.createElement('lq-video-bar');
   bar.root = bar.host.attachShadow({ mode: 'closed' });
-  setHTML(bar.root, `<style>${BAR_CSS}</style><div class="bar">
+  setHTML(bar.root, `<style>${BAR_CSS}</style><button class="dot" title="Настройки видео: скорость, громкость, чёткость (Alt+V)">${IC.dot}</button><div class="bar">
     <div class="row">
       <button data-a="slower" title="Медленнее (Shift+колесо)">${IC.minus}</button><span class="val" data-v="speed">1×</span><button data-a="faster" title="Быстрее">${IC.plus}</button>
-      <span class="sep"></span>
-      <button data-a="mute" title="Громкость до 300% (Alt+колесо)">${IC.vol}</button><input type="range" data-r="vol" min="0" max="300" step="5"><span class="val" data-v="vol">100%</span>
-      <span class="sep"></span>
-      <button class="sr" data-a="sr" title="Супер-чёткость: апскейл и резкость на видеокарте">${IC.sr}<span data-v="sr">Чёткость</span></button>
-      <button data-a="hdr" title="HDR-цвет">HDR</button>
-      <span class="sep"></span>
+      <span class="grow"></span>
       <button data-a="pip" title="Картинка в картинке (Alt+P)">${IC.pip}</button>
-      <button data-a="more" title="Ещё">${IC.more}</button>
+      <button data-a="more" title="Яркость, контраст и другое">${IC.more}</button>
+    </div>
+    <div class="row">
+      <button data-a="mute" title="Громкость до 300% (Alt+колесо)">${IC.vol}</button><input type="range" data-r="vol" min="0" max="300" step="5"><span class="val" data-v="vol">100%</span>
+    </div>
+    <div class="row">
+      <button class="sr" data-a="sr" title="Супер-чёткость: апскейл и резкость на видеокарте. Нажимай: выкл → средне → сильно">${IC.sr}Чёткость <i data-v="sr"></i></button>
+      <button data-a="hdr" title="HDR-цвет">HDR</button>
     </div>
     <div class="more">
       <label><span>Яркость</span><input type="range" data-r="bright" min="50" max="180" step="5"><b data-v="bright"></b></label>
       <label><span>Контраст</span><input type="range" data-r="contrast" min="50" max="180" step="5"><b data-v="contrast"></b></label>
       <label><span>Насыщенность</span><input type="range" data-r="sat" min="0" max="200" step="5"><b data-v="sat"></b></label>
-      <div class="row">
+      <div class="chips">
         <button data-a="comp">Ровная громкость</button><button data-a="loop">Повтор</button><button data-a="remember">Запомнить скорость</button>
         <button data-a="frame">Кадр в PNG</button><button data-a="reset">Сбросить</button>
       </div>
     </div></div>`);
   bar.el = bar.root.querySelector('.bar');
-  if (!bar.el) { report('панель видео', 'не удалось собрать разметку'); bar.host = null; bar.broken = true; return; }
+  bar.dot = bar.root.querySelector('.dot');
+  if (!bar.el || !bar.dot) { report('панель видео', 'не удалось собрать разметку'); bar.host = null; bar.broken = true; return; }
   const stop = (e) => e.stopPropagation();
-  for (const ev of ['pointerdown', 'mousedown', 'click', 'dblclick', 'wheel', 'keydown']) bar.el.addEventListener(ev, stop);
-  bar.el.addEventListener('mouseenter', () => { bar.hover = true; clearTimeout(bar.hideT); });
-  bar.el.addEventListener('mouseleave', () => { bar.hover = false; barHideSoon(); });
+  for (const el of [bar.el, bar.dot]) {
+    for (const ev of ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'wheel', 'keydown']) el.addEventListener(ev, stop);
+    el.addEventListener('mouseenter', () => { bar.hover = true; clearTimeout(bar.hideT); });
+    el.addEventListener('mouseleave', () => { bar.hover = false; barHideSoon(); });
+  }
+  bar.dot.addEventListener('click', () => barOpen(!bar.open));
   bar.el.addEventListener('click', (e) => {
     const b = e.target.closest('button'); const v = bar.v;
     if (!b || !v) return;
@@ -739,7 +753,7 @@ function barBuild() {
     else if (a === 'sr') { vt.sr = vt.sr === 'off' ? 'mid' : vt.sr === 'mid' ? 'max' : 'off'; srSync(); toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); }
     else if (a === 'hdr') { vt.srHdr = !vt.srHdr; if (vt.srHdr && vt.sr === 'off') vt.sr = 'mid'; srSync(); toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); }
     else if (a === 'pip') pipToggle(v);
-    else if (a === 'more') barExpand(!bar.el.classList.contains('x'));
+    else if (a === 'more') { barExpand(!bar.el.classList.contains('x')); barPlace(); }
     else if (a === 'comp') setComp(v, !vt.graphs.get(v)?.compOn);
     else if (a === 'loop') v.loop = !v.loop;
     else if (a === 'remember') { vt.remember = !vt.remember; toHost({ type: 'videoRemember', on: vt.remember, speed: v.playbackRate }); }
@@ -754,6 +768,8 @@ function barBuild() {
     else { vt.want[r] = x / 100; applyFilter(v); }
     barRender();
   });
+  // нажатие мимо панели закрывает её
+  document.addEventListener('pointerdown', () => { if (bar.open) barOpen(false); }, true);
   document.documentElement.appendChild(bar.host);
 }
 function barRender() {
@@ -763,7 +779,7 @@ function barRender() {
   const vol = Math.round(getVolume(v) * 100);
   q('[data-r="vol"]').value = vol; q('[data-v="vol"]').textContent = vol + '%';
   const sr = q('[data-a="sr"]'); sr.classList.toggle('on', vt.sr !== 'off');
-  q('[data-v="sr"]').textContent = vt.sr === 'off' ? 'Чёткость' : vt.sr === 'mid' ? 'Чёткость · средне' : 'Чёткость · сильно';
+  q('[data-v="sr"]').textContent = vt.sr === 'off' ? '' : vt.sr === 'mid' ? '×1' : '×2';
   q('[data-a="hdr"]').classList.toggle('on', vt.srHdr);
   q('[data-a="pip"]').classList.toggle('on', document.pictureInPictureElement === v);
   for (const k of ['bright', 'contrast', 'sat']) { const val = Math.round((vt.want[k] ?? 1) * 100); q(`[data-r="${k}"]`).value = val; q(`[data-v="${k}"]`).textContent = val + '%'; }
@@ -771,11 +787,13 @@ function barRender() {
   q('[data-a="loop"]').classList.toggle('on', v.loop);
   q('[data-a="remember"]').classList.toggle('on', !!vt.remember);
 }
+// кружок — в правом верхнем углу видео, панель раскрывается под ним, прижатая к правому краю
 function barPlace() {
   if (!bar.v || !bar.el) return;
   const r = bar.v.getBoundingClientRect();
-  bar.el.style.left = (r.left + r.width / 2) + 'px';
-  bar.el.style.top = Math.max(8, r.top + 12) + 'px';
+  const top = Math.max(8, r.top + 12), right = Math.min(innerWidth - 8, r.right - 12);
+  bar.dot.style.left = (right - 36) + 'px'; bar.dot.style.top = top + 'px';
+  bar.el.style.left = Math.max(8, right - 268) + 'px'; bar.el.style.top = (top + 44) + 'px';
 }
 function barShow(v, force) {
   if (bar.broken || (!vt.barOn && !force) || v.offsetWidth < 300 || v.offsetHeight < 150) return;
@@ -784,13 +802,22 @@ function barShow(v, force) {
   const fs = document.fullscreenElement;
   const parent = fs && fs.contains(v) ? fs : document.documentElement;
   if (bar.host.parentNode !== parent) parent.appendChild(bar.host);
-  if (bar.v !== v) { bar.v = v; barExpand(false); }
+  if (bar.v !== v) { bar.v = v; barOpen(false); }
   barRender(); barPlace();
-  bar.el.classList.add('on');
+  bar.dot.classList.add('vis');
   barHideSoon();
 }
+function barOpen(on) {
+  if (!bar.el) return;
+  bar.open = on;
+  bar.el.classList.toggle('on', on); bar.dot.classList.toggle('open', on);
+  if (!on) barExpand(false); else { barRender(); barPlace(); clearTimeout(bar.hideT); }
+}
 function barExpand(on) { if (bar.el) bar.el.classList.toggle('x', on); }
-function barHideSoon() { clearTimeout(bar.hideT); bar.hideT = setTimeout(() => { if (!bar.hover) { bar.el && bar.el.classList.remove('on'); barExpand(false); } }, 2400); }
+function barHideSoon() {
+  clearTimeout(bar.hideT);
+  bar.hideT = setTimeout(() => { if (!bar.hover && !bar.open) bar.dot && bar.dot.classList.remove('vis'); }, 2400);
+}
 let barRaf = 0;
 document.addEventListener('mousemove', (e) => {
   if (barRaf) return;
@@ -800,7 +827,7 @@ document.addEventListener('mousemove', (e) => {
     if (v) barShow(v);
   });
 }, { passive: true, capture: true });
-document.addEventListener('scroll', () => { if (bar.el && bar.el.classList.contains('on')) barPlace(); }, { passive: true, capture: true });
+document.addEventListener('scroll', () => { if (bar.dot && bar.dot.classList.contains('vis')) barPlace(); }, { passive: true, capture: true });
 document.addEventListener('fullscreenchange', () => { if (bar.v) setTimeout(() => barShow(bar.v), 100); for (const r of vt.srMap.values()) setTimeout(() => r.place(), 120); });
 async function pipToggle(v) {
   v = v || mainVideo();
@@ -809,6 +836,15 @@ async function pipToggle(v) {
     else if (v) { v.disablePictureInPicture = false; v.removeAttribute('disablepictureinpicture'); await v.requestPictureInPicture(); }
   } catch (e) { console.warn('[liquid] картинка в картинке: ' + e.message + ' @ ' + location.hostname); toHost({ type: 'pipFail' }); }
   barRender();
+}
+
+// ---------- боковые кнопки мыши: назад / вперёд (Electron сам их не обрабатывает) ----------
+for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
+  window.addEventListener(ev, (e) => {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault(); e.stopPropagation();
+    if (ev === 'mouseup') toHost({ type: 'nav', dir: e.button === 3 ? 'back' : 'forward' });
+  }, true);
 }
 
 // ---------- команды от браузера ----------

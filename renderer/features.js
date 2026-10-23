@@ -69,19 +69,43 @@
       if (s) out.push({ url, title: e.t, s, kind: '' });
     }
     out.sort((a, b) => b.s - a.s);
-    const list = out.slice(0, 6);
-    list.push({ search: q, title: `Найти «${q}»` });
+    const list = out.slice(0, 4);
+    list.push({ search: q, title: q, main: true });
     return list;
+  }
+  // подсказки поисковика приходят чуть позже — добавляем их под сайты из истории
+  let sugT = 0, sugSeq = 0;
+  function fetchSuggest(raw) {
+    clearTimeout(sugT);
+    const q = raw.trim();
+    if (!q || L.incognito || q.length > 120) return;
+    const seq = ++sugSeq;
+    sugT = setTimeout(async () => {
+      let list = []; try { list = await L.claude.suggest(q); } catch {}
+      if (seq !== sugSeq || $('#url').value.trim() !== q || document.activeElement !== $('#url')) return;
+      const have = new Set(sug.items.filter((it) => it.search).map((it) => it.search.toLowerCase()));
+      const add = list.filter((s2) => !have.has(s2.toLowerCase())).slice(0, 6).map((s2) => ({ search: s2, title: s2 }));
+      if (!add.length) return;
+      const selItem = sug.items[sug.sel];
+      sug.items = [...sug.items, ...add];
+      sug.sel = selItem ? sug.items.indexOf(selItem) : -1;
+      renderSuggest();
+    }, 90);
   }
   function renderSuggest() {
     const box = $('#suggest');
     if (!sug.items.length) { box.classList.remove('open'); return; }
     box.innerHTML = sug.items.map((it, i) => it.search
-      ? `<div class="sg ${i === sug.sel ? 'sel' : ''}" data-i="${i}">${SEARCH_IC}<span class="sg-t">${esc(it.title)}</span></div>`
+      ? `<div class="sg ${i === sug.sel ? 'sel' : ''}" data-i="${i}">${SEARCH_IC}<span class="sg-t">${hl(it.title, $('#url').value)}</span>${it.main ? '<span class="sg-u">— поиск</span>' : ''}</div>`
       : `<div class="sg ${i === sug.sel ? 'sel' : ''}" data-i="${i}"><img src="${esc(favUrl(it.url))}"><span class="sg-t">${esc(it.title || hostOf(it.url))}</span><span class="sg-u">${esc(it.url.replace(/^https?:\/\//, ''))}</span>${it.kind ? `<span class="sg-k">${it.kind}</span>` : ''}</div>`).join('');
     box.classList.add('open');
   }
-  window.hideSuggest = () => { sug.items = []; sug.sel = -1; $('#suggest').classList.remove('open'); };
+  // как в Chrome: введённое — обычным, дописанное поисковиком — жирным
+  function hl(text, typed) {
+    const t = typed.trim().toLowerCase();
+    return t && text.toLowerCase().startsWith(t) ? esc(text.slice(0, t.length)) + '<b>' + esc(text.slice(t.length)) + '</b>' : esc(text);
+  }
+  window.hideSuggest = () => { sug.items = []; sug.sel = -1; sugSeq++; $('#suggest').classList.remove('open'); };
   function pickSuggest(i) {
     const it = sug.items[i];
     hideSuggest();
@@ -89,14 +113,14 @@
     if (it.search) navigate(it.search); else navigate(it.url);
     $('#url').blur();
   }
-  $('#url').addEventListener('input', () => { sug.items = suggestions($('#url').value); sug.sel = -1; renderSuggest(); });
+  $('#url').addEventListener('input', () => { sug.items = suggestions($('#url').value); sug.sel = -1; renderSuggest(); fetchSuggest($('#url').value); });
   $('#url').addEventListener('keydown', (e) => {
     if (!sug.items.length) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       sug.sel = (sug.sel + (e.key === 'ArrowDown' ? 1 : -1) + sug.items.length) % sug.items.length;
       const it = sug.items[sug.sel];
-      if (!it.search) $('#url').value = it.url;
+      $('#url').value = it.search || it.url;
       renderSuggest();
     } else if (e.key === 'Enter' && sug.sel >= 0) { e.preventDefault(); pickSuggest(sug.sel); }
   });
@@ -131,7 +155,6 @@
     if (m.type === 'page') {
       tab.page = { ...tab.page, ...m };
       if (m.foreign && !tab.translated && !tab.trAuto && alwaysTr.has(hostOf(tab.url))) { tab.trAuto = true; tab.wv?.send('liquid', { type: 'translate', on: true }); }
-      if (m.lang || m.video) window.ideasTrack && window.ideasTrack('page', { lang: m.foreign ? (m.lang || 'en') : 'ru', video: m.video });
     } else if (m.type === 'translate') {
       tab.translated = m.state === 'on' || m.state === 'working';
       if (tab === active) $('#trBtn').classList.toggle('working', m.state === 'working');
@@ -212,7 +235,7 @@
   const fmtSize = (b) => b >= 1e9 ? (b / 1e9).toFixed(2) + ' ГБ' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' МБ' : b >= 1e3 ? Math.round(b / 1e3) + ' КБ' : (b || 0) + ' Б';
   L.dl.onUpdate((d) => {
     dls.set(d.id, d);
-    if (d.started) { $('#dlBtn').classList.add('show'); toast(`Загрузка: ${d.name}`); window.ideasTrack && window.ideasTrack('download'); }
+    if (d.started) { $('#dlBtn').classList.add('show'); toast(`Загрузка: ${d.name}`); }
     if (d.state === 'completed' || d.state === 'cancelled' || d.state === 'interrupted') {
       if (!dlHist.some((x) => x.id === d.id && x.path === d.path)) { dlHist.unshift({ ...d, at: Date.now() }); saveDl(); }
       if (d.state === 'completed') { $('#dlBtn').classList.add('done'); setTimeout(() => $('#dlBtn').classList.remove('done'), 3000); }
@@ -616,6 +639,6 @@
     renderVpnExtras();
     renderThemeUi();
     applyTheme();
-    if (L.incognito) { window.ideasTrack = () => {}; document.title = 'Liquid — инкогнито'; }
+    if (L.incognito) { document.title = 'Liquid — инкогнито'; }
   };
 })();

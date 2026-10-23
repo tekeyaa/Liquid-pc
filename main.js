@@ -187,6 +187,8 @@ function createWindow({ priv = false } = {}) {
   }
   w.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { part, ...(priv ? { incognito: '1' } : {}) } });
   w.on('maximize', () => w.webContents.send('win:state', { max: true }));
+  // боковые кнопки мыши в Windows приходят ещё и командой окна — так они работают и над видео в фреймах
+  w.on('app-command', (_e, cmd) => { if (cmd === 'browser-backward' || cmd === 'browser-forward') w.webContents.send('shortcut', { key: cmd === 'browser-backward' ? 'navBack' : 'navForward' }); });
   w.on('unmaximize', () => w.webContents.send('win:state', { max: false }));
   w.on('enter-full-screen', () => w.webContents.send('win:state', { full: true }));
   w.on('leave-full-screen', () => w.webContents.send('win:state', { full: false }));
@@ -966,29 +968,118 @@ function registerIpc() {
     const s = loadSettings(); s.popupAllow = [...new Set([...(s.popupAllow || []), String(site)])].slice(-200); saveSettings(s); return true;
   });
   // значки для стартовой: качаем сами без куки, кэш 14 дней — сайты не видят каждое открытие стартовой
+  // подсказки поисковика при вводе (как в Chrome): через сессию без куки и через VPN, если он включён; в инкогнито не шлём
+  const SUGGEST = {
+    google: (q) => `https://suggestqueries.google.com/complete/search?client=firefox&hl=ru&ie=utf-8&oe=utf-8&q=${q}`,
+    yandex: (q) => `https://suggest.yandex.ru/suggest-ff.cgi?uil=ru&part=${q}`,
+    ddg: (q) => `https://duckduckgo.com/ac/?type=list&q=${q}`,
+    bing: (q) => `https://api.bing.com/osjson.aspx?query=${q}`,
+  };
+  const sugCache = new Map();
+  ipcMain.handle('search:suggest', async (e, q) => {
+    q = String(q || '').trim().slice(0, 120);
+    if (!q || e.sender.session !== ses || /^[a-z]+:\/\//i.test(q)) return [];
+    const eng = SUGGEST[loadSettings().search] ? loadSettings().search : 'google';
+    const key = eng + '\n' + q.toLowerCase();
+    if (sugCache.has(key)) return sugCache.get(key);
+    if (!iconSes) { iconSes = session.fromPartition('liquid-icons', { cache: false }); if (proxyRules) await applyProxy({ sessions: [iconSes], close: false }); }
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 2500);
+    try {
+      const r = await iconSes.fetch(SUGGEST[eng](encodeURIComponent(q)), { signal: ctrl.signal, credentials: 'omit', headers: { accept: 'application/json' } });
+      if (!r.ok) return [];
+      const j = JSON.parse(await r.text());
+      const list = (Array.isArray(j) && Array.isArray(j[1]) ? j[1] : []).map((x) => String(Array.isArray(x) ? x[0] : x)).filter((x) => x && x.length < 200).slice(0, 8);
+      sugCache.set(key, list); if (sugCache.size > 300) sugCache.delete(sugCache.keys().next().value);
+      return list;
+    } catch { return []; } finally { clearTimeout(t); }
+  });
+
+  // Значки для избранного на стартовой: как Chrome — читаем главную сайта и берём самый крупный значок из тех,
+  // что сайт указал сам (apple-touch-icon, icon с размерами, manifest), потом /apple-touch-icon.png и /favicon.ico.
+  // Качает приложение без куки (сайты не видят открытия стартовой) и через VPN, если он включён; хранится 14 дней
+  async function iconFetch(url, ms = 6000) {
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
+    try { return await iconSes.fetch(url, { signal: ctrl.signal, credentials: 'omit', referrerPolicy: 'no-referrer', headers: { 'user-agent': UA } }); }
+    finally { clearTimeout(t); }
+  }
+  async function iconCandidates(h) {
+    const out = [];
+    try {
+      const r = await iconFetch('https://' + h + '/');
+      if (r.ok && /html/i.test(r.headers.get('content-type') || '')) {
+        const base = r.url || 'https://' + h + '/';
+        const html = (await r.text()).slice(0, 400000);
+        const head = html.slice(0, (html.search(/<\/head>/i) + 1 || 400000));
+        const attr = (tag, n) => { const m = tag.match(new RegExp('\\b' + n + '\\s*=\\s*("([^"]*)"|\'([^\']*)\'|([^\\s>]+))', 'i')); return m ? (m[2] ?? m[3] ?? m[4] ?? '') : ''; };
+        const abs = (x) => { try { return new URL(x.replace(/&amp;/g, '&'), base).href; } catch { return ''; } };
+        for (const tag of head.match(/<link\b[^>]*>/gi) || []) {
+          const rel = attr(tag, 'rel').toLowerCase(), href = attr(tag, 'href');
+          if (!href) continue;
+          if (rel.includes('manifest')) { out.push({ manifest: abs(href) }); continue; }
+          if (!/(^|\s)(icon|apple-touch-icon|apple-touch-icon-precomposed)(\s|$)/.test(rel)) continue;
+          const sz = Math.max(0, ...attr(tag, 'sizes').split(/\s+/).map((x) => parseInt(x, 10) || 0));
+          const svg = /svg/i.test(attr(tag, 'type')) || /\.svg(\?|$)/i.test(href);
+          out.push({ url: abs(href), size: svg ? 256 : sz || (rel.includes('apple') ? 180 : 32) });
+        }
+      }
+    } catch {}
+    // manifest: там обычно значки 192 и 512
+    for (const m of out.filter((x) => x.manifest)) {
+      try {
+        const r = await iconFetch(m.manifest, 4000); if (!r.ok) continue;
+        const j = JSON.parse(await r.text());
+        for (const ic of (j.icons || []).slice(0, 20)) {
+          if (!ic.src || /maskable/.test(ic.purpose || '')) continue;
+          const sz = Math.max(0, ...String(ic.sizes || '').split(/\s+/).map((x) => parseInt(x, 10) || 0));
+          out.push({ url: new URL(ic.src, m.manifest).href, size: sz || 96 });
+        }
+      } catch {}
+    }
+    const list = out.filter((x) => x.url && /^https?:/.test(x.url));
+    // крупный, но не огромный: лучше всего около 128–256
+    list.sort((a, b) => Math.abs(Math.min(a.size, 512) - 192) - Math.abs(Math.min(b.size, 512) - 192));
+    list.push({ url: 'https://' + h + '/apple-touch-icon.png', size: 180 }, { url: 'https://' + h + '/favicon.ico', size: 32 });
+    return list;
+  }
+  async function iconLoad(c) {
+    const r = await iconFetch(c.url, 5000);
+    if (!r.ok) return null;
+    const type = (r.headers.get('content-type') || '').toLowerCase();
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (!buf.length || buf.length > 600000) return null;
+    if (/svg/.test(type) || /\.svg(\?|$)/i.test(c.url)) {
+      const txt = buf.toString('utf8');
+      if (!/<svg[\s>]/i.test(txt) || /<script|\bon\w+\s*=|javascript:/i.test(txt)) return null; // только чистая картинка
+      return { data: 'data:image/svg+xml;base64,' + buf.toString('base64'), w: 256 };
+    }
+    if (/webp|avif/.test(type)) return { data: `data:${type.split(';')[0]};base64,` + buf.toString('base64'), w: c.size || 64 };
+    const img = nativeImage.createFromBuffer(buf);
+    if (img.isEmpty()) return null;
+    const w = img.getSize().width;
+    if (w < 16) return null;
+    return { data: 'data:image/png;base64,' + (w > 256 ? img.resize({ width: 256, quality: 'best' }) : img).toPNG().toString('base64'), w };
+  }
   ipcMain.handle('newtab:icons', async (e, hosts) => {
     let u = ''; try { u = e.sender.getURL(); } catch {}
     if (!/^file:.*\/newtab\.html(#|$)/.test(u) || !Array.isArray(hosts)) return {};
-    const dir = path.join(app.getPath('userData'), 'icons'); fs.mkdirSync(dir, { recursive: true });
+    const dir = path.join(app.getPath('userData'), 'icons2'); fs.mkdirSync(dir, { recursive: true });
+    try { fs.rmSync(path.join(app.getPath('userData'), 'icons'), { recursive: true, force: true }); } catch {} // старый кэш мелких значков
     if (!iconSes) { iconSes = session.fromPartition('liquid-icons', { cache: false }); if (proxyRules) await applyProxy({ sessions: [iconSes], close: false }); }
     const out = {};
     await Promise.all(hosts.slice(0, 80).map(String).map((h) => h.toLowerCase()).filter((h) => /^[a-z0-9.-]{3,100}$/.test(h) && h.includes('.')).map(async (h) => {
-      const f = path.join(dir, h + '.png'), miss = path.join(dir, h + '.none');
-      try { if (Date.now() - fs.statSync(f).mtimeMs < 14 * 864e5) { out[h] = 'data:image/png;base64,' + fs.readFileSync(f).toString('base64'); return; } } catch {}
+      const f = path.join(dir, h + '.txt'), miss = path.join(dir, h + '.none');
+      try { if (Date.now() - fs.statSync(f).mtimeMs < 14 * 864e5) { out[h] = fs.readFileSync(f, 'utf8'); return; } } catch {}
       try { if (Date.now() - fs.statSync(miss).mtimeMs < 864e5) { out[h] = ''; return; } } catch {}
-      for (const p of ['/apple-touch-icon.png', '/favicon.ico']) {
+      let best = null;
+      for (const c of (await iconCandidates(h)).slice(0, 8)) {
         try {
-          const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 5000);
-          const r = await iconSes.fetch('https://' + h + p, { signal: ctrl.signal, credentials: 'omit', referrerPolicy: 'no-referrer' }).finally(() => clearTimeout(t));
-          if (!r.ok) continue;
-          const img = nativeImage.createFromBuffer(Buffer.from(await r.arrayBuffer()));
-          if (img.isEmpty() || img.getSize().width < 16) continue;
-          const png = (img.getSize().width > 128 ? img.resize({ width: 128 }) : img).toPNG();
-          fs.writeFileSync(f, png); out[h] = 'data:image/png;base64,' + png.toString('base64'); return;
+          const r = await iconLoad(c);
+          if (r && (!best || r.w > best.w)) best = r;
+          if (best && best.w >= 96) break; // достаточно чёткий — дальше не ищем
         } catch {}
       }
-      try { fs.writeFileSync(miss, ''); } catch {}
-      out[h] = '';
+      if (best) { try { fs.writeFileSync(f, best.data); } catch {} out[h] = best.data; }
+      else { try { fs.writeFileSync(miss, ''); } catch {} out[h] = ''; }
     }));
     return out;
   });
@@ -1068,6 +1159,41 @@ function registerIpc() {
       webPreferences: { session: ses, contextIsolation: true, sandbox: true },
     });
     w.loadURL(`chrome-extension://${x.realId}/${page.replace(/^\//, '')}`);
+  });
+
+  // игровой режим: вкладки не выгружаем, а замораживаем — скрипты и таймеры стоят, память отдаётся,
+  // а страница со всем, что на ней было, остаётся на месте. Размораживаются мгновенно
+  const frozen = new Set();
+  ipcMain.handle('tabs:freeze', async (e, { ids, on }) => {
+    let n = 0;
+    for (const id of (Array.isArray(ids) ? ids : []).slice(0, 500)) {
+      const wc = webContents.fromId(Number(id));
+      if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== e.sender) continue;
+      try {
+        const dbg = wc.debugger;
+        if (on) {
+          if (frozen.has(wc.id)) continue;
+          if (!dbg.isAttached()) dbg.attach('1.3');
+          // скрытую страницу Chromium замораживает сам; видимую (окно браузера под игрой) — ставим скрипты на паузу
+          await dbg.sendCommand('Page.enable').catch(() => {});
+          await dbg.sendCommand('Page.setWebLifecycleState', { state: 'frozen' }).catch(() => {});
+          await dbg.sendCommand('Debugger.enable');
+          await dbg.sendCommand('Debugger.pause');
+          dbg.sendCommand('Memory.simulatePressureNotification', { level: 'critical' }).catch(() => {});
+          frozen.add(wc.id); n++;
+          wc.once('destroyed', () => frozen.delete(wc.id));
+        } else {
+          if (!frozen.has(wc.id)) continue;
+          frozen.delete(wc.id);
+          await dbg.sendCommand('Debugger.resume').catch(() => {});
+          await dbg.sendCommand('Debugger.disable').catch(() => {});
+          await dbg.sendCommand('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
+          try { dbg.detach(); } catch {}
+          n++;
+        }
+      } catch (err) { diag.log('warn', 'игровой режим', 'заморозка вкладки: ' + err.message); }
+    }
+    return n;
   });
 
   // скриншоты: вся страница через DevTools-протокол, кусками до 4000px, склейка — в интерфейсе

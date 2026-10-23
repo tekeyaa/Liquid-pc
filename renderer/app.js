@@ -91,7 +91,6 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
   if (!background || !active) activate(tab);
   fitTabs();
   saveSession();
-  window.ideasTrack && window.ideasTrack('tabs', tabs.length);
   return tab;
 }
 
@@ -118,7 +117,12 @@ function attachWebview(tab, url) {
   wv.addEventListener('media-started-playing', () => { el.classList.add('playing'); tab.playing = true; });
   wv.addEventListener('media-paused', () => { el.classList.remove('playing'); tab.playing = false; });
   wv.addEventListener('focus', () => { if (split && (tab === split.left || tab === split.right) && active !== tab) focusPane(tab); });
-  wv.addEventListener('ipc-message', (e) => { if (e.channel === 'liquid') window.onPageMsg && window.onPageMsg(tab, e.args[0] || {}); });
+  wv.addEventListener('ipc-message', (e) => {
+    if (e.channel !== 'liquid') return;
+    const m = e.args[0] || {};
+    if (m.type === 'nav') { mouseNav(tab, m.dir); return; }
+    window.onPageMsg && window.onPageMsg(tab, m);
+  });
   const onNav = (e) => {
     if (e.isMainFrame === false) return;
     tab.url = wv.getURL();
@@ -129,7 +133,6 @@ function attachWebview(tab, url) {
     fav.src = 'favicon.svg'; tab.favicon = ''; tab.guard = null; tab.page = {}; tab.translated = false; tab.ads = 0;
     onNav(e);
     if (/^https?:/.test(e.url)) {
-      try { window.ideasTrack && window.ideasTrack('visit', { host: new URL(e.url).hostname.replace(/^www\./, '') }); } catch {}
       window.historyAdd && window.historyAdd(tab, e.url);
     }
   });
@@ -138,7 +141,6 @@ function attachWebview(tab, url) {
     if (!e.isMainFrame || e.errorCode === -3) return; // -3 = отменено
     const blocked = BLOCK_ERRORS.includes(e.errorCode);
     L.diag.log('warn', 'загрузка', `${e.errorDescription} (${e.errorCode})${blocked ? ' — похоже на блокировку' : ''}`, L.incognito ? '(инкогнито — адрес не записан)' : e.validatedURL);
-    window.ideasTrack && window.ideasTrack('fail', { blocked });
     // Авто-VPN: сайт похож на заблокированный → пробуем через VPN один раз
     if (blocked && !(tab.unblocked || (tab.unblocked = new Set())).has(e.validatedURL)) {
       tab.unblocked.add(e.validatedURL);
@@ -163,6 +165,24 @@ function attachWebview(tab, url) {
   $('#views').appendChild(wv);
   layoutViews();
   return wv;
+}
+
+// боковые кнопки мыши (XButton1/2): назад и вперёд — и над страницей, и над панелью браузера
+let lastMouseNav = 0;
+function mouseNav(tab, dir) {
+  const wv = tab && tab.wv; if (!wv) return;
+  // одно нажатие приходит и событием мыши, и командой окна Windows — второе пропускаем
+  if (Date.now() - lastMouseNav < 350) return;
+  lastMouseNav = Date.now();
+  try { if (dir === 'back' ? wv.canGoBack() : wv.canGoForward()) dir === 'back' ? wv.goBack() : wv.goForward(); } catch {}
+}
+window.mouseNav = mouseNav;
+for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
+  window.addEventListener(ev, (e) => {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault();
+    if (ev === 'mouseup') mouseNav(active, e.button === 3 ? 'back' : 'forward');
+  }, true);
 }
 
 function sleepTab(tab) {
@@ -196,6 +216,7 @@ function updateTab(tab) {
 
 function activate(tab) {
   if (active === tab) return;
+  if (tab.frozen) { tab.frozen = false; tab.el.classList.remove('frozen'); if (tab.wcId) L.tabs.freeze([tab.wcId], false); } // игровой режим: открытую вкладку размораживаем
   // выбрали вкладку не из пары — выходим из режима «два сайта»
   if (split && tab !== split.left && tab !== split.right) endSplit(false);
   if (active) active.lastActive = Date.now();
@@ -463,7 +484,6 @@ async function vpnToggle(keyFromField) {
     $('#vpnKey').value = '';
     renderVpn(r.state);
     toast(`VPN включён${r.state.country ? ' · ' + r.state.country : ''}`);
-    window.ideasTrack && window.ideasTrack('vpn');
     active?.wv.reload();
   } else showVpnErr(r.error);
 }
@@ -558,7 +578,6 @@ async function guardScan(tab, force) {
   if (tab.guard.verdict !== 'unknown') guardCache.set(origin, tab.guard);
   renderGuard(tab);
   if (tab === active && tab.guard.verdict === 'danger') showDanger(tab.guard.reason);
-  if (['danger', 'caution'].includes(tab.guard.verdict)) window.ideasTrack && window.ideasTrack('guard');
   if (tab === active && tab.guard.verdict === 'caution') toast('⚠ ' + tab.guard.reason, true);
 }
 
@@ -619,7 +638,6 @@ L.claude.onPopupCheck(async ({ id, url, info }) => {
       if (!r || r.verdict === 'unknown') r = localGuard(u, info);
       if (r.verdict !== 'unknown') guardCache.set(u.origin, r);
     }
-    if (['danger', 'caution'].includes(r.verdict)) window.ideasTrack && window.ideasTrack('guard');
   } catch {}
   L.claude.popupResult(id, r);
 });
@@ -814,7 +832,6 @@ const PRESETS = {
 async function ask(text) {
   text = text.trim();
   if (!text) return;
-  window.ideasTrack && window.ideasTrack('claude');
   if (webMode()) { sendPageToClaudeWeb(text); return; }
   if (chat.busyId) return;
   toggleSide(true);

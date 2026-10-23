@@ -78,9 +78,9 @@
         <svg viewBox="0 0 24 24" class="spark"><path d="M12 3c.6 4.6 3.4 7.4 9 9-5.6 1.6-8.4 4.4-9 9-.6-4.6-3.4-7.4-9-9 5.6-1.6 8.4-4.4 9-9z"/></svg>
         <span class="lbl">Claude</span>
       </button>
-      <button id="ideasBtn" class="icon-btn glass round" title="Идеи для браузера">
-        <svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3z"/></svg>
-        <i class="badge"></i>
+      <button id="logBtn" class="icon-btn glass round" title="Журнал ошибок">
+        <svg viewBox="0 0 24 24"><path d="M9 7.5V6a3 3 0 0 1 6 0v1.5M7 10a5 5 0 0 1 10 0v4a5 5 0 0 1-10 0zM12 10v9M3.5 13H7M17 13h3.5M4.5 8.5L7.5 10M19.5 8.5L16.5 10M4.5 18l3-1.5M19.5 18l-3-1.5"/></svg>
+        <b class="cnt" id="logCount"></b>
       </button>
       <button id="dlBtn" class="icon-btn glass round" title="Загрузки">
         <svg viewBox="0 0 24 24"><path d="M12 4v10M7.5 10l4.5 4.5 4.5-4.5M5 19.5h14"/></svg>
@@ -401,22 +401,6 @@
     </div>
   </div>
 
-  <div id="ideasPop" class="pop glass">
-    <div class="ideas-head">
-      <div>
-        <h4 style="margin:0">Агент идей</h4>
-        <div class="muted sm">Смотрит, как ты пользуешься браузером, и предлагает улучшения. Всё считается у тебя на компе.</div>
-      </div>
-    </div>
-    <div id="ideasList"></div>
-    <div class="ideas-foot">
-      <span id="ideasCount" class="muted sm"></span>
-      <button id="ideasMore" class="btn ghost sm">Придумать ещё</button>
-      <button id="ideasSend" class="btn primary sm" title="Скопировать выбранное как задачу для Claude">Передать Claude</button>
-    </div>
-  </div>
-
-
   <!-- Меню -->
   <div id="menuPop" class="pop glass menu">
     <button data-m="newtab"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Новая вкладка<kbd>Ctrl+T</kbd></button>
@@ -527,7 +511,6 @@
   <script src="app.js"></script>
   <script src="features.js"></script>
   <script src="features2.js"></script>
-  <script src="ideas.js"></script>
   <script src="diag.js"></script>
 </body>
 </html>

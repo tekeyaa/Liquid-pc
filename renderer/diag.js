@@ -17,7 +17,14 @@
     $('#menuDot').classList.toggle('on', n > 0);
     $('#debugDot').classList.toggle('on', n > 0);
     $('#menuErrCount').textContent = n ? String(n) : '';
+    // кнопка журнала на панели: число новых ошибок
+    $('#logCount').textContent = n ? (n > 99 ? '99+' : String(n)) : '';
+    $('#logBtn').classList.toggle('has', n > 0);
+    $('#logBtn').title = n ? `Журнал ошибок — новых: ${n}` : 'Журнал ошибок';
   }
+  $('#logBtn').onclick = () => window.openDebug();
+  // агента идей больше нет — убираем его записи
+  try { localStorage.removeItem('liquid.ideas.stats'); localStorage.removeItem('liquid.ideas.state'); } catch {}
   window.openDebug = () => { window.openSettings('debug'); };
   const origSetTab = window.setTab;
   window.setTab = (name) => { origSetTab(name); if (name === 'debug') { render(); L.diag.seen(); setBadge(0); } };

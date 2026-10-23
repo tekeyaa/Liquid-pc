@@ -206,22 +206,24 @@
     document.body.classList.toggle('game', on);
     $('#gameBadge').title = on ? `Игровой режим: ${game || 'игра'} — браузер отдал ресурсы игре` : '';
     if (on) {
-      let n = 0;
+      // вкладки не закрываем и не перезагружаем: замораживаем — страница остаётся как была, но не тратит процессор,
+      // и браузер отдаёт её память. Вкладки с музыкой или видео (если так выбрано) продолжают играть
+      const ids = [];
       for (const t of tabs) {
-        if (keepAudio !== false && t.playing) continue;
-        if (t === active) { if (t.wv && !t.playing) { try { t.url = t.wv.getURL() || t.url; } catch {} t.wv.remove(); t.wv = null; t.wcId = null; t.sleeping = true; t.el.classList.add('sleeping'); n++; } continue; }
-        if (sleepTab(t)) n++;
+        if (!t.wv || !t.wcId || (keepAudio !== false && t.playing)) continue;
+        t.frozen = true; t.el.classList.add('frozen'); ids.push(t.wcId);
       }
-      if (claudeWv && !document.body.classList.contains('side')) { claudeWv.remove(); claudeWv = null; }
-      toast(`🎮 Игровой режим${game && game !== 'вручную' ? ': ' + game : ''} — усыпил вкладок: ${n}`);
+      L.tabs.freeze(ids, true).then((n) => toast(`🎮 Игровой режим${game && game !== 'вручную' ? ': ' + game : ''} — заморожено вкладок: ${n}`)).catch(() => {});
     } else {
+      const ids = tabs.filter((t) => t.frozen && t.wcId).map((t) => t.wcId);
+      for (const t of tabs) { t.frozen = false; t.el.classList.remove('frozen'); }
+      L.tabs.freeze(ids, false).catch(() => {});
       toast('Игровой режим выключен');
-      if (document.hasFocus()) wakeActive();
     }
     syncGameUi();
   }
-  function wakeActive() { if (active && !active.wv) { attachWebview(active, active.url); active.el.classList.remove('sleeping'); layoutViews(); syncChrome(); } }
-  window.addEventListener('focus', wakeActive);
+  // вернулся в браузер во время игры — размораживаем только открытую вкладку
+  window.addEventListener('focus', () => { if (gameOn && active?.frozen) { active.frozen = false; active.el.classList.remove('frozen'); if (active.wcId) L.tabs.freeze([active.wcId], false); } });
   L.game.onState(gameApply);
   function syncGameUi() {
     $('#gameMenuLbl').textContent = gameOn ? 'Выключить игровой режим' : 'Игровой режим';
@@ -243,6 +245,7 @@
     if (key === 'shot') window.openShot();
     else if (key === 'reader') window.toggleReader();
     else if (key === 'video') active?.wv?.send('liquid', { type: 'video', op: 'overlay' });
+    else if (key === 'navBack' || key === 'navForward') window.mouseNav && window.mouseNav(active, key === 'navBack' ? 'back' : 'forward');
   });
 
   // настройки
