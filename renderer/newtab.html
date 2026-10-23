@@ -136,7 +136,9 @@
   try { tiles = JSON.parse(localStorage.getItem(KEY)) || DEFAULTS.slice(); } catch { tiles = DEFAULTS.slice(); }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(tiles)); } catch {} try { window.liquidNewtab && window.liquidNewtab.tiles(tiles); } catch {} };
   // избранное хранится в приложении; localStorage — только копия
-  if (window.liquidNewtab) window.liquidNewtab.tiles().then((t) => { if (Array.isArray(t)) { tiles = t; try { localStorage.setItem(KEY, JSON.stringify(t)); } catch {} render(); } else save(); }).catch(() => {});
+  // в инкогнито избранное только показываем: не переносим и не меняем общее
+  const PRIV = /(?:^|[#&])private=1/.test(location.hash);
+  if (window.liquidNewtab) window.liquidNewtab.tiles().then((t) => { if (Array.isArray(t)) { tiles = t; try { localStorage.setItem(KEY, JSON.stringify(t)); } catch {} render(); } else if (!PRIV) save(); }).catch(() => {});
 
   const PALETTE = ['#5b3df5', '#d97757', '#0ea5e9', '#ec4899', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6'];
   function colorFor(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; }

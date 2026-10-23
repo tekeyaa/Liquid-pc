@@ -52,7 +52,7 @@ function toUrl(input) {
   return (SEARCH[settings.search] || SEARCH.google) + encodeURIComponent(s);
 }
 const isInternal = (u) => !u || u.startsWith(NEWTAB.split('#')[0]) || u.startsWith(ERRPAGE.split('#')[0]);
-const newtabUrl = () => `${NEWTAB}#search=${settings.search}`;
+const newtabUrl = () => `${NEWTAB}#search=${settings.search}${L.incognito ? '&private=1' : ''}`;
 
 // ---------- вкладки ----------
 // Вкладка живёт и без webview: «спящая» вкладка хранит только адрес, заголовок и иконку (почти 0 МБ ОЗУ)
@@ -137,7 +137,7 @@ function attachWebview(tab, url) {
   wv.addEventListener('did-fail-load', async (e) => {
     if (!e.isMainFrame || e.errorCode === -3) return; // -3 = отменено
     const blocked = BLOCK_ERRORS.includes(e.errorCode);
-    L.diag.log('warn', 'загрузка', `${e.errorDescription} (${e.errorCode})${blocked ? ' — похоже на блокировку' : ''}`, e.validatedURL);
+    L.diag.log('warn', 'загрузка', `${e.errorDescription} (${e.errorCode})${blocked ? ' — похоже на блокировку' : ''}`, L.incognito ? '(инкогнито — адрес не записан)' : e.validatedURL);
     window.ideasTrack && window.ideasTrack('fail', { blocked });
     // Авто-VPN: сайт похож на заблокированный → пробуем через VPN один раз
     if (blocked && !(tab.unblocked || (tab.unblocked = new Set())).has(e.validatedURL)) {
@@ -623,7 +623,13 @@ $('#dangerStay').onclick = () => $('#danger').classList.remove('open');
 $('#guard').onchange = async (e) => { settings = await L.settings.set({ guard: e.target.checked }); };
 
 // ---------- обновления ----------
-L.update.on(({ latest, current, major, canRun }) => {
+L.update.on(({ latest, current, major, canRun, liquid }) => {
+  if (liquid) {
+    $('#updText').textContent = `Вышел Liquid ${latest} (у тебя ${current}). Браузер скачает установщик, закроется, обновится и откроется сам. Что нового — в CHANGELOG.`;
+    $('#updRun').style.display = '';
+    $('#update').classList.add('open');
+    return;
+  }
   $('#updText').textContent = `Новая версия движка ${latest} (у тебя ${current}).` +
     (major ? ' Крупное обновление с исправлениями безопасности.' : ' Исправления безопасности и стабильности.') +
     (canRun ? ' Браузер закроется, обновится и откроется сам.' : ' Запусти install.bat в папке браузера.');

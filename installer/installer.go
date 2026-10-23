@@ -342,6 +342,14 @@ func runInstall() (err error) {
 	}
 
 	setStep("Распаковываю файлы", .14, .17, 2)
+	// убираем старый код: файлы, удалённые в новой версии, не должны попасть в сборку (движок и xray оставляем)
+	if ents, e := os.ReadDir(srcDir()); e == nil {
+		for _, en := range ents {
+			if n := en.Name(); n != "node_modules" && n != "bin" {
+				os.RemoveAll(filepath.Join(srcDir(), n))
+			}
+		}
+	}
 	if err = extractPayload(srcDir()); err != nil {
 		return fmt.Errorf("не удалось распаковать файлы: %v", err)
 	}
@@ -350,8 +358,8 @@ func runInstall() (err error) {
 	hidden(exec.Command("taskkill", "/IM", "Liquid.exe", "/F")).Run()
 	time.Sleep(700 * time.Millisecond)
 
-	setStep("Скачиваю движок Electron — самая долгая часть", .18, .70, 70)
-	if err = run(srcDir(), env, "cmd", "/c", "npm", "install", "--no-fund", "--no-audit", "--save-dev", "electron@latest", "electron-builder@latest"); err != nil {
+	setStep("Скачиваю проверенную версию движка Electron — самая долгая часть", .18, .70, 70)
+	if err = run(srcDir(), env, "cmd", "/c", "npm", "install", "--no-fund", "--no-audit"); err != nil {
 		return fmt.Errorf("не удалось скачать Electron. Проверь интернет (можно включить VPN в системе) и нажми «Повторить».\n%v", err)
 	}
 

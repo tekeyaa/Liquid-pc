@@ -54,8 +54,10 @@ class GameMode {
     const [state, pid, name] = line.split('|');
     const st = Number(state);
     const own = this.isOwnPid(Number(pid));
-    // 2 = чужое окно на весь экран, 3 = полноэкранный Direct3D (игра)
-    const game = !own && (st === 3 || st === 2 || KNOWN.test(name || ''));
+    // 3 = полноэкранный Direct3D (игра). 2 = просто чужое окно на весь экран — это бывает и видеоплеер, и презентация,
+    // поэтому его считаем игрой, только если это не известный плеер, браузер или офис
+    const notGame = /^(vlc|mpc-hc64|mpc-hc|mpc-be64|potplayermini64|potplayermini|mpv|wmplayer|video\.ui|microsoft\.media\.player|powerpnt|winword|excel|acrord32|chrome|msedge|firefox|opera|browser|yandex|telegram|discord|obs64|zoom|teams|ms-teams|explorer|applicationframehost|photos|steamwebhelper)$/i;
+    const game = !own && (st === 3 || KNOWN.test(name || '') || (st === 2 && name && !notGame.test(name)));
     if (game) { this.hits++; this.miss = 0; } else { this.miss++; this.hits = 0; }
     if (!this.on && this.hits >= 2) this.set(true, name);
     else if (this.on && this.miss >= 3) this.set(false);

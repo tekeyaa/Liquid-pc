@@ -1,7 +1,7 @@
 {
   "name": "liquid-browser",
   "productName": "Liquid",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Минималистичный браузер в стиле liquid glass с VPN и Claude",
   "main": "main.js",
   "scripts": {
@@ -10,8 +10,8 @@
     "dist": "electron-builder --win dir"
   },
   "devDependencies": {
-    "electron": "latest",
-    "electron-builder": "latest"
+    "electron": "45.0.0",
+    "electron-builder": "25.1.8"
   },
   "build": {
     "appId": "app.liquid.browser",

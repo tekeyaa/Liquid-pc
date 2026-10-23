@@ -233,11 +233,12 @@ app.on('web-contents-created', (_e, contents) => {
   if (contents.getType() !== 'webview') return;
   const host = () => hostOf(contents);
   contents.on('did-navigate', () => { if (adblock) adblock.resetCount(contents.id); });
+  if (proxyRules) { try { contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch {} }
 
   // Всплывающие окна разрешаем только сразу после нажатия или клавиши (как блокировщик попапов в Chrome)
   let lastInput = 0, lastPopupToast = 0;
   contents.on('input-event', (_ev, ie) => { if (/^(mouseDown|mouseUp|keyDown|rawKeyDown|char|gestureTap|touchStart|touchEnd)$/.test(ie.type)) lastInput = Date.now(); });
-  contents.setWindowOpenHandler(({ url }) => {
+  contents.setWindowOpenHandler(({ url, disposition, features }) => {
     let site = ''; try { site = new URL(contents.getURL()).hostname.replace(/^www\./, ''); } catch {}
     const allowed = (loadSettings().popupAllow || []).includes(site);
     if (!allowed && Date.now() - lastInput > 5000) {
@@ -251,6 +252,17 @@ app.on('web-contents-created', (_e, contents) => {
         action: 'allow',
         overrideBrowserWindowOptions: {
           width: 520, height: 720, autoHideMenuBar: true, parent: BrowserWindow.fromWebContents(host()) || win, backgroundColor: '#ffffff',
+          webPreferences: { preload: WEBVIEW_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false },
+        },
+      };
+    }
+    // window.open с размерами или «новое окно» — это вход через сервис или оплата: сайт ждёт ответа от этого окна,
+    // поэтому открываем настоящее всплывающее окно, связанное с сайтом. Обычные ссылки target=_blank — вкладкой
+    if (/^https?:/.test(url) && (disposition === 'new-window' || (features && /width|height|popup/i.test(features)))) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 560, height: 760, autoHideMenuBar: true, parent: BrowserWindow.fromWebContents(host()) || win, backgroundColor: '#ffffff',
           webPreferences: { preload: WEBVIEW_PRELOAD, contextIsolation: true, sandbox: true, nodeIntegration: false },
         },
       };
@@ -338,14 +350,19 @@ function syncSmartLists() {
   smart.custom.add('1.1.1.1');
 }
 
-async function applyProxy() {
+// sessions — каким сессиям, close — рвать ли открытые соединения (нужно при смене режима, не нужно, когда
+// просто добавился сайт в «умный» список или открылось новое окно — иначе прерываются видео и загрузки)
+async function applyProxy({ sessions = allSessions(), close = true } = {}) {
   const mode = loadSettings().vpnMode || 'smart';
-  for (const sess of allSessions()) {
+  if (iconSes && !sessions.includes(iconSes)) sessions = [...sessions, iconSes]; // значки стартовой — тоже через VPN
+  for (const sess of sessions) {
     if (!proxyRules) await sess.setProxy({ mode: 'direct' });
     else if (mode === 'smart') await sess.setProxy({ mode: 'pac_script', pacScript: smart.url() });
     else await sess.setProxy({ proxyRules, proxyBypassRules: '<local>' });
-    await sess.closeAllConnections();
+    if (close) await sess.closeAllConnections();
   }
+  // при VPN звонки в браузере (WebRTC) не должны выдавать настоящий IP
+  for (const wc of webContents.getAllWebContents()) { try { if (wc.getType() === 'webview') wc.setWebRTCIPHandlingPolicy(proxyRules ? 'disable_non_proxied_udp' : 'default'); } catch {} }
 }
 
 async function vpnConnect(rawKey) {
@@ -417,6 +434,19 @@ async function directReachable(url, ms = 6000) {
   try { await probeSession().fetch(url, { method: 'HEAD', signal: ctrl.signal, redirect: 'manual', cache: 'no-store' }); return true; }
   catch { return false; } finally { clearTimeout(t); }
 }
+// существует ли домен: спрашиваем DNS через HTTPS (у провайдера ответ может быть подделан). Не узнали — считаем, что существует
+async function resolves(host) {
+  for (const u of [`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=A`, `https://dns.google/resolve?name=${encodeURIComponent(host)}&type=A`]) {
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 5000);
+    try {
+      const r = await probeSession().fetch(u, { headers: { accept: 'application/dns-json' }, signal: ctrl.signal, cache: 'no-store' });
+      const j = await r.json();
+      if (j.Status === 3) return false;           // NXDOMAIN — такого имени нет
+      if (j.Status === 0) return true;
+    } catch {} finally { clearTimeout(t); }
+  }
+  return true;
+}
 async function directWorks() {
   const r = await Promise.all(['https://ya.ru/', 'https://www.google.com/generate_204', 'https://vk.com/'].map((u) => directReachable(u, 5000)));
   return r.some(Boolean);
@@ -433,6 +463,7 @@ async function vpnUnblock(url) {
   const mode = s.vpnMode || 'smart';
   if (vpnState.on && (mode === 'all' || smart.matches(host))) return { ok: false, reason: 'already' };
   if (!learnable(host)) return { ok: false, reason: 'local' };
+  if (!(await resolves(host))) { diag.log('info', 'vpn', 'Не учу: такого сайта нет (опечатка?)'); return { ok: false, reason: 'nxdomain' }; }
   if (!net.isOnline() || !(await directWorks()) || (await directReachable('https://' + host + '/'))) {
     diag.log('info', 'vpn', 'Не учу: сайт открывается напрямую или нет интернета', host);
     return { ok: false, reason: 'notblocked' };
@@ -441,7 +472,7 @@ async function vpnUnblock(url) {
   syncSmartLists();
   try {
     if (!vpnState.on) await vpnConnect();
-    else await applyProxy();
+    else await applyProxy({ close: false });
     return { ok: true, host: base };
   } catch (e) { return { ok: false, reason: e.message }; }
 }
@@ -520,16 +551,23 @@ function findInstaller() {
   }
   return null;
 }
+// Новые версии Liquid берём из релизов GitHub (движок Electron закреплён в package.json, сам по себе не обновляется).
+// Пока репозиторий приватный, GitHub отвечает 404 — тогда просто молчим.
+const RELEASES = 'https://api.github.com/repos/tekeyaa/Liquid-pc/releases/latest';
+let pendingSetup = null;
 async function checkUpdates() {
   const s = loadSettings();
   if (s.updSnooze && Date.now() < s.updSnooze) return;
   try {
-    const r = await net.fetch('https://registry.npmjs.org/electron/latest', { cache: 'no-store' });
-    const { version } = await r.json();
-    const cur = process.versions.electron;
-    if (version && newer(version, cur) && win && !win.isDestroyed()) {
-      const major = Number(version.split('.')[0]) > Number(cur.split('.')[0]);
-      win.webContents.send('update', { latest: version, current: cur, major, canRun: !!findInstaller() });
+    const r = await net.fetch(RELEASES, { cache: 'no-store', headers: { accept: 'application/vnd.github+json' } });
+    if (!r.ok) return;
+    const j = await r.json();
+    const version = String(j.tag_name || '').replace(/^v/, '');
+    const cur = app.getVersion();
+    const asset = (j.assets || []).find((a) => /Liquid-Setup\.exe$/i.test(a.name));
+    if (version && asset && newer(version, cur) && win && !win.isDestroyed()) {
+      pendingSetup = asset.browser_download_url;
+      win.webContents.send('update', { latest: version, current: cur, liquid: true, notes: String(j.body || '').slice(0, 600), canRun: true });
     }
   } catch { /* нет сети — проверим позже */ }
 }
@@ -625,7 +663,7 @@ function registerIpc() {
     }
     if (patch.forgetVpn) { s.vpnKey = ''; s.vpnName = ''; }
     saveSettings(s);
-    if ('vpnMode' in patch || 'vpnSites' in patch || patch.forgetLearned || patch.learnedRemove) { syncSmartLists(); if (vpnState.on) applyProxy().then(sendVpn); }
+    if ('vpnMode' in patch || 'vpnSites' in patch || patch.forgetLearned || patch.learnedRemove) { syncSmartLists(); if (vpnState.on) applyProxy({ close: 'vpnMode' in patch }).then(sendVpn); }
     return publicSettings();
   });
   // «Разрешения сайтов»: камера, микрофон, уведомления, буфер, всплывающие окна
@@ -651,7 +689,7 @@ function registerIpc() {
     let u = ''; try { u = e.sender.getURL(); } catch {}
     if (!/^file:.*\/newtab\.html(#|$)/.test(u) || !Array.isArray(hosts)) return {};
     const dir = path.join(app.getPath('userData'), 'icons'); fs.mkdirSync(dir, { recursive: true });
-    if (!iconSes) iconSes = session.fromPartition('liquid-icons', { cache: false });
+    if (!iconSes) { iconSes = session.fromPartition('liquid-icons', { cache: false }); if (proxyRules) await applyProxy({ sessions: [iconSes], close: false }); }
     const out = {};
     await Promise.all(hosts.slice(0, 80).map(String).map((h) => h.toLowerCase()).filter((h) => /^[a-z0-9.-]{3,100}$/.test(h) && h.includes('.')).map(async (h) => {
       const f = path.join(dir, h + '.png'), miss = path.join(dir, h + '.none');
@@ -677,7 +715,7 @@ function registerIpc() {
     let u = ''; try { u = e.sender.getURL(); } catch {}
     if (!/^file:.*\/newtab\.html(#|$)/.test(u)) return null;
     const s = loadSettings();
-    if (Array.isArray(tiles)) {
+    if (Array.isArray(tiles) && e.sender.session === ses) { // из инкогнито избранное не меняем
       s.tiles = tiles.slice(0, 48).map((t) => ({ name: String(t.name || '').slice(0, 40), url: String(t.url || '').slice(0, 500), ...(t.ic ? { ic: String(t.ic).slice(0, 4) } : {}), ...(t.color ? { color: String(t.color).slice(0, 20) } : {}) })).filter((t) => /^https?:/.test(t.url));
       saveSettings(s);
     }
@@ -848,7 +886,19 @@ function registerIpc() {
   ipcMain.handle('claude:once', (_e, req) => claudeOnce(req));
   ipcMain.on('clipboard:write', (_e, t) => clipboard.writeText(String(t || '')));
   ipcMain.on('update:later', () => { const s = loadSettings(); s.updSnooze = Date.now() + 3 * 864e5; saveSettings(s); });
-  ipcMain.on('update:run', () => {
+  ipcMain.on('update:run', async () => {
+    if (pendingSetup) {
+      // скачиваем новый установщик и запускаем его в режиме обновления
+      try {
+        const r = await net.fetch(pendingSetup);
+        if (!r.ok) throw new Error('GitHub ответил ' + r.status);
+        const f = path.join(app.getPath('temp'), 'Liquid-Setup.exe');
+        fs.writeFileSync(f, Buffer.from(await r.arrayBuffer()));
+        spawn(f, ['--update'], { cwd: path.dirname(f), detached: true, stdio: 'ignore' }).unref();
+        setTimeout(() => app.quit(), 300);
+      } catch (e) { broadcast('toast', { text: 'Не удалось скачать обновление: ' + e.message, error: true }); }
+      return;
+    }
     const inst = findInstaller();
     if (!inst) return;
     if (inst.kind === 'setup') spawn(inst.file, ['--update'], { cwd: path.dirname(inst.file), detached: true, stdio: 'ignore' }).unref();
@@ -930,10 +980,15 @@ function setupSession(sess, priv) {
     if (!priv) { const s = loadSettings(); s.perms = { ...(s.perms || {}), [key]: response === 0 }; saveSettings(s); }
     cb(response === 0);
   });
-  sess.setPermissionCheckHandler((_wc, perm) => SAFE.includes(perm));
+  sess.setPermissionCheckHandler((wc, perm, origin) => {
+    if (SAFE.includes(perm)) return true;
+    let o = origin || '';
+    try { o = new URL(origin || wc?.getURL() || '').origin; } catch {}
+    return decided.get(o + '|' + perm) === true;
+  });
   sess.on('will-download', (_e, item, wc) => onDownload(item, wc));
 
-  if (proxyRules) applyProxy();
+  if (proxyRules) applyProxy({ sessions: [sess], close: false });
 }
 
 // ---------- старт ----------
@@ -975,7 +1030,6 @@ app.whenReady().then(async () => {
       for (const m of app.getAppMetrics()) {
         try { os.setPriority(m.pid, on ? os.constants.priority.PRIORITY_BELOW_NORMAL : os.constants.priority.PRIORITY_NORMAL); } catch {}
       }
-      if (on) for (const s2 of allSessions()) s2.clearCache().catch(() => {});
       broadcast('game:state', { on, game: name, keepAudio: loadSettings().gameKeepAudio !== false });
     },
   });
