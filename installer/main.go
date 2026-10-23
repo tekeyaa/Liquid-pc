@@ -458,6 +458,8 @@ func main() {
 			mode = "update"
 		case "silent":
 			mode, silent = "update", true
+		case "engine":
+			engineOnly = true
 		case "uninstall":
 			uninstall()
 			return

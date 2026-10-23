@@ -511,8 +511,8 @@
     idle: `Liquid ${u.current}. Обновления проверяются раз в 3 часа.`,
     latest: `У тебя последняя версия — ${u.current}.`,
     download: `Скачиваю Liquid ${u.version}…`,
-    building: `Ставлю Liquid ${u.version} в фоне — браузером можно пользоваться.`,
-    ready: `Liquid ${u.version} готов. Применится, когда закроешь браузер.`,
+    building: u.engine ? `Обновляю движок до Electron ${u.engine} в фоне — браузером можно пользоваться.` : `Ставлю Liquid ${u.version} в фоне — браузером можно пользоваться.`,
+    ready: u.engine ? `Новый движок Electron ${u.engine} готов. Применится, когда закроешь браузер.` : `Liquid ${u.version} готов. Применится, когда закроешь браузер.`,
     error: `Обновление не удалось: ${u.error}`,
   }[u.state] || '');
   let readyShown = '';
@@ -522,7 +522,7 @@
     $('#autoUpdate').checked = u.auto;
     if (u.state === 'ready' && readyShown !== u.version) {
       readyShown = u.version;
-      toast(`Liquid ${u.version} готов к запуску`, false, { label: 'Перезапустить', run: () => L.update.restart() });
+      toast(u.engine ? `Новый движок Electron ${u.engine} готов` : `Liquid ${u.version} готов к запуску`, false, { label: 'Перезапустить', run: () => L.update.restart() });
     }
   }
   L.update.onState(renderUpd);

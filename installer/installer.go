@@ -28,6 +28,7 @@ func appExe() string  { return filepath.Join(appDir(), "Liquid.exe") }
 
 // ---------- тихое фоновое обновление (--silent): без окна, Liquid подменяется, когда его закроют ----------
 var silent bool
+var engineOnly bool // --engine: только обновить движок Electron внутри своей ветки (код Liquid тот же)
 
 func statusPath() string  { return filepath.Join(baseDir(), "update-status.json") }
 func relaunchFlag() string { return filepath.Join(baseDir(), "relaunch.flag") }
@@ -35,7 +36,7 @@ func lockPath() string     { return filepath.Join(baseDir(), "update.lock") }
 
 // writeStatus — состояние обновления для браузера: working, ready (собрано, ждём закрытия), done, error
 func writeStatus(state, version, msg string) {
-	b, _ := json.Marshal(map[string]any{"state": state, "version": version, "error": msg, "at": time.Now().Unix()})
+	b, _ := json.Marshal(map[string]any{"state": state, "version": version, "error": msg, "at": time.Now().Unix(), "engine": engineOnly})
 	os.WriteFile(statusPath(), b, 0644)
 }
 
@@ -416,6 +417,10 @@ func runInstall() (err error) {
 	setStep("Скачиваю проверенную версию движка Electron — самая долгая часть", .18, .70, 70)
 	if err = run(srcDir(), env, "cmd", "/c", "npm", "install", "--no-fund", "--no-audit"); err != nil {
 		return fmt.Errorf("не удалось скачать Electron. Проверь интернет (можно включить VPN в системе) и нажми «Повторить».\n%v", err)
+	}
+	// последний выпуск закреплённой ветки (например, 45.x) — с исправлениями безопасности Chromium
+	if err = run(srcDir(), env, "cmd", "/c", "npm", "update", "electron", "--no-fund", "--no-audit"); err != nil {
+		logf("npm update electron: %v", err)
 	}
 
 	setStep("Скачиваю xray-core для VPN", .70, .78, 15)

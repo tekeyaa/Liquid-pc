@@ -217,9 +217,10 @@ app.on('web-contents-created', (_e, contents) => {
     diag.log(ours ? (level === 'error' ? 'error' : 'warn') : 'debug', kind(), `${message}`, `${source.split(/[\\/]/).pop()}:${ln}`);
   });
   contents.on('preload-error', (_ev, p, err) => diag.log('error', 'preload', err, p && p.split(/[\\/]/).pop()));
-  contents.on('unresponsive', () => { let u = ''; try { u = contents.getURL(); } catch {} diag.log('warn', kind(), 'Страница зависла и не отвечает', u); });
+  const logUrl = (u) => (ses && contents.session && contents.session !== ses ? '(инкогнито — адрес не записан)' : u);
+  contents.on('unresponsive', () => { let u = ''; try { u = contents.getURL(); } catch {} diag.log('warn', kind(), 'Страница зависла и не отвечает', logUrl(u)); });
   contents.on('responsive', () => diag.log('info', kind(), 'Страница снова отвечает'));
-  contents.on('did-fail-load', (_ev, code, desc, url, isMain) => { if (isMain && code !== -3) diag.log('warn', 'загрузка', `${desc} (${code})`, url); });
+  contents.on('did-fail-load', (_ev, code, desc, url, isMain) => { if (isMain && code !== -3) diag.log('warn', 'загрузка', `${desc} (${code})`, logUrl(url)); });
   contents.on('will-attach-webview', (_ev, wp) => {
     wp.preload = WEBVIEW_PRELOAD;
     wp.nodeIntegration = false;
@@ -233,7 +234,8 @@ app.on('web-contents-created', (_e, contents) => {
   if (contents.getType() !== 'webview') return;
   const host = () => hostOf(contents);
   contents.on('did-navigate', () => { if (adblock) adblock.resetCount(contents.id); });
-  if (proxyRules) { try { contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch {} }
+  applyRtcPolicy(contents);
+  contents.on('did-start-navigation', (d) => { if (d.isMainFrame) applyRtcPolicy(contents, d.url); });
 
   // Всплывающие окна разрешаем только сразу после нажатия или клавиши (как блокировщик попапов в Chrome)
   let lastInput = 0, lastPopupToast = 0;
@@ -272,6 +274,7 @@ app.on('web-contents-created', (_e, contents) => {
     return { action: 'deny' };
   });
 
+  contents.on('did-create-window', (w) => { try { setupPopup(w, host()); } catch {} });
   contents.on('before-input-event', (e, input) => handleShortcut(e, input, host()));
 
   contents.on('context-menu', (_e, p) => {
@@ -352,6 +355,40 @@ function syncSmartLists() {
 
 // sessions — каким сессиям, close — рвать ли открытые соединения (нужно при смене режима, не нужно, когда
 // просто добавился сайт в «умный» список или открылось новое окно — иначе прерываются видео и загрузки)
+// WebRTC: при VPN звонки не должны выдавать настоящий IP — но только на сайтах, которые идут через VPN,
+// иначе на российских сайтах (VK, Телемост) звонки шли бы хуже без причины
+function applyRtcPolicy(wc, url) {
+  try {
+    let host = ''; try { host = new URL(url || wc.getURL()).hostname; } catch {}
+    const mode = loadSettings().vpnMode || 'smart';
+    const routed = !!proxyRules && (mode === 'all' || (host && smart.matches(host)));
+    wc.setWebRTCIPHandlingPolicy(routed ? 'disable_non_proxied_udp' : 'default');
+  } catch {}
+}
+
+// настоящие всплывающие окна (вход, оплата): в заголовке — адрес сайта, лишние окна внутри блокируются
+function setupPopup(w, openerHost) {
+  const wc = w.webContents;
+  const show = () => {
+    let u = ''; try { u = new URL(wc.getURL()); } catch {}
+    const host = u ? u.hostname : '';
+    const lock = u && u.protocol === 'https:' ? '🔒' : '⚠ НЕ ЗАЩИЩЕНО';
+    w.setTitle(`${lock} ${host}${wc.getTitle() && wc.getTitle() !== host ? ' — ' + wc.getTitle() : ''}`);
+  };
+  wc.on('page-title-updated', (e) => { e.preventDefault(); show(); });
+  wc.on('did-navigate', show); wc.on('did-navigate-in-page', show);
+  applyRtcPolicy(wc);
+  wc.on('did-start-navigation', (d) => { if (d.isMainFrame) applyRtcPolicy(wc, d.url); });
+  let lastInput = 0;
+  wc.on('input-event', (_e, ie) => { if (/^(mouseDown|keyDown|rawKeyDown|char|gestureTap)$/.test(ie.type)) lastInput = Date.now(); });
+  wc.setWindowOpenHandler(({ url }) => {
+    if (Date.now() - lastInput > 5000) { diag.log('info', 'попап', 'Заблокировано окно из окна входа', ''); return { action: 'deny' }; }
+    if (/^https?:/.test(url)) openerHost?.send('tab:open', { url, background: false });
+    return { action: 'deny' };
+  });
+  show();
+}
+
 async function applyProxy({ sessions = allSessions(), close = true } = {}) {
   const mode = loadSettings().vpnMode || 'smart';
   if (iconSes && !sessions.includes(iconSes)) sessions = [...sessions, iconSes]; // значки стартовой — тоже через VPN
@@ -362,7 +399,7 @@ async function applyProxy({ sessions = allSessions(), close = true } = {}) {
     if (close) await sess.closeAllConnections();
   }
   // при VPN звонки в браузере (WebRTC) не должны выдавать настоящий IP
-  for (const wc of webContents.getAllWebContents()) { try { if (wc.getType() === 'webview') wc.setWebRTCIPHandlingPolicy(proxyRules ? 'disable_non_proxied_udp' : 'default'); } catch {} }
+  for (const wc of webContents.getAllWebContents()) { try { if (wc.getType() !== 'backgroundPage') applyRtcPolicy(wc); } catch {} }
 }
 
 async function vpnConnect(rawKey) {
@@ -557,7 +594,7 @@ function findInstaller() {
 const RELEASES = 'https://api.github.com/repos/tekeyaa/Liquid-pc/releases/latest';
 const crypto = require('crypto');
 let pendingSetup = null;        // для ручного режима (автообновление выключено)
-const upd = { state: 'idle', version: '', error: '', checkedAt: 0, poll: null };
+const upd = { state: 'idle', version: '', error: '', checkedAt: 0, poll: null, engine: '' };
 const liquidBase = () => path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Liquid');
 const updStatusFile = () => path.join(liquidBase(), 'update-status.json');
 function readUpdStatus() { try { return JSON.parse(fs.readFileSync(updStatusFile(), 'utf8')); } catch { return null; } }
@@ -567,6 +604,17 @@ async function fetchJson(url) {
   const r = await net.fetch(url, { cache: 'no-store', headers: { accept: 'application/vnd.github+json' } });
   if (!r.ok) throw new Error(r.status === 404 ? 'релизы недоступны (репозиторий приватный?)' : 'GitHub ответил ' + r.status);
   return r.json();
+}
+
+// неудачное фоновое обновление не повторяем каждые 3 часа: ждём сутки, двое, трое; после трёх неудач — только вручную
+function failedRecently(version) {
+  const f = loadSettings().updFail;
+  if (!f || f.version !== version) return false;
+  return f.n >= 3 || Date.now() - f.at < f.n * 864e5;
+}
+function markFailed(version) {
+  const s = loadSettings(); const f = s.updFail && s.updFail.version === version ? s.updFail : { version, n: 0 };
+  s.updFail = { version, n: f.n + 1, at: Date.now() }; saveSettings(s);
 }
 
 async function checkUpdates(manual = false) {
@@ -579,15 +627,20 @@ async function checkUpdates(manual = false) {
     const cur = app.getVersion();
     const asset = (j.assets || []).find((a) => /^Liquid-Setup\.exe$/i.test(a.name));
     const sum = (j.assets || []).find((a) => /^Liquid-Setup\.exe\.sha256$/i.test(a.name));
-    if (!version || !asset || !newer(version, cur)) { if (manual) { upd.state = 'latest'; upd.version = cur; sendUpd(); } return; }
+    if (!version || !asset || !newer(version, cur)) {
+      if (manual) { upd.state = 'latest'; upd.version = cur; sendUpd(); }
+      await checkEngine(manual);
+      return;
+    }
     const st = readUpdStatus();
     if (st && st.version === version && ['working', 'ready'].includes(st.state) && Date.now() / 1000 - st.at < 3 * 3600) { watchInstaller(version); return; }
     if (s.autoUpdate === false || !app.isPackaged || process.platform !== 'win32') {
       if (s.updSnooze && Date.now() < s.updSnooze && !manual) return;
-      pendingSetup = asset.browser_download_url;
+      pendingSetup = { version, asset, sum };
       win?.webContents.send('update', { latest: version, current: cur, liquid: true, canRun: true });
       return;
     }
+    if (!manual && failedRecently(version)) return;
     await backgroundUpdate(version, asset, sum);
   } catch (e) {
     diag.log('warn', 'обновление', e.message);
@@ -595,8 +648,31 @@ async function checkUpdates(manual = false) {
   }
 }
 
-async function backgroundUpdate(version, asset, sumAsset) {
-  upd.state = 'download'; upd.version = version; upd.error = ''; sendUpd();
+// Движок: Electron закреплён на ветке 45 (^45 в package.json). Исправления безопасности внутри ветки ставим сами —
+// пересобираем браузер местным установщиком, он подтягивает последний 45.x
+async function checkEngine(manual) {
+  if (!app.isPackaged || process.platform !== 'win32' || loadSettings().autoUpdate === false) return;
+  try {
+    const major = process.versions.electron.split('.')[0];
+    const r = await net.fetch('https://registry.npmjs.org/electron', { headers: { accept: 'application/vnd.npm.install-v1+json' }, cache: 'no-store' });
+    if (!r.ok) return;
+    const vers = Object.keys((await r.json()).versions || {}).filter((v) => v.startsWith(major + '.') && !v.includes('-'));
+    const best = vers.sort((a, b) => (newer(a, b) ? 1 : newer(b, a) ? -1 : 0)).pop();
+    if (!best || !newer(best, process.versions.electron)) return;
+    const local = path.join(liquidBase(), 'Liquid-Setup.exe');
+    if (!fs.existsSync(local) || (!manual && failedRecently('engine-' + best))) return;
+    const st = readUpdStatus();
+    if (st && st.engine && ['working', 'ready'].includes(st.state) && Date.now() / 1000 - st.at < 3 * 3600) return;
+    const s = loadSettings(); s.engineTarget = best; saveSettings(s);
+    spawn(local, ['--silent', '--engine'], { cwd: liquidBase(), detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    diag.log('info', 'обновление', `Обновляю движок Electron ${process.versions.electron} → ${best} в фоне`);
+    upd.engine = best;
+    watchInstaller(app.getVersion());
+  } catch (e) { diag.log('warn', 'обновление', 'движок: ' + e.message); }
+}
+
+// скачать установщик и сверить SHA-256 из релиза (и для фонового, и для ручного обновления)
+async function downloadVerified(version, asset, sumAsset) {
   const dir = path.join(app.getPath('userData'), 'updates'); fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `Liquid-Setup-${version}.exe`);
   let buf = fs.existsSync(file) ? fs.readFileSync(file) : null;
@@ -606,15 +682,21 @@ async function backgroundUpdate(version, asset, sumAsset) {
     buf = Buffer.from(await r.arrayBuffer());
     if (asset.size && buf.length !== asset.size) throw new Error('установщик скачался не целиком');
   }
-  // контрольная сумма из релиза: подменённый или битый файл не запускаем
-  if (sumAsset) {
-    const want = (await (await net.fetch(sumAsset.browser_download_url)).text()).trim().split(/\s+/)[0].toLowerCase();
-    const got = crypto.createHash('sha256').update(buf).digest('hex');
-    if (want && want !== got) throw new Error('контрольная сумма установщика не совпала — обновление отменено');
-  }
+  if (!sumAsset) throw new Error('в релизе нет контрольной суммы — обновление не ставлю');
+  const want = (await (await net.fetch(sumAsset.browser_download_url)).text()).trim().split(/\s+/)[0].toLowerCase();
+  const got = crypto.createHash('sha256').update(buf).digest('hex');
+  if (want !== got) throw new Error('контрольная сумма установщика не совпала — обновление отменено');
   fs.writeFileSync(file, buf);
   for (const f of fs.readdirSync(dir)) if (f !== path.basename(file)) { try { fs.rmSync(path.join(dir, f), { force: true }); } catch {} }
-  spawn(file, ['--silent'], { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  return file;
+}
+
+async function backgroundUpdate(version, asset, sumAsset) {
+  upd.state = 'download'; upd.version = version; upd.error = ''; upd.engine = ''; sendUpd();
+  let file;
+  try { file = await downloadVerified(version, asset, sumAsset); }
+  catch (e) { markFailed(version); upd.state = 'error'; upd.error = e.message; sendUpd(); throw e; }
+  spawn(file, ['--silent'], { cwd: path.dirname(file), detached: true, stdio: 'ignore', windowsHide: true }).unref();
   diag.log('info', 'обновление', `Ставлю Liquid ${version} в фоне`);
   watchInstaller(version);
 }
@@ -629,6 +711,7 @@ function watchInstaller(version) {
     if (st.state === 'ready' && upd.state !== 'ready') { upd.state = 'ready'; sendUpd(); }
     if (st.state === 'error') {
       clearInterval(upd.poll); upd.state = 'error'; upd.error = st.error || 'ошибка установщика'; sendUpd();
+      markFailed(upd.engine ? 'engine-' + upd.engine : version);
       diag.log('error', 'обновление', upd.error, 'журнал: ' + path.join(liquidBase(), 'install.log'));
     }
   }, 10000);
@@ -639,7 +722,9 @@ function announceUpdate() {
   const st = readUpdStatus();
   if (st && st.state === 'done' && st.version === app.getVersion() && !st.announced) {
     st.announced = true; try { fs.writeFileSync(updStatusFile(), JSON.stringify(st)); } catch {}
-    setTimeout(() => broadcast('toast', { text: `Liquid обновился до ${st.version}. Что нового — в CHANGELOG на странице релиза.` }), 2500);
+    const text = st.engine ? `Движок браузера обновлён до Electron ${process.versions.electron} — с последними исправлениями безопасности.`
+      : `Liquid обновился до ${st.version}. Что нового — в CHANGELOG на странице релиза.`;
+    setTimeout(() => broadcast('toast', { text }), 2500);
   }
 }
 
@@ -964,12 +1049,9 @@ function registerIpc() {
   ipcMain.on('update:later', () => { const s = loadSettings(); s.updSnooze = Date.now() + 3 * 864e5; saveSettings(s); });
   ipcMain.on('update:run', async () => {
     if (pendingSetup) {
-      // скачиваем новый установщик и запускаем его в режиме обновления
+      // скачиваем новый установщик, сверяем контрольную сумму и запускаем его в режиме обновления
       try {
-        const r = await net.fetch(pendingSetup);
-        if (!r.ok) throw new Error('GitHub ответил ' + r.status);
-        const f = path.join(app.getPath('temp'), 'Liquid-Setup.exe');
-        fs.writeFileSync(f, Buffer.from(await r.arrayBuffer()));
+        const f = await downloadVerified(pendingSetup.version, pendingSetup.asset, pendingSetup.sum);
         spawn(f, ['--update'], { cwd: path.dirname(f), detached: true, stdio: 'ignore' }).unref();
         setTimeout(() => app.quit(), 300);
       } catch (e) { broadcast('toast', { text: 'Не удалось скачать обновление: ' + e.message, error: true }); }
