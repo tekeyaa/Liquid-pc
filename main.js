@@ -269,7 +269,7 @@ app.on('web-contents-created', (_e, contents) => {
         },
       };
     }
-    if (/^https?:|^file:|^chrome-extension:/.test(url)) host().send('tab:open', { url, background: false });
+    if (/^https?:|^file:|^chrome-extension:/.test(url)) host().send('tab:open', { url, background: disposition === 'background-tab' }); // колесико и Ctrl+клик — фоном, как в Chrome
     else if (url) shell.openExternal(url).catch(() => {});
     return { action: 'deny' };
   });
