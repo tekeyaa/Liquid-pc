@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, safeStorage, Menu, clipboard, shell, net, dialog, screen, webContents } = require('electron');
+const { app, BrowserWindow, ipcMain, session, safeStorage, Menu, clipboard, shell, net, dialog, screen, webContents, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { parseKey, Xray } = require('./vpn');
@@ -594,7 +594,18 @@ function findInstaller() {
 const RELEASES = 'https://api.github.com/repos/tekeyaa/Liquid-pc/releases/latest';
 const crypto = require('crypto');
 let pendingSetup = null;        // для ручного режима (автообновление выключено)
-const upd = { state: 'idle', version: '', error: '', checkedAt: 0, poll: null, engine: '' };
+const upd = { state: 'idle', version: '', error: '', checkedAt: 0, poll: null, engine: '', progress: 0, notes: [] };
+// «Что нового» для карточки обновления: заголовки пунктов **…** из описания релиза (оно же CHANGELOG)
+function releaseNotes(body) {
+  const out = [];
+  for (const l of String(body || '').split(/\r?\n/)) {
+    const m = l.match(/^\s*[-*]\s+(?:\*\*(.+?)\*\*|(.+))/); if (!m) continue;
+    let t = (m[1] || m[2] || '').replace(/\*\*|`/g, '').replace(/[.:]\s*$/, '').trim();
+    if (t.length > 90) t = t.slice(0, 88).replace(/\s+\S*$/, '') + '…';
+    if (t) out.push(t); if (out.length >= 4) break;
+  }
+  return out;
+}
 const liquidBase = () => path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Liquid');
 const updStatusFile = () => path.join(liquidBase(), 'update-status.json');
 function readUpdStatus() { try { return JSON.parse(fs.readFileSync(updStatusFile(), 'utf8')); } catch { return null; } }
@@ -641,6 +652,8 @@ async function checkUpdates(manual = false) {
       return;
     }
     if (!manual && failedRecently(version)) return;
+    upd.notes = releaseNotes(j.body);
+    { const s2 = loadSettings(); s2.updNotes = { version, notes: upd.notes }; saveSettings(s2); }
     await backgroundUpdate(version, asset, sum);
   } catch (e) {
     diag.log('warn', 'обновление', e.message);
@@ -679,7 +692,16 @@ async function downloadVerified(version, asset, sumAsset) {
   if (!buf || buf.length !== asset.size) {
     const r = await net.fetch(asset.browser_download_url);
     if (!r.ok) throw new Error('не скачался установщик: ' + r.status);
-    buf = Buffer.from(await r.arrayBuffer());
+    // читаем по частям, чтобы карточка показывала, сколько скачалось
+    const total = asset.size || Number(r.headers.get('content-length')) || 0;
+    const parts = []; let got = 0, last = 0;
+    const reader = r.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      parts.push(Buffer.from(value)); got += value.length;
+      if (total && Date.now() - last > 400) { last = Date.now(); upd.progress = Math.min(99, Math.round(got * 100 / total)); sendUpd(); }
+    }
+    buf = Buffer.concat(parts); upd.progress = 100;
     if (asset.size && buf.length !== asset.size) throw new Error('установщик скачался не целиком');
   }
   if (!sumAsset) throw new Error('в релизе нет контрольной суммы — обновление не ставлю');
@@ -692,7 +714,7 @@ async function downloadVerified(version, asset, sumAsset) {
 }
 
 async function backgroundUpdate(version, asset, sumAsset) {
-  upd.state = 'download'; upd.version = version; upd.error = ''; upd.engine = ''; sendUpd();
+  upd.state = 'download'; upd.version = version; upd.error = ''; upd.engine = ''; upd.progress = 0; sendUpd();
   let file;
   try { file = await downloadVerified(version, asset, sumAsset); }
   catch (e) { markFailed(version); upd.state = 'error'; upd.error = e.message; sendUpd(); throw e; }
@@ -708,7 +730,18 @@ function watchInstaller(version) {
   upd.poll = setInterval(() => {
     const st = readUpdStatus();
     if (!st || st.version !== version) return;
-    if (st.state === 'ready' && upd.state !== 'ready') { upd.state = 'ready'; sendUpd(); }
+    if (st.state === 'ready' && upd.state !== 'ready') {
+      upd.state = 'ready'; sendUpd();
+      // если браузер свёрнут или в фоне — ещё и уведомление Windows
+      try {
+        if (!BrowserWindow.getAllWindows().some((w) => w.isFocused()) && Notification.isSupported()) {
+          const n = new Notification({ title: upd.engine ? 'Движок Liquid обновлён' : `Liquid ${version} готов`,
+            body: 'Новая версия заработает после перезапуска браузера.', silent: true });
+          n.on('click', () => { const w = BrowserWindow.getAllWindows()[0]; if (w) { w.show(); w.focus(); } });
+          n.show();
+        }
+      } catch {}
+    }
     if (st.state === 'error') {
       clearInterval(upd.poll); upd.state = 'error'; upd.error = st.error || 'ошибка установщика'; sendUpd();
       markFailed(upd.engine ? 'engine-' + upd.engine : version);
@@ -722,9 +755,11 @@ function announceUpdate() {
   const st = readUpdStatus();
   if (st && st.state === 'done' && st.version === app.getVersion() && !st.announced) {
     st.announced = true; try { fs.writeFileSync(updStatusFile(), JSON.stringify(st)); } catch {}
-    const text = st.engine ? `Движок браузера обновлён до Electron ${process.versions.electron} — с последними исправлениями безопасности.`
-      : `Liquid обновился до ${st.version}. Что нового — в CHANGELOG на странице релиза.`;
-    setTimeout(() => broadcast('toast', { text }), 2500);
+    // после перезапуска карточка показывает «обновился» и что нового
+    const saved = loadSettings().updNotes;
+    upd.state = 'done'; upd.version = st.version; upd.engine = st.engine ? process.versions.electron : '';
+    upd.notes = saved && saved.version === st.version ? saved.notes : [];
+    setTimeout(sendUpd, 2500);
   }
 }
 

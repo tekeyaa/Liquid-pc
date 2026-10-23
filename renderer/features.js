@@ -510,20 +510,48 @@
   const UPD_TEXT = (u) => ({
     idle: `Liquid ${u.current}. Обновления проверяются раз в 3 часа.`,
     latest: `У тебя последняя версия — ${u.current}.`,
-    download: `Скачиваю Liquid ${u.version}…`,
+    download: `Скачиваю Liquid ${u.version}${u.progress ? ` — ${u.progress} %` : '…'}`,
     building: u.engine ? `Обновляю движок до Electron ${u.engine} в фоне — браузером можно пользоваться.` : `Ставлю Liquid ${u.version} в фоне — браузером можно пользоваться.`,
     ready: u.engine ? `Новый движок Electron ${u.engine} готов. Применится, когда закроешь браузер.` : `Liquid ${u.version} готов. Применится, когда закроешь браузер.`,
+    done: u.engine ? `Движок обновлён до Electron ${u.engine}.` : `Liquid обновился до ${u.version}.`,
     error: `Обновление не удалось: ${u.error}`,
   }[u.state] || '');
-  let readyShown = '';
+  // карточка в углу: «вышла новая версия, скачивается в фоне, заработает после перезапуска»
+  const card = $('#updCard');
+  let hidden = '', doneT = 0;          // какую стадию пользователь закрыл крестиком
+  function renderCard(u) {
+    const st = u.state, eng = !!u.engine;
+    const show = ['download', 'building', 'ready', 'done'].includes(st) || (st === 'error' && card.classList.contains('show'));
+    const key = (st === 'building' ? 'download' : st) + ':' + (u.version || '') + ':' + (u.engine || ''); // скачивание и установка — одна стадия
+    if (!show || hidden === key) { card.classList.remove('show'); return; }
+    const T = {
+      download: [`Вышла Liquid ${u.version}`, `Скачивается в фоне${u.progress ? ` — ${u.progress} %` : '…'}. Браузером можно пользоваться, новая версия заработает после перезапуска.`],
+      building: eng ? ['Обновляю движок браузера', `Electron ${u.engine} с исправлениями безопасности ставится в фоне. Заработает после перезапуска браузера.`]
+                    : [`Устанавливаю Liquid ${u.version}`, 'Ставится в фоне — браузером можно пользоваться. Новая версия заработает после перезапуска браузера.'],
+      ready: eng ? ['Новый движок готов', 'Заработает после перезапуска браузера. Можно сейчас — вкладки откроются заново.']
+                 : [`Liquid ${u.version} готов`, 'Новая версия заработает после перезапуска браузера. Можно сейчас — вкладки откроются заново, или просто закрой браузер, когда удобно.'],
+      done: eng ? ['Движок браузера обновлён', `Теперь Electron ${u.engine} — с последними исправлениями безопасности.`]
+                : [`Liquid обновился до ${u.version}`, u.notes?.length ? 'Что нового:' : 'Обновление установлено.'],
+      error: ['Обновление не удалось', `${u.error}. Попробую позже, подробности — в «Настройки → Отладка».`],
+    }[st];
+    card.className = 'glass show ' + st;
+    $('#ucTitle').textContent = T[0]; $('#ucSub').textContent = T[1];
+    card.querySelector('.uc-ico').textContent = st === 'ready' || st === 'done' ? '✓' : st === 'error' ? '!' : '⬇';
+    $('#ucBar').style.width = (st === 'download' ? (u.progress || 3) : 0) + '%';
+    const ul = $('#ucNotes'); ul.textContent = '';
+    if (!eng && ['download', 'ready', 'done'].includes(st)) for (const n of (u.notes || [])) { const li = document.createElement('li'); li.textContent = n; ul.appendChild(li); }
+    clearTimeout(doneT);
+    if (st === 'done' || st === 'error') doneT = setTimeout(() => { hidden = key; card.classList.remove('show'); }, st === 'done' ? 14000 : 9000);
+    card.dataset.key = key;
+  }
+  $('#ucClose').onclick = $('#ucLater').onclick = () => { hidden = card.dataset.key; card.classList.remove('show');
+    if (card.classList.contains('ready')) toast('Новая версия включится, когда закроешь браузер'); };
+  $('#ucRestart').onclick = () => L.update.restart();
   function renderUpd(u) {
     if (!u) return;
     $('#updState').textContent = UPD_TEXT(u);
     $('#autoUpdate').checked = u.auto;
-    if (u.state === 'ready' && readyShown !== u.version) {
-      readyShown = u.version;
-      toast(u.engine ? `Новый движок Electron ${u.engine} готов` : `Liquid ${u.version} готов к запуску`, false, { label: 'Перезапустить', run: () => L.update.restart() });
-    }
+    renderCard(u);
   }
   L.update.onState(renderUpd);
   L.update.state().then(renderUpd);

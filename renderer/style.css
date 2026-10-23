@@ -625,3 +625,32 @@ body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.35); }
 .chip-x { display: inline-flex; align-items: center; gap: 2px; margin: 2px 4px 2px 0; padding: 2px 4px 2px 9px; border-radius: 10px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); font-size: 12px; }
 .chip-x button { all: unset; cursor: pointer; width: 18px; height: 18px; border-radius: 50%; text-align: center; line-height: 18px; opacity: .6; }
 .chip-x button:hover { opacity: 1; background: rgba(255,255,255,.14); }
+
+/* ---------- карточка обновления ---------- */
+#updCard { position: fixed; z-index: 61; right: 18px; bottom: 18px; width: 330px; padding: 14px 14px 12px; border-radius: 20px;
+  backdrop-filter: blur(24px) saturate(170%); background: linear-gradient(180deg, rgba(44,40,56,.86), rgba(26,24,34,.9));
+  opacity: 0; transform: translateY(24px) scale(.96); pointer-events: none; transition: opacity .3s, transform .5s var(--spring); }
+#updCard.show { opacity: 1; transform: none; pointer-events: auto; }
+#updCard .uc-head { display: flex; gap: 11px; align-items: flex-start; }
+#updCard .uc-ico { flex: none; width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; font-size: 16px; color: #fff;
+  background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo)); box-shadow: 0 6px 16px -6px var(--accent); }
+#updCard.ready .uc-ico, #updCard.done .uc-ico { background: linear-gradient(180deg, #5fd08a, #2f9e5f); box-shadow: 0 6px 16px -6px #3fbf72; }
+#updCard.error .uc-ico { background: linear-gradient(180deg, #ff8a8a, #d84f4f); }
+#updCard .uc-titles { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+#updCard .uc-titles b { font-weight: 650; font-size: 14px; }
+#updCard .uc-titles span { font-size: 12.5px; line-height: 1.4; opacity: .75; }
+#updCard #ucClose { all: unset; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; text-align: center; line-height: 22px; font-size: 11px; opacity: .5; }
+#updCard #ucClose:hover { opacity: 1; background: rgba(255,255,255,.12); }
+#updCard .uc-bar { height: 5px; border-radius: 3px; margin: 12px 0 2px; background: rgba(255,255,255,.1); overflow: hidden; }
+#updCard .uc-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--accent-lo), var(--accent-2)); transition: width .4s var(--ease); }
+#updCard.building .uc-bar i { width: 35% !important; animation: ucIndet 1.3s ease-in-out infinite; }
+@keyframes ucIndet { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+#updCard.ready .uc-bar, #updCard.done .uc-bar, #updCard.error .uc-bar { display: none; }
+#updCard ul { margin: 10px 0 0; padding: 0 0 0 18px; font-size: 12.5px; line-height: 1.45; opacity: .85; }
+#updCard ul:empty { display: none; }
+#updCard li + li { margin-top: 3px; }
+#updCard .uc-acts { display: none; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+#updCard.ready .uc-acts { display: flex; }
+#updCard .uc-acts button { all: unset; cursor: pointer; padding: 6px 13px; border-radius: 11px; font-size: 13px; font-weight: 600; }
+#updCard .uc-acts .uc-sec { background: rgba(255,255,255,.08); } #updCard .uc-acts .uc-sec:hover { background: rgba(255,255,255,.14); }
+#updCard .uc-acts .uc-main { color: #fff; background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo)); }
