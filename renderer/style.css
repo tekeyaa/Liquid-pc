@@ -266,6 +266,7 @@ body.popped #scrim { display: block; }
 #toast.error { border-color: rgba(255,107,107,.45); }
 #toast.act { pointer-events: auto; display: flex; align-items: center; gap: 12px; }
 #toast .toast-act { all: unset; cursor: pointer; padding: 5px 12px; border-radius: 10px; background: linear-gradient(180deg, var(--accent-hi, #e88a68), var(--accent-lo, #c9633f)); color: #fff; font-weight: 600; font-size: 13px; white-space: nowrap; }
+.upd-row { display: flex; align-items: center; gap: 10px; margin: 4px 0 6px; } .upd-row span { flex: 1; line-height: 1.4; }
 .perm-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
 .perm-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 12px; background: rgba(255,255,255,.05); }
 .perm-row b { font-weight: 600; } .perm-row .muted { flex: 1; }

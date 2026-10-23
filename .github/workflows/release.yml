@@ -36,6 +36,7 @@ jobs:
           sed -i "s/add(\"DisplayVersion\", \"REG_SZ\", \"[^\"]*\")/add(\"DisplayVersion\", \"REG_SZ\", \"$V\")/" installer/installer.go
           cd installer && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-H windowsgui -s -w" -o ../Liquid-Setup.exe .
           ls -la ../Liquid-Setup.exe
+          cd .. && sha256sum Liquid-Setup.exe > Liquid-Setup.exe.sha256 && cat Liquid-Setup.exe.sha256
 
       - name: Описание релиза из CHANGELOG
         env:
@@ -56,8 +57,8 @@ jobs:
           V: ${{ steps.v.outputs.version }}
         run: |
           if gh release view "v$V" >/dev/null 2>&1; then
-            gh release upload "v$V" Liquid-Setup.exe --clobber
+            gh release upload "v$V" Liquid-Setup.exe Liquid-Setup.exe.sha256 --clobber
             gh release edit "v$V" --notes-file notes.md
           else
-            gh release create "v$V" Liquid-Setup.exe --title "Liquid $V" --notes-file notes.md --latest
+            gh release create "v$V" Liquid-Setup.exe Liquid-Setup.exe.sha256 --title "Liquid $V" --notes-file notes.md --latest
           fi

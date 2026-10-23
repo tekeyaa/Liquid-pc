@@ -26,6 +26,57 @@ func appDir() string  { return filepath.Join(baseDir(), "app") }
 func logPath() string { return filepath.Join(baseDir(), "install.log") }
 func appExe() string  { return filepath.Join(appDir(), "Liquid.exe") }
 
+// ---------- тихое фоновое обновление (--silent): без окна, Liquid подменяется, когда его закроют ----------
+var silent bool
+
+func statusPath() string  { return filepath.Join(baseDir(), "update-status.json") }
+func relaunchFlag() string { return filepath.Join(baseDir(), "relaunch.flag") }
+func lockPath() string     { return filepath.Join(baseDir(), "update.lock") }
+
+// writeStatus — состояние обновления для браузера: working, ready (собрано, ждём закрытия), done, error
+func writeStatus(state, version, msg string) {
+	b, _ := json.Marshal(map[string]any{"state": state, "version": version, "error": msg, "at": time.Now().Unix()})
+	os.WriteFile(statusPath(), b, 0644)
+}
+
+func payloadVersion() string {
+	var p struct{ Version string `json:"version"` }
+	if b, err := os.ReadFile(filepath.Join(srcDir(), "package.json")); err == nil {
+		json.Unmarshal(b, &p)
+	}
+	return p.Version
+}
+
+func liquidRunning() bool {
+	out, err := hidden(exec.Command("tasklist", "/FI", "IMAGENAME eq Liquid.exe", "/NH")).Output()
+	return err == nil && bytes.Contains(bytes.ToLower(out), []byte("liquid.exe"))
+}
+
+// takeLock — одно фоновое обновление за раз (зависший замок старше 3 часов не считается)
+func takeLock() bool {
+	os.MkdirAll(baseDir(), 0755)
+	if fi, err := os.Stat(lockPath()); err == nil && time.Since(fi.ModTime()) < 3*time.Hour {
+		return false
+	}
+	return os.WriteFile(lockPath(), []byte(fmt.Sprint(os.Getpid())), 0644) == nil
+}
+
+func runSilent() {
+	if !takeLock() {
+		return
+	}
+	defer os.Remove(lockPath())
+	if err := runInstall(); err != nil {
+		writeStatus("error", payloadVersion(), err.Error())
+		return
+	}
+	writeStatus("done", payloadVersion(), "")
+	if _, err := os.Stat(relaunchFlag()); err == nil {
+		os.Remove(relaunchFlag())
+		launchApp()
+	}
+}
+
 var (
 	logMu    sync.Mutex
 	logFile  *os.File
@@ -354,9 +405,13 @@ func runInstall() (err error) {
 		return fmt.Errorf("не удалось распаковать файлы: %v", err)
 	}
 
-	setStep("Закрываю Liquid, если открыт", .17, .18, 1)
-	hidden(exec.Command("taskkill", "/IM", "Liquid.exe", "/F")).Run()
-	time.Sleep(700 * time.Millisecond)
+	if silent {
+		writeStatus("working", payloadVersion(), "")
+	} else {
+		setStep("Закрываю Liquid, если открыт", .17, .18, 1)
+		hidden(exec.Command("taskkill", "/IM", "Liquid.exe", "/F")).Run()
+		time.Sleep(700 * time.Millisecond)
+	}
 
 	setStep("Скачиваю проверенную версию движка Electron — самая долгая часть", .18, .70, 70)
 	if err = run(srcDir(), env, "cmd", "/c", "npm", "install", "--no-fund", "--no-audit"); err != nil {
@@ -381,7 +436,18 @@ func runInstall() (err error) {
 	if _, err = os.Stat(filepath.Join(unpacked, "Liquid.exe")); err != nil {
 		return errors.New("после сборки не нашёлся Liquid.exe")
 	}
-	hidden(exec.Command("taskkill", "/IM", "Liquid.exe", "/F")).Run()
+	if silent {
+		// всё собрано — ждём, пока человек сам закроет браузер, и только тогда подменяем файлы
+		writeStatus("ready", payloadVersion(), "")
+		for start := time.Now(); liquidRunning(); time.Sleep(3 * time.Second) {
+			if time.Since(start) > 7*24*time.Hour {
+				return errors.New("Liquid не закрывали неделю — обновление отложено")
+			}
+		}
+		time.Sleep(1500 * time.Millisecond)
+	} else {
+		hidden(exec.Command("taskkill", "/IM", "Liquid.exe", "/F")).Run()
+	}
 	time.Sleep(400 * time.Millisecond)
 	if err = os.RemoveAll(appDir()); err != nil {
 		return fmt.Errorf("не удалось заменить старую версию (закрой Liquid): %v", err)

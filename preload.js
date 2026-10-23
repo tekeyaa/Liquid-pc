@@ -87,5 +87,6 @@ contextBridge.exposeInMainWorld('liquid', {
     folder: () => ipcRenderer.send('diag:folder'),
     onNew: on('diag:new'),
   },
-  update: { on: on('update'), run: () => ipcRenderer.send('update:run'), later: () => ipcRenderer.send('update:later') },
+  update: { on: on('update'), run: () => ipcRenderer.send('update:run'), later: () => ipcRenderer.send('update:later'),
+    onState: on('update:state'), state: () => ipcRenderer.invoke('update:state'), check: () => ipcRenderer.invoke('update:check'), restart: () => ipcRenderer.send('update:restart') },
 });

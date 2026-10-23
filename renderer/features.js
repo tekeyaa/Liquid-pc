@@ -506,6 +506,30 @@
   $('#forgetLearned').onclick = async () => { settings = await L.settings.set({ forgetLearned: true }); renderVpnExtras(); toast('Выученные сайты сброшены'); };
   $('#vpnBtn').addEventListener('click', () => renderVpnExtras());
 
+  // ================= Обновления =================
+  const UPD_TEXT = (u) => ({
+    idle: `Liquid ${u.current}. Обновления проверяются раз в 3 часа.`,
+    latest: `У тебя последняя версия — ${u.current}.`,
+    download: `Скачиваю Liquid ${u.version}…`,
+    building: `Ставлю Liquid ${u.version} в фоне — браузером можно пользоваться.`,
+    ready: `Liquid ${u.version} готов. Применится, когда закроешь браузер.`,
+    error: `Обновление не удалось: ${u.error}`,
+  }[u.state] || '');
+  let readyShown = '';
+  function renderUpd(u) {
+    if (!u) return;
+    $('#updState').textContent = UPD_TEXT(u);
+    $('#autoUpdate').checked = u.auto;
+    if (u.state === 'ready' && readyShown !== u.version) {
+      readyShown = u.version;
+      toast(`Liquid ${u.version} готов к запуску`, false, { label: 'Перезапустить', run: () => L.update.restart() });
+    }
+  }
+  L.update.onState(renderUpd);
+  L.update.state().then(renderUpd);
+  $('#autoUpdate').onchange = async (e) => { settings = await L.settings.set({ autoUpdate: e.target.checked }); L.update.state().then(renderUpd); };
+  $('#updCheck').onclick = async () => { $('#updState').textContent = 'Проверяю…'; renderUpd(await L.update.check()); };
+
   // ================= Разрешения сайтов =================
   const PERM_NAMES = { media: 'Камера и микрофон', geolocation: 'Местоположение', notifications: 'Уведомления', 'clipboard-read': 'Чтение буфера обмена', popup: 'Всплывающие окна' };
   async function renderPerms() {

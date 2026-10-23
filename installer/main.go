@@ -456,10 +456,17 @@ func main() {
 		switch strings.TrimLeft(a, "-/") {
 		case "update":
 			mode = "update"
+		case "silent":
+			mode, silent = "update", true
 		case "uninstall":
 			uninstall()
 			return
 		}
+	}
+
+	if silent { // фоновое обновление из браузера: без окна
+		runSilent()
+		return
 	}
 
 	pSetProcessDpiAwarenessContext.Call(^uintptr(3)) // PER_MONITOR_AWARE_V2

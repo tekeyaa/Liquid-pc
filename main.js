@@ -551,25 +551,96 @@ function findInstaller() {
   }
   return null;
 }
-// Новые версии Liquid берём из релизов GitHub (движок Electron закреплён в package.json, сам по себе не обновляется).
-// Пока репозиторий приватный, GitHub отвечает 404 — тогда просто молчим.
+// ---------- обновления Liquid из релизов GitHub ----------
+// В фоне: раз в 3 часа смотрим последний релиз, качаем Liquid-Setup.exe, сверяем SHA-256 и запускаем его
+// в тихом режиме. Он собирает новую версию, пока ты пользуешься браузером, и подменяет файлы, когда браузер закрыт.
 const RELEASES = 'https://api.github.com/repos/tekeyaa/Liquid-pc/releases/latest';
-let pendingSetup = null;
-async function checkUpdates() {
+const crypto = require('crypto');
+let pendingSetup = null;        // для ручного режима (автообновление выключено)
+const upd = { state: 'idle', version: '', error: '', checkedAt: 0, poll: null };
+const liquidBase = () => path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Liquid');
+const updStatusFile = () => path.join(liquidBase(), 'update-status.json');
+function readUpdStatus() { try { return JSON.parse(fs.readFileSync(updStatusFile(), 'utf8')); } catch { return null; } }
+function sendUpd() { broadcast('update:state', { ...upd, poll: undefined, current: app.getVersion(), auto: loadSettings().autoUpdate !== false }); }
+
+async function fetchJson(url) {
+  const r = await net.fetch(url, { cache: 'no-store', headers: { accept: 'application/vnd.github+json' } });
+  if (!r.ok) throw new Error(r.status === 404 ? 'релизы недоступны (репозиторий приватный?)' : 'GitHub ответил ' + r.status);
+  return r.json();
+}
+
+async function checkUpdates(manual = false) {
   const s = loadSettings();
-  if (s.updSnooze && Date.now() < s.updSnooze) return;
+  upd.checkedAt = Date.now();
+  if (['download', 'building', 'ready'].includes(upd.state) && !manual) return;
   try {
-    const r = await net.fetch(RELEASES, { cache: 'no-store', headers: { accept: 'application/vnd.github+json' } });
-    if (!r.ok) return;
-    const j = await r.json();
+    const j = await fetchJson(RELEASES);
     const version = String(j.tag_name || '').replace(/^v/, '');
     const cur = app.getVersion();
-    const asset = (j.assets || []).find((a) => /Liquid-Setup\.exe$/i.test(a.name));
-    if (version && asset && newer(version, cur) && win && !win.isDestroyed()) {
+    const asset = (j.assets || []).find((a) => /^Liquid-Setup\.exe$/i.test(a.name));
+    const sum = (j.assets || []).find((a) => /^Liquid-Setup\.exe\.sha256$/i.test(a.name));
+    if (!version || !asset || !newer(version, cur)) { if (manual) { upd.state = 'latest'; upd.version = cur; sendUpd(); } return; }
+    const st = readUpdStatus();
+    if (st && st.version === version && ['working', 'ready'].includes(st.state) && Date.now() / 1000 - st.at < 3 * 3600) { watchInstaller(version); return; }
+    if (s.autoUpdate === false || !app.isPackaged || process.platform !== 'win32') {
+      if (s.updSnooze && Date.now() < s.updSnooze && !manual) return;
       pendingSetup = asset.browser_download_url;
-      win.webContents.send('update', { latest: version, current: cur, liquid: true, notes: String(j.body || '').slice(0, 600), canRun: true });
+      win?.webContents.send('update', { latest: version, current: cur, liquid: true, canRun: true });
+      return;
     }
-  } catch { /* нет сети — проверим позже */ }
+    await backgroundUpdate(version, asset, sum);
+  } catch (e) {
+    diag.log('warn', 'обновление', e.message);
+    if (manual) { upd.state = 'error'; upd.error = e.message; sendUpd(); }
+  }
+}
+
+async function backgroundUpdate(version, asset, sumAsset) {
+  upd.state = 'download'; upd.version = version; upd.error = ''; sendUpd();
+  const dir = path.join(app.getPath('userData'), 'updates'); fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `Liquid-Setup-${version}.exe`);
+  let buf = fs.existsSync(file) ? fs.readFileSync(file) : null;
+  if (!buf || buf.length !== asset.size) {
+    const r = await net.fetch(asset.browser_download_url);
+    if (!r.ok) throw new Error('не скачался установщик: ' + r.status);
+    buf = Buffer.from(await r.arrayBuffer());
+    if (asset.size && buf.length !== asset.size) throw new Error('установщик скачался не целиком');
+  }
+  // контрольная сумма из релиза: подменённый или битый файл не запускаем
+  if (sumAsset) {
+    const want = (await (await net.fetch(sumAsset.browser_download_url)).text()).trim().split(/\s+/)[0].toLowerCase();
+    const got = crypto.createHash('sha256').update(buf).digest('hex');
+    if (want && want !== got) throw new Error('контрольная сумма установщика не совпала — обновление отменено');
+  }
+  fs.writeFileSync(file, buf);
+  for (const f of fs.readdirSync(dir)) if (f !== path.basename(file)) { try { fs.rmSync(path.join(dir, f), { force: true }); } catch {} }
+  spawn(file, ['--silent'], { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  diag.log('info', 'обновление', `Ставлю Liquid ${version} в фоне`);
+  watchInstaller(version);
+}
+
+// следим за тихим установщиком по файлу состояния
+function watchInstaller(version) {
+  upd.state = 'building'; upd.version = version; sendUpd();
+  clearInterval(upd.poll);
+  upd.poll = setInterval(() => {
+    const st = readUpdStatus();
+    if (!st || st.version !== version) return;
+    if (st.state === 'ready' && upd.state !== 'ready') { upd.state = 'ready'; sendUpd(); }
+    if (st.state === 'error') {
+      clearInterval(upd.poll); upd.state = 'error'; upd.error = st.error || 'ошибка установщика'; sendUpd();
+      diag.log('error', 'обновление', upd.error, 'журнал: ' + path.join(liquidBase(), 'install.log'));
+    }
+  }, 10000);
+}
+
+// при запуске: сообщаем, что обновились
+function announceUpdate() {
+  const st = readUpdStatus();
+  if (st && st.state === 'done' && st.version === app.getVersion() && !st.announced) {
+    st.announced = true; try { fs.writeFileSync(updStatusFile(), JSON.stringify(st)); } catch {}
+    setTimeout(() => broadcast('toast', { text: `Liquid обновился до ${st.version}. Что нового — в CHANGELOG на странице релиза.` }), 2500);
+  }
 }
 
 // ---------- Claude-защита: проверка страниц с паролями / картами ----------
@@ -636,6 +707,7 @@ function registerIpc() {
     if ('model' in patch) s.model = patch.model;
     if ('search' in patch) s.search = patch.search;
     if ('vpnAuto' in patch) s.vpnAuto = !!patch.vpnAuto;
+    if ('autoUpdate' in patch) s.autoUpdate = !!patch.autoUpdate;
     if ('guard' in patch) s.guard = !!patch.guard;
     if ('fps' in patch) s.fps = patch.fps === '60' ? '60' : 'auto';
     if ('claudeMode' in patch) s.claudeMode = patch.claudeMode === 'api' ? 'api' : 'web';
@@ -885,6 +957,10 @@ function registerIpc() {
   ipcMain.on('app:relaunch', () => { app.relaunch(); app.exit(0); });
   ipcMain.handle('claude:once', (_e, req) => claudeOnce(req));
   ipcMain.on('clipboard:write', (_e, t) => clipboard.writeText(String(t || '')));
+  ipcMain.handle('update:check', async () => { await checkUpdates(true); return { ...upd, poll: undefined, current: app.getVersion(), auto: loadSettings().autoUpdate !== false }; });
+  ipcMain.handle('update:state', () => ({ ...upd, poll: undefined, current: app.getVersion(), auto: loadSettings().autoUpdate !== false }));
+  // «Перезапустить сейчас»: установщик ждёт закрытия браузера, подменит файлы и откроет новую версию
+  ipcMain.on('update:restart', () => { try { fs.writeFileSync(path.join(liquidBase(), 'relaunch.flag'), '1'); } catch {} app.quit(); });
   ipcMain.on('update:later', () => { const s = loadSettings(); s.updSnooze = Date.now() + 3 * 864e5; saveSettings(s); });
   ipcMain.on('update:run', async () => {
     if (pendingSetup) {
@@ -1035,8 +1111,9 @@ app.whenReady().then(async () => {
   });
   game.enabled = loadSettings().gameMode !== false;
   setTimeout(() => game.start(), 6000);
-  setTimeout(checkUpdates, 8000);
-  setInterval(checkUpdates, 6 * 3600e3);
+  announceUpdate();
+  setTimeout(() => checkUpdates(), 60_000);          // через минуту после запуска
+  setInterval(() => checkUpdates(), 3 * 3600e3);     // и раз в 3 часа
 
   const s = loadSettings();
   if (s.vpnAuto && s.vpnKey) {
