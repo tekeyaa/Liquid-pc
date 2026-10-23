@@ -1,0 +1,8 @@
+node_modules/
+dist/
+Liquid/
+bin/xray*
+bin/*.dat
+installer/payload.zip
+Liquid-Setup.exe
+*.log

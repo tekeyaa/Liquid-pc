@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<title>Новая вкладка</title>
+<style>
+  :root { --accent: #d97757; --accent-hi: #e88a68; --accent-lo: #c9633f; --glass-a: .12; --spring: cubic-bezier(.2,.9,.25,1.12); --ease: cubic-bezier(.22,1,.36,1); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #08080f; color: rgba(255,255,255,.92); font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; user-select: none; }
+  .bg { position: fixed; inset: 0; background: radial-gradient(60vw 60vw at 5% -15%, rgba(91,61,245,.55), transparent 60%), radial-gradient(45vw 45vw at 100% 25%, rgba(217,119,87,.5), transparent 60%), radial-gradient(55vw 50vw at 50% 125%, rgba(14,165,233,.3), transparent 60%); }
+
+  main { position: relative; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; padding: 24px; padding-bottom: 12vh; }
+  .clock { font-size: clamp(64px, 11vw, 132px); font-weight: 200; letter-spacing: -4px; line-height: 1; text-shadow: 0 10px 40px rgba(0,0,0,.35); animation: rise .7s var(--spring); }
+  .date { margin-top: 10px; text-align: center; color: rgba(255,255,255,.6); font-size: 15px; animation: rise .8s var(--spring); }
+
+  /* стекло без backdrop-filter: фон статичный, а размытие давало полосы на дробном масштабе Windows */
+  .glass { position: relative; background: linear-gradient(180deg, rgba(255,255,255,var(--glass-a)), rgba(255,255,255,calc(var(--glass-a) * .4))); border: 1px solid rgba(255,255,255,.17); box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 18px 40px -20px rgba(0,0,0,.6); }
+  #f { width: min(640px, 92vw); height: 56px; border-radius: 22px; display: flex; align-items: center; gap: 12px; padding: 0 20px; transition: box-shadow .35s var(--ease), transform .45s var(--spring); animation: rise .85s var(--spring); }
+  #f:focus-within { box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent), 0 26px 60px -20px rgba(0,0,0,.7); transform: scale(1.015); }
+  #f svg { width: 20px; height: 20px; fill: none; stroke: rgba(255,255,255,.55); stroke-width: 2; stroke-linecap: round; flex: none; }
+  input { flex: 1; background: none; border: 0; outline: none; color: #fff; font: inherit; font-size: 16.5px; user-select: text; }
+  input::placeholder { color: rgba(255,255,255,.35); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, 92px); justify-content: center; gap: 14px; width: min(760px, 92vw); animation: rise .95s var(--spring); }
+  .tile { position: relative; height: 92px; border-radius: 24px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-decoration: none; color: rgba(255,255,255,.82); font-size: 12px; transition: transform .4s var(--spring), background .25s, opacity .2s; cursor: pointer; }
+  .tile:hover { transform: translate3d(0, -4px, 0) scale(1.04); background: linear-gradient(180deg, rgba(255,255,255,.19), rgba(255,255,255,.07)); }
+  .tile:active { transform: scale(.94); }
+  .tile .ic { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; font-weight: 800; font-size: 17px; color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 6px 16px -6px rgba(0,0,0,.6); overflow: hidden; }
+  .tile .ic img { width: 24px; height: 24px; }
+  .tile .nm { max-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile.add { color: rgba(255,255,255,.5); border-style: dashed; background: rgba(255,255,255,.03); box-shadow: none; }
+  .tile.add .ic { background: rgba(255,255,255,.08); box-shadow: none; font-weight: 300; font-size: 24px; }
+
+  /* режим правки */
+  .tile .x { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 50%; background: #3a3846; border: 1px solid rgba(255,255,255,.2); color: #fff; display: none; place-items: center; font-size: 13px; line-height: 1; }
+  body.edit .tile:not(.add) { animation: wiggle .35s ease-in-out infinite alternate; cursor: grab; }
+  body.edit .tile:nth-child(2n) { animation-delay: -.17s; }
+  body.edit .tile .x { display: grid; }
+  body.edit .tile:hover { transform: none; }
+  .tile.dragging { opacity: .35; }
+  @keyframes wiggle { from { transform: rotate(-1.2deg); } to { transform: rotate(1.2deg); } }
+
+  .edit-btn { position: fixed; right: 18px; bottom: 16px; height: 34px; padding: 0 14px; border-radius: 12px; color: rgba(255,255,255,.6); font: inherit; font-size: 12.5px; cursor: pointer; transition: color .2s, transform .35s var(--spring); }
+  .edit-btn:hover { color: #fff; }
+  .edit-btn:active { transform: scale(.94); }
+  body.edit .edit-btn { color: #fff; background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo)); border-color: rgba(255,255,255,.3); }
+
+  /* окно добавления/правки */
+  .dlg-wrap { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.35); opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .dlg-wrap.open { opacity: 1; pointer-events: auto; }
+  .dlg { width: min(360px, 90vw); padding: 20px; border-radius: 22px; background: linear-gradient(180deg, rgba(48,46,60,.96), rgba(28,26,36,.97)); transform: translate3d(0, 10px, 0) scale(.95); transition: transform .4s var(--spring); }
+  .dlg-wrap.open .dlg { transform: none; }
+  .dlg h3 { margin: 0 0 14px; font-size: 16px; font-weight: 650; }
+  .dlg label { display: block; font-size: 12px; color: rgba(255,255,255,.55); margin-bottom: 12px; }
+  .dlg input { display: block; width: 100%; margin-top: 6px; padding: 10px 12px; border-radius: 12px; background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.12); font-size: 14px; }
+  .dlg input:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+  .dlg .row { display: flex; gap: 8px; margin-top: 4px; }
+  .dlg button { flex: 1; height: 38px; border-radius: 12px; border: 1px solid rgba(255,255,255,.1); font: inherit; font-weight: 600; color: rgba(255,255,255,.75); background: rgba(255,255,255,.07); cursor: pointer; transition: transform .35s var(--spring); }
+  .dlg button:active { transform: scale(.94); }
+  .dlg button.primary { color: #fff; border: 0; background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo)); }
+
+  @keyframes rise { from { opacity: 0; transform: translate3d(0, 18px, 0) scale(.97); } }
+</style>
+</head>
+<body>
+  <div class="bg"></div>
+  <main>
+    <div>
+      <div class="clock" id="clock">00:00</div>
+      <div class="date" id="date"></div>
+    </div>
+    <form class="glass" id="f">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></svg>
+      <input id="q" placeholder="Поиск или адрес сайта" autofocus spellcheck="false" />
+    </form>
+    <div class="tiles" id="tiles"></div>
+  </main>
+
+  <button class="edit-btn glass" id="editBtn">Изменить сайты</button>
+
+  <div class="dlg-wrap" id="dlgWrap">
+    <form class="dlg glass" id="dlg" autocomplete="off">
+      <h3 id="dlgTitle">Новый сайт</h3>
+      <label>Название<input id="dName" maxlength="24" placeholder="Например, Кинопоиск" /></label>
+      <label>Адрес<input id="dUrl" placeholder="kinopoisk.ru" spellcheck="false" /></label>
+      <div class="row">
+        <button type="button" id="dCancel">Отмена</button>
+        <button type="submit" class="primary">Сохранить</button>
+      </div>
+    </form>
+  </div>
+
+<script>
+  const engines = {
+    google: 'https://www.google.com/search?q=',
+    yandex: 'https://yandex.ru/search/?text=',
+    ddg: 'https://duckduckgo.com/?q=',
+    bing: 'https://www.bing.com/search?q=',
+  };
+  const engine = (location.hash.match(/search=(\w+)/) || [])[1] || 'google';
+  const $ = (s) => document.getElementById(s);
+
+  // ---------- часы ----------
+  function tick() {
+    const d = new Date();
+    $('clock').textContent = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    $('date').textContent = d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+  tick(); setInterval(tick, 1000);
+
+  function toUrl(s) {
+    s = s.trim();
+    if (/^(https?|file):/i.test(s)) return s;
+    if (/^localhost(:\d+)?/i.test(s)) return 'http://' + s;
+    if (!/\s/.test(s) && /^[^\s/]+\.[a-zа-яё]{2,}(:\d+)?(\/.*)?$/i.test(s)) return 'https://' + s;
+    return null;
+  }
+  $('f').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const s = $('q').value.trim();
+    if (!s) return;
+    location.href = toUrl(s) || (engines[engine] || engines.google) + encodeURIComponent(s);
+  });
+
+  // ---------- закреплённые сайты ----------
+  const DEFAULTS = [
+    { name: 'Twitch', url: 'https://www.twitch.tv', ic: 'T', color: '#9146ff' },
+    { name: 'YouTube', url: 'https://www.youtube.com', ic: '▶', color: '#ff0033' },
+    { name: 'Claude', url: 'https://claude.ai', ic: '✦', color: '#d97757' },
+    { name: 'GitHub', url: 'https://github.com', ic: 'G', color: '#24292f' },
+    { name: 'Reddit', url: 'https://www.reddit.com', ic: 'R', color: '#ff4500' },
+    { name: 'X', url: 'https://x.com', ic: 'X', color: '#111' },
+  ];
+  const KEY = 'liquid.tiles';
+  let tiles;
+  try { tiles = JSON.parse(localStorage.getItem(KEY)) || DEFAULTS.slice(); } catch { tiles = DEFAULTS.slice(); }
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(tiles)); } catch {} try { window.liquidNewtab && window.liquidNewtab.tiles(tiles); } catch {} };
+  // избранное хранится в приложении; localStorage — только копия
+  if (window.liquidNewtab) window.liquidNewtab.tiles().then((t) => { if (Array.isArray(t)) { tiles = t; try { localStorage.setItem(KEY, JSON.stringify(t)); } catch {} render(); } else save(); }).catch(() => {});
+
+  const PALETTE = ['#5b3df5', '#d97757', '#0ea5e9', '#ec4899', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6'];
+  function colorFor(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; }
+  function host(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } }
+
+  let dragFrom = -1;
+  function render() {
+    const box = $('tiles');
+    box.innerHTML = '';
+    tiles.forEach((t, i) => {
+      const a = document.createElement('a');
+      a.className = 'tile glass';
+      a.href = t.url;
+      a.draggable = true;
+      const ic = document.createElement('span');
+      ic.className = 'ic';
+      ic.style.background = t.color || colorFor(t.url);
+      ic.textContent = t.ic || (t.name || host(t.url))[0].toUpperCase();
+      if (!t.ic) {
+        // настоящая иконка сайта; если не загрузится — остаётся буква
+        const img = new Image();
+        img.onload = () => { if (img.naturalWidth > 16) { ic.textContent = ''; ic.style.background = 'rgba(255,255,255,.92)'; ic.appendChild(img); } };
+        // значок качает само приложение — без куки и с кэшем
+        if (window.liquidNewtab && window.liquidNewtab.icons) window.liquidNewtab.icons([host(t.url)]).then((m) => { const d = m && m[host(t.url)]; if (d) img.src = d; }).catch(() => {});
+      }
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = t.name || host(t.url);
+      const x = document.createElement('span');
+      x.className = 'x';
+      x.textContent = '×';
+      x.title = 'Убрать';
+      a.append(ic, nm, x);
+
+      a.addEventListener('click', (e) => {
+        if (!document.body.classList.contains('edit')) return;
+        e.preventDefault();
+        if (e.target === x) { tiles.splice(i, 1); save(); render(); }
+        else openDlg(i);
+      });
+      a.addEventListener('contextmenu', (e) => { e.preventDefault(); document.body.classList.add('edit'); syncEditBtn(); openDlg(i); });
+      a.addEventListener('dragstart', (e) => { dragFrom = i; a.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; });
+      a.addEventListener('dragend', () => a.classList.remove('dragging'));
+      a.addEventListener('dragover', (e) => e.preventDefault());
+      a.addEventListener('drop', (e) => {
+        e.preventDefault();
+        if (dragFrom < 0 || dragFrom === i) return;
+        const [m] = tiles.splice(dragFrom, 1);
+        tiles.splice(i, 0, m);
+        dragFrom = -1; save(); render();
+      });
+      box.appendChild(a);
+    });
+    if (tiles.length < 12) {
+      const add = document.createElement('a');
+      add.className = 'tile glass add';
+      add.href = '#';
+      add.innerHTML = '<span class="ic">+</span><span class="nm">Добавить</span>';
+      add.addEventListener('click', (e) => { e.preventDefault(); openDlg(-1); });
+      box.appendChild(add);
+    }
+  }
+
+  let editing = -1;
+  function openDlg(i) {
+    editing = i;
+    const t = tiles[i] || { name: '', url: '' };
+    $('dlgTitle').textContent = i < 0 ? 'Новый сайт' : 'Изменить сайт';
+    $('dName').value = t.name || '';
+    $('dUrl').value = t.url ? t.url.replace(/^https:\/\//, '') : '';
+    $('dlgWrap').classList.add('open');
+    setTimeout(() => (i < 0 ? $('dUrl') : $('dName')).focus(), 50);
+  }
+  const closeDlg = () => $('dlgWrap').classList.remove('open');
+  $('dCancel').onclick = closeDlg;
+  $('dlgWrap').addEventListener('mousedown', (e) => { if (e.target === $('dlgWrap')) closeDlg(); });
+  $('dlg').addEventListener('submit', (e) => {
+    e.preventDefault();
+    let url = $('dUrl').value.trim();
+    if (!url) { $('dUrl').focus(); return; }
+    url = toUrl(url) || 'https://' + url.replace(/\s+/g, '');
+    const name = $('dName').value.trim() || host(url).split('.')[0].replace(/^./, (c) => c.toUpperCase());
+    const prev = tiles[editing];
+    const keepIcon = prev && prev.url === url;
+    const t = { name, url, ic: keepIcon ? prev.ic : undefined, color: keepIcon ? prev.color : undefined };
+    if (editing < 0) tiles.push(t); else tiles[editing] = t;
+    save(); render(); closeDlg();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { if ($('dlgWrap').classList.contains('open')) closeDlg(); else { document.body.classList.remove('edit'); syncEditBtn(); } }
+  });
+
+  function syncEditBtn() { $('editBtn').textContent = document.body.classList.contains('edit') ? 'Готово' : 'Изменить сайты'; }
+  $('editBtn').onclick = () => { document.body.classList.toggle('edit'); syncEditBtn(); };
+
+  render();
+</script>
+</body>
+</html>
