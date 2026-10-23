@@ -520,7 +520,7 @@ void main(){
     c += row * wy[j]; }
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
-const SR_SHARP = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 dst; uniform float sharp; uniform float hdr;
+const SR_SHARP = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 dst; uniform float sharp; uniform float hdr; uniform float boost;
 void main(){
   vec2 d = 1.0 / dst; vec3 e = texture2D(t, uv).rgb;
   vec3 b = texture2D(t, uv + vec2(0.0, -d.y)).rgb, h = texture2D(t, uv + vec2(0.0, d.y)).rgb;
@@ -530,11 +530,14 @@ void main(){
   vec3 lobeRGB = max(-hitMin, hitMax);
   float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * sharp;
   vec3 c = (lobe * (b + dd + f + h) + e) / (4.0 * lobe + 1.0);
+  // дополнительная детализация по яркости (без цветных ореолов), ограничена соседями — без звона
+  float lc = dot(c, vec3(0.299, 0.587, 0.114)), lb = dot((b + dd + f + h) * 0.25, vec3(0.299, 0.587, 0.114));
+  c = clamp(c + (lc - lb) * boost, mn - 0.04, mx + 0.04);
   if (hdr > 0.5) {
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    c = mix(vec3(l), c, 1.16);                       // насыщенность
-    c = c * c * (3.0 - 2.0 * c) * 0.35 + c * 0.65;   // мягкая S-кривая: глубже тени
-    c = pow(max(c, 0.0), vec3(0.96));                // чуть светлее середина
+    c = mix(vec3(l), c, 1.28);                       // насыщенность
+    c = c * c * (3.0 - 2.0 * c) * 0.55 + c * 0.45;   // S-кривая: глубже тени, ярче света
+    c = pow(max(c, 0.0), vec3(0.92));                // светлее середина
   }
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
@@ -606,7 +609,8 @@ class SuperRes {
     run(this.pSh, null, this.tMid, this.ow, this.oh, (p) => {
       gl.uniform2f(gl.getUniformLocation(p, 'dst'), this.ow, this.oh);
       gl.uniform1f(gl.getUniformLocation(p, 'flip'), 0);
-      gl.uniform1f(gl.getUniformLocation(p, 'sharp'), this.level === 'max' ? 1.0 : 0.55);
+      gl.uniform1f(gl.getUniformLocation(p, 'sharp'), this.level === 'max' ? 1.0 : 0.75);
+      gl.uniform1f(gl.getUniformLocation(p, 'boost'), this.level === 'max' ? 0.6 : 0.25);
       gl.uniform1f(gl.getUniformLocation(p, 'hdr'), this.hdr ? 1 : 0);
     });
   }
@@ -615,6 +619,10 @@ class SuperRes {
   loop() {
     if (!this.alive) return;
     const v = this.v;
+    // вкладка была скрыта или окно свёрнуто — кадры не рисовались не по нашей вине, отсчёт «зависания» начинаем заново
+    const now = performance.now();
+    if (now - (this.lastLoop || now) > 400 || document.hidden) this.lastDraw = now;
+    this.lastLoop = now;
     const t = v.currentTime;
     if (v.readyState >= 2 && (t !== this.lastT || this.dirty)) {
       this.lastT = t; this.dirty = false;
@@ -647,8 +655,9 @@ class SuperRes {
   fail(reason) {
     console.warn(`[liquid] супер-чёткость отключена: ${reason}, видео ${this.v.videoWidth}x${this.v.videoHeight} @ ${location.hostname}`);
     this.destroy();
-    vt.srBroken = true;
+    vt.srBroken = true; vt.srWhy = reason;
     toHost({ type: 'srFail', reason });
+    barRender();
   }
   destroy() { if (!this.alive) return; this.alive = false; clearInterval(this.posT); this.ro.disconnect(); this.c.remove(); vt.srMap.delete(this.v); }
 }
@@ -697,6 +706,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px;
 .bar.x .more { display: flex; }
 .more label { display: flex; align-items: center; gap: 8px; color: rgba(255,255,255,.65); }
 .more label span { width: 92px; } .more label b { width: 34px; text-align: right; color: #fff; font-weight: 600; }
+.st { font-size: 11px; line-height: 1.35; color: rgba(255,255,255,.55); padding: 0 4px; } .st:empty { display: none; } .st.ok { color: #6ee7b7; } .st.bad { color: #fca5a5; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; } .chips button { height: 26px; font-size: 11.5px; background: rgba(255,255,255,.06); }`;
 const IC = {
   minus: '<svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg>', plus: '<svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg>',
@@ -725,6 +735,7 @@ function barBuild() {
       <button class="sr" data-a="sr" title="Супер-чёткость: апскейл и резкость на видеокарте. Нажимай: выкл → средне → сильно">${IC.sr}Чёткость <i data-v="sr"></i></button>
       <button data-a="hdr" title="HDR-цвет">HDR</button>
     </div>
+    <div class="st" data-v="st"></div>
     <div class="more">
       <label><span>Яркость</span><input type="range" data-r="bright" min="50" max="180" step="5"><b data-v="bright"></b></label>
       <label><span>Контраст</span><input type="range" data-r="contrast" min="50" max="180" step="5"><b data-v="contrast"></b></label>
@@ -750,8 +761,12 @@ function barBuild() {
     const a = b.dataset.a;
     if (a === 'slower' || a === 'faster') { const r = Math.max(0.25, Math.min(4, Math.round((v.playbackRate + (a === 'faster' ? 0.25 : -0.25)) * 4) / 4)); v.playbackRate = r; vt.want.speed = r; if (vt.remember) toHost({ type: 'videoRemember', on: true, speed: r }); }
     else if (a === 'mute') setVolume(v, getVolume(v) > 0 ? 0 : 1);
-    else if (a === 'sr') { vt.sr = vt.sr === 'off' ? 'mid' : vt.sr === 'mid' ? 'max' : 'off'; srSync(); toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); }
-    else if (a === 'hdr') { vt.srHdr = !vt.srHdr; if (vt.srHdr && vt.sr === 'off') vt.sr = 'mid'; srSync(); toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); }
+    else if (a === 'sr') {
+      if (vt.srBroken) { vt.srBroken = false; vt.srWhy = ''; if (vt.sr === 'off') vt.sr = 'mid'; } // после сбоя — пробуем снова
+      else vt.sr = vt.sr === 'off' ? 'mid' : vt.sr === 'mid' ? 'max' : 'off';
+      srSync(); toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr });
+    }
+    else if (a === 'hdr') { vt.srHdr = !vt.srHdr; if (vt.srHdr) { vt.srBroken = false; vt.srWhy = ''; if (vt.sr === 'off') vt.sr = 'mid'; } srSync(); toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); }
     else if (a === 'pip') pipToggle(v);
     else if (a === 'more') { barExpand(!bar.el.classList.contains('x')); barPlace(); }
     else if (a === 'comp') setComp(v, !vt.graphs.get(v)?.compOn);
@@ -769,7 +784,7 @@ function barBuild() {
     barRender();
   });
   // нажатие мимо панели закрывает её
-  document.addEventListener('pointerdown', () => { if (bar.open) barOpen(false); }, true);
+  document.addEventListener('pointerdown', (e) => { if (bar.open && !e.composedPath().includes(bar.host)) barOpen(false); }, true);
   document.documentElement.appendChild(bar.host);
 }
 function barRender() {
@@ -781,6 +796,13 @@ function barRender() {
   const sr = q('[data-a="sr"]'); sr.classList.toggle('on', vt.sr !== 'off');
   q('[data-v="sr"]').textContent = vt.sr === 'off' ? '' : vt.sr === 'mid' ? '×1' : '×2';
   q('[data-a="hdr"]').classList.toggle('on', vt.srHdr);
+  const st = q('[data-v="st"]'), r = vt.srMap.get(v);
+  const WHY = { cors: 'сайт не даёт обработать своё видео', gpu: 'видеокарта не отдала кадр', stall: 'кадры перестали обновляться', nogl: 'нет WebGL', small: 'видео слишком маленькое' };
+  if (vt.srBroken) { st.className = 'st bad'; st.textContent = `Не работает: ${WHY[vt.srWhy] || 'ошибка'}. Нажми «Чёткость», чтобы попробовать снова.`; }
+  else if (vt.sr !== 'off' && r && r.frames > 0) { st.className = 'st ok'; st.textContent = `Работает: ${v.videoWidth}×${v.videoHeight} → ${r.ow}×${r.oh}${vt.srHdr ? ' · HDR' : ''}`; }
+  else if (vt.sr !== 'off' && v.offsetWidth < 240) { st.className = 'st'; st.textContent = 'Включится, когда видео станет больше.'; }
+  else if (vt.sr !== 'off') { st.className = 'st'; st.textContent = 'Включается…'; setTimeout(barRender, 600); }
+  else { st.className = 'st'; st.textContent = ''; }
   q('[data-a="pip"]').classList.toggle('on', document.pictureInPictureElement === v);
   for (const k of ['bright', 'contrast', 'sat']) { const val = Math.round((vt.want[k] ?? 1) * 100); q(`[data-r="${k}"]`).value = val; q(`[data-v="${k}"]`).textContent = val + '%'; }
   q('[data-a="comp"]').classList.toggle('on', !!vt.graphs.get(v)?.compOn);
