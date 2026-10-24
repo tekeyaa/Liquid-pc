@@ -12,42 +12,36 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: xray
-        run: node scripts/get-xray.js && ./bin/xray version | head -1 | tee -a out.txt
-      - name: конфиг обхода
         run: |
           exec > >(tee -a out.txt) 2>&1
-          node -e "const {DPI_CONFIG}=require('./vpn'); require('fs').writeFileSync('dpi.json', JSON.stringify(DPI_CONFIG(10808),null,1))"
+          node scripts/get-xray.js && node -e "const {DPI_CONFIG}=require('./vpn'); require('fs').writeFileSync('dpi.json', JSON.stringify(DPI_CONFIG(10808),null,1))"
           ./bin/xray run -test -c dpi.json
           (./bin/xray run -c dpi.json > xray.log 2>&1 &) ; sleep 2
-          for u in https://www.twitch.tv/ https://usher.ttvnw.net/ https://www.youtube.com/ https://rr1---sn-4g5e6nzz.googlevideo.com/ https://discord.com/; do
-            curl -sS -o /dev/null --max-time 20 -w "%{http_code} %{time_total}s $u\n" --socks5-hostname 127.0.0.1:10808 "$u" || echo "FAIL $u"
-          done
-          tail -5 xray.log
-      - name: PAC
+          for u in https://www.twitch.tv/ https://www.youtube.com/; do curl -sS -o /dev/null --max-time 20 -w "%{http_code} %{time_total}s $u\n" --socks5-hostname 127.0.0.1:10808 "$u" || echo "FAIL $u"; done
+      - name: ghostery и правило Shorts
         run: |
           exec > >(tee -a out.txt) 2>&1
-          node -e "
-          const {SmartVpn}=require('./main/smartvpn');
-          const s=new SmartVpn(); s.dpi='SOCKS5 127.0.0.1:1; SOCKS 127.0.0.1:1'; s.proxy='SOCKS5 127.0.0.1:2';
-          for (const on of [false,true]) {
-            const src=s.pac(on);
-            const f=new Function('isPlainHostName','dnsDomainIs','shExpMatch', src+'; return FindProxyForURL;')((h)=>!h.includes('.'),(h,d)=>h.endsWith(d),(h,p)=>new RegExp('^'+p.replace(/\./g,'\\\\.').replace(/\*/g,'.*')+'$').test(h));
-            for (const h of ['www.twitch.tv','video-weaver.fra05.hls.ttvnw.net','rr3---sn-x.googlevideo.com','ya.ru','gosuslugi.ru','claude.ai','192.168.1.1']) console.log(on?'VPN вкл ':'VPN выкл', h.padEnd(36), f('https://'+h+'/', h));
-          }"
-      - name: правила блокировщика для Shorts
-        run: |
-          exec > >(tee -a out.txt) 2>&1
-          for u in https://filters.adtidy.org/extension/ublock/filters/1.txt https://easylist-downloads.adblockplus.org/advblock.txt https://filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt https://easylist.to/easylist/easylist.txt https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt; do
-            echo "=== $u"; curl -sSL --max-time 60 "$u" | grep -inE "reel|shorts" | grep -iE "youtube|^##|^#\?#" | head -60
-          done
-      - name: версия ghostery и как он применяет :has
-        continue-on-error: true
-        run: |
-          exec > >(tee -a out.txt) 2>&1
-          npm view @ghostery/adblocker-electron version
-          npm pack @ghostery/adblocker-electron-preload >/dev/null 2>&1 && tar xzf ghostery-adblocker-electron-preload-*.tgz && grep -n "extended\|:has\|display" package/dist/esm/index.js | head -30 || true
+          mkdir g && cd g && npm init -y >/dev/null && npm i @ghostery/adblocker@2 >/dev/null 2>&1 && npm ls @ghostery/adblocker | tail -1
+          curl -sSL https://easylist.to/easylist/easylist.txt -o easylist.txt
+          cat > t.mjs <<'JS'
+          import * as G from '@ghostery/adblocker';
+          import fs from 'fs';
+          const list = fs.readFileSync('easylist.txt', 'utf8');
+          const ctx = { url: 'https://www.youtube.com/shorts/abc', hostname: 'www.youtube.com', domain: 'youtube.com', classes: ['ytd-shorts', 'ytd-reel-video-renderer'], ids: ['shorts-inner-container'], hrefs: [], getBaseRules: true, getInjectionRules: true, getExtendedRules: true, getRulesFromHostname: true, getRulesFromDOM: true };
+          const show = (name, e) => { const r = e.getCosmeticsFilters(ctx); const css = (r.styles || ''); const ext = JSON.stringify(r.extended || []);
+            console.log(name, '| в стилях:', css.includes('shorts-inner-container'), '| в extended:', ext.includes('shorts-inner-container'));
+            const m = css.match(/[^}]*shorts-inner-container[^{]*\{[^}]*\}/); if (m) console.log('   ', m[0].slice(0, 200)); };
+          for (const ext of [false, true]) show('loadExtendedSelectors=' + ext, G.FiltersEngine.parse(list, { loadExtendedSelectors: ext, loadCosmeticFilters: true }));
+          const EXC = 'youtube.com#@##shorts-inner-container > .ytd-shorts:has(> .ytd-reel-video-renderer > ytd-ad-slot-renderer)';
+          show('с исключением в списке', G.FiltersEngine.parse(list + '\n' + EXC, { loadExtendedSelectors: true, loadCosmeticFilters: true }));
+          const e = G.FiltersEngine.parse(list, { loadExtendedSelectors: true, loadCosmeticFilters: true });
+          console.log('есть update:', typeof e.update, '| CosmeticFilter.parse:', typeof G.CosmeticFilter?.parse, '| merge:', typeof G.FiltersEngine.merge);
+          try { e.update({ newCosmeticFilters: [G.CosmeticFilter.parse(EXC)] }); show('исключение через update', e); } catch (err) { console.log('update ошибка', err.message); }
+          console.log('Config по умолчанию loadExtendedSelectors =', new G.Config().loadExtendedSelectors);
+          JS
+          node t.mjs
       - name: результат в ветку
         if: always()
         run: |
           git config user.name Liquid; git config user.email viperusa08@gmail.com
-          git checkout --orphan diag-out && git rm -rqf . && git add -f out.txt && git commit -qm out && git push -f origin diag-out
+          git checkout --orphan diag-out2 && git rm -rqf . && git add -f out.txt && git commit -qm out && git push -f origin diag-out2

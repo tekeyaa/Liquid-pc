@@ -187,7 +187,8 @@ const DPI_CONFIG = (port) => ({
   inbounds: [{ tag: 'socks-in', listen: '127.0.0.1', port, protocol: 'socks', settings: { udp: false } }],
   outbounds: [{
     tag: 'frag', protocol: 'freedom',
-    settings: { domainStrategy: 'UseIPv4', fragment: { packets: 'tlshello', length: '40-80', interval: '1-2' } },
+    settings: { fragment: { packets: 'tlshello', length: '40-80', interval: '1-2' } },
+    streamSettings: { sockopt: { domainStrategy: 'UseIPv4' } }, // имя сайта xray сам резолвит через DNS по HTTPS
   }],
 });
 
