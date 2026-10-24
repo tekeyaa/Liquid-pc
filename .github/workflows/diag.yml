@@ -1,0 +1,39 @@
+name: diag-netfix
+on:
+  push:
+    branches: [diag-netfix]
+permissions:
+  contents: write
+jobs:
+  win:
+    runs-on: windows-latest
+    steps:
+      - name: NetFix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = "$env:GITHUB_WORKSPACE\out.txt"
+          function W($s) { $s | Out-File -Append -Encoding utf8 $out; Write-Host $s }
+          $rel = Invoke-RestMethod https://api.github.com/repos/rupleide/NetFix/releases/latest -Headers @{ 'User-Agent' = 'liquid' }
+          W "tag: $($rel.tag_name)  published: $($rel.published_at)"
+          foreach ($a in $rel.assets) { W "asset: $($a.name)  $($a.size)  digest=$($a.digest)" }
+          foreach ($r in 'Flowseal/zapret-discord-youtube','Flowseal/tg-ws-proxy') { $x = Invoke-RestMethod "https://api.github.com/repos/$r/releases/latest" -Headers @{ 'User-Agent' = 'liquid' }; W "$r -> $($x.tag_name): $(($x.assets | % name) -join ', ')" }
+          $setup = $rel.assets | ? { $_.name -match 'Setup.*\.exe$' } | select -First 1
+          Invoke-WebRequest $setup.browser_download_url -OutFile setup.exe
+          $bytes = [IO.File]::ReadAllBytes("$PWD\setup.exe"); $txt = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($k in 'Inno Setup','Nullsoft','NSIS','WiX','Squirrel','Advanced Installer','InstallShield') { if ($txt.Contains($k)) { W "installer marker: $k" } }
+          $sig = Get-AuthenticodeSignature setup.exe; W "signature: $($sig.Status) $($sig.SignerCertificate.Subject)"
+          $p = Start-Process .\setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -PassThru -Wait
+          W "inno silent exit: $($p.ExitCode)"
+          Start-Sleep 5
+          Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | % { Get-ItemProperty $_.PSPath } | ? { $_.DisplayName -match 'NetFix' } | % { W "uninstall key: $($_.PSChildName) | $($_.DisplayName) | $($_.DisplayVersion) | $($_.InstallLocation) | $($_.UninstallString)" }
+          $exe = Get-ChildItem 'C:\Program Files','C:\Program Files (x86)',"$env:LOCALAPPDATA","$env:APPDATA" -Recurse -Filter NetFix.exe -ErrorAction SilentlyContinue | select -First 3
+          foreach ($e in $exe) { W "NetFix.exe: $($e.FullName)  $($e.Length) bytes  version=$($e.VersionInfo.FileVersion)" ; Get-ChildItem $e.DirectoryName | % { W "   $($_.Name)  $($_.Length)" } }
+          $dn = & dotnet --list-runtimes 2>$null; W "dotnet runtimes: $($dn -join '; ')"
+          Get-ChildItem "$env:PUBLIC\Desktop","$env:ProgramData\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter *NetFix* -ErrorAction SilentlyContinue | % { W "shortcut: $($_.FullName)" }
+      - name: result
+        if: always()
+        shell: bash
+        run: |
+          git config user.name Liquid; git config user.email viperusa08@gmail.com
+          git checkout --orphan diag-netfix-out && git rm -rqf . >/dev/null 2>&1; git add -f out.txt && git commit -qm out && git push -f origin diag-netfix-out
