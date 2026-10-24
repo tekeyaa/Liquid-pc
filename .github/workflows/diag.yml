@@ -2,6 +2,8 @@ name: diag
 on:
   push:
     branches: [diag]
+permissions:
+  contents: write
 jobs:
   diag:
     runs-on: ubuntu-latest
@@ -10,9 +12,10 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: xray
-        run: node scripts/get-xray.js && ./bin/xray version | head -1
+        run: node scripts/get-xray.js && ./bin/xray version | head -1 | tee -a out.txt
       - name: конфиг обхода
         run: |
+          exec > >(tee -a out.txt) 2>&1
           node -e "const {DPI_CONFIG}=require('./vpn'); require('fs').writeFileSync('dpi.json', JSON.stringify(DPI_CONFIG(10808),null,1))"
           ./bin/xray run -test -c dpi.json
           (./bin/xray run -c dpi.json > xray.log 2>&1 &) ; sleep 2
@@ -22,6 +25,7 @@ jobs:
           tail -5 xray.log
       - name: PAC
         run: |
+          exec > >(tee -a out.txt) 2>&1
           node -e "
           const {SmartVpn}=require('./main/smartvpn');
           const s=new SmartVpn(); s.dpi='SOCKS5 127.0.0.1:1; SOCKS 127.0.0.1:1'; s.proxy='SOCKS5 127.0.0.1:2';
@@ -32,10 +36,18 @@ jobs:
           }"
       - name: правила блокировщика для Shorts
         run: |
+          exec > >(tee -a out.txt) 2>&1
           for u in https://filters.adtidy.org/extension/ublock/filters/1.txt https://easylist-downloads.adblockplus.org/advblock.txt https://filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt https://easylist.to/easylist/easylist.txt https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt; do
             echo "=== $u"; curl -sSL --max-time 60 "$u" | grep -inE "reel|shorts" | grep -iE "youtube|^##|^#\?#" | head -60
           done
       - name: версия ghostery и как он применяет :has
+        continue-on-error: true
         run: |
+          exec > >(tee -a out.txt) 2>&1
           npm view @ghostery/adblocker-electron version
           npm pack @ghostery/adblocker-electron-preload >/dev/null 2>&1 && tar xzf ghostery-adblocker-electron-preload-*.tgz && grep -n "extended\|:has\|display" package/dist/esm/index.js | head -30 || true
+      - name: результат в ветку
+        if: always()
+        run: |
+          git config user.name Liquid; git config user.email viperusa08@gmail.com
+          git checkout --orphan diag-out && git rm -rqf . && git add -f out.txt && git commit -qm out && git push -f origin diag-out
