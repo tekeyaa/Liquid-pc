@@ -3,9 +3,25 @@
 const path = require('path');
 const fs = require('fs');
 
+// Наши исключения из списков. Правило EasyList прячет весь ролик Shorts, если в его контейнере есть рекламный блок;
+// YouTube переиспользует контейнеры, блок остаётся — и обычные Shorts пропадают вместе с кнопками.
+// Рекламные ролики в Shorts и так вырезаются правилами json-prune из ответа YouTube.
+const EXCEPTIONS = [
+  'youtube.com#@##shorts-inner-container > .ytd-shorts:has(> .ytd-reel-video-renderer > ytd-ad-slot-renderer)',
+];
+function withExceptions(lib, engine) {
+  try {
+    const CF = lib.CosmeticFilter || require('@ghostery/adblocker').CosmeticFilter;
+    const list = EXCEPTIONS.map((l) => CF.parse(l)).filter(Boolean);
+    if (list.length) engine.update({ newCosmeticFilters: list });
+  } catch (e) { console.warn('adblock exceptions', e.message); }
+  return engine;
+}
+
 class AdBlock {
   constructor(userData) {
-    this.cacheFile = path.join(userData, 'adblock-engine-ru.bin'); // новое имя: в кэше теперь и русские списки
+    this.cacheFile = path.join(userData, 'adblock-engine-ru2.bin'); // новое имя: в кэше русские списки и наши исключения
+    try { fs.rmSync(path.join(userData, 'adblock-engine-ru.bin'), { force: true }); } catch {}
     this.blocker = null;
     this.sessions = new Set();
     this.allow = new Set(); // сайты, где блокировщик выключен
@@ -34,6 +50,7 @@ class AdBlock {
         const fresh = base
           ? await ElectronBlocker.fromLists(fetchFn, [...base, ...RU], { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true })
           : await ElectronBlocker.fromPrebuiltAdsAndTracking(fetchFn);
+        withExceptions(lib, fresh);
         fs.writeFileSync(this.cacheFile, Buffer.from(fresh.serialize()));
         const was = this.blocker;
         this.blocker = fresh;

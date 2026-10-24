@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, session, safeStorage, Menu, clipboard, shell, net, dialog, screen, webContents, Notification, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { parseKey, Xray } = require('./vpn');
+const { parseKey, Xray, DPI_CONFIG } = require('./vpn');
 const { spawn } = require('child_process');
 const { AdBlock } = require('./main/adblock');
 const { SmartVpn } = require('./main/smartvpn');
@@ -118,6 +118,7 @@ let proxyRules = '';     // текущий прокси, если VPN включ
 const downloads = new Map(); // id -> { item, host }
 let dlSeq = 0;
 let xray = null;
+let dpiXray = null;       // обход замедления без VPN (Twitch, YouTube, Discord)
 let vpnStartup = null;
 let permDecided = null;  // решения о доступе для сайтов (обычный режим), загружаются при старте
 let iconSes = null;      // сессия без куки для значков и подсказок поиска
@@ -148,6 +149,7 @@ function publicSettings() {
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false,
+    antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi,
     version: app.getVersion(), electron: process.versions.electron,
   };
 }
@@ -457,10 +459,11 @@ function setupPopup(w, openerHost) {
 // просто добавился сайт в «умный» список или открылось новое окно — иначе прерываются видео и загрузки)
 async function applyProxy({ sessions = allSessions(), close = true } = {}) {
   const mode = loadSettings().vpnMode || 'smart';
+  smart.vpnOn = !!proxyRules;
   if (iconSes && !sessions.includes(iconSes)) sessions = [...sessions, iconSes]; // значки стартовой — тоже через VPN
   for (const sess of sessions) {
-    if (!proxyRules) await sess.setProxy({ mode: 'direct' });
-    else if (mode === 'smart') await sess.setProxy({ mode: 'pac_script', pacScript: smart.url() });
+    if (!proxyRules && !smart.dpi) await sess.setProxy({ mode: 'direct' });
+    else if (!proxyRules || mode === 'smart') await sess.setProxy({ mode: 'pac_script', pacScript: smart.url() }); // без VPN PAC ведёт только обход замедления
     else await sess.setProxy({ proxyRules, proxyBypassRules: '<local>' });
     if (close) await sess.closeAllConnections();
   }
@@ -514,6 +517,28 @@ async function vpnDisconnect(silent) {
   vpnState = { on: false, name: '', ip: '', country: '', busy: false };
   if (!silent) sendVpn();
   return vpnState;
+}
+
+// --- обход замедления без VPN ---
+let dpiRestarts = 0;
+async function startDpi() {
+  if (loadSettings().antiDpi === false || !dpiXray) return false;
+  try {
+    const port = await dpiXray.start(null, DPI_CONFIG);
+    smart.dpi = `SOCKS5 127.0.0.1:${port}; SOCKS 127.0.0.1:${port}`;
+    await applyProxy({ close: true });
+    diag.log('info', 'обход', 'Обход замедления включён (Twitch, YouTube, Discord без VPN)');
+    return true;
+  } catch (e) {
+    smart.dpi = '';
+    diag.log('warn', 'обход', 'Обход замедления не запустился: ' + e.message);
+    return false;
+  }
+}
+async function stopDpi() {
+  dpiXray?.stop();
+  smart.dpi = '';
+  await applyProxy({ close: true });
 }
 
 // --- чему «умный» VPN может учиться ---
@@ -929,7 +954,9 @@ function registerIpc() {
       if (adblock) adblock.allow = set;
     }
     if (patch.forgetVpn) { s.vpnKey = ''; s.vpnName = ''; }
+    if ('antiDpi' in patch) s.antiDpi = !!patch.antiDpi;
     saveSettings(s);
+    if ('antiDpi' in patch) { dpiRestarts = 0; return (s.antiDpi ? startDpi() : stopDpi()).then(() => publicSettings()); }
     if ('vpnMode' in patch || 'vpnSites' in patch || patch.forgetLearned || patch.learnedRemove) { syncSmartLists(); if (vpnState.on) applyProxy({ close: 'vpnMode' in patch }).then(sendVpn); }
     return publicSettings();
   });
@@ -1400,6 +1427,15 @@ app.whenReady().then(async () => {
   adblock.init((url, opts) => ses.fetch(url, opts)).catch(() => {});
   const binDir = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(__dirname, 'bin');
   xray = new Xray(binDir, app.getPath('userData'));
+  dpiXray = new Xray(binDir, app.getPath('userData'), 'xray-dpi');
+  // обход упал — сайты из его списка идут напрямую (в PAC есть DIRECT), пробуем поднять его снова, но не бесконечно
+  dpiXray.onExit = (code) => {
+    if (!smart.dpi) return;
+    smart.dpi = ''; applyProxy({ close: false });
+    diag.log('warn', 'обход', `xray обхода остановился (код ${code})`, dpiXray.log ? dpiXray.log.trim().split('\n').slice(-3).join(' / ') : '');
+    if (dpiRestarts++ < 3) setTimeout(() => startDpi(), 5000);
+  };
+  await Promise.race([startDpi(), new Promise((r) => setTimeout(r, 3000))]); // вкладки открываются уже через обход
   // xray неожиданно завершился: снимаем прокси, иначе ни один сайт не откроется
   xray.onExit = (code) => {
     if (!vpnState.on) return;
@@ -1442,7 +1478,7 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('before-quit', () => { if (xray) xray.stop(); game?.stop(); });
+app.on('before-quit', () => { if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); });
 app.on('window-all-closed', () => { if (xray) xray.stop(); app.quit(); });
 
 // Одна копия приложения

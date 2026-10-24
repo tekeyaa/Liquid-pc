@@ -596,7 +596,7 @@ class SuperRes {
     this.tSrc = tex(); this.tMid = tex();
     this.fb = gl.createFramebuffer();
     this.level = 'mid'; this.hdr = false; this.alive = true; this.ow = 0; this.oh = 0;
-    this.frames = 0; this.lastT = -1; this.dirty = true; this.lastDraw = performance.now();
+    this.frames = 0; this.lastT = -1; this.dirty = true; this.bad = 0; this.retestAt = 0;
     this.c.style.visibility = 'hidden';
     v.insertAdjacentElement('afterend', this.c);
     this.ro = new ResizeObserver(() => this.place()); this.ro.observe(v);
@@ -643,7 +643,6 @@ class SuperRes {
       set(p); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     };
     run(this.pUp, this.fb, this.tSrc, this.ow, this.oh, (p) => { gl.uniform2f(gl.getUniformLocation(p, 'src'), v.videoWidth, v.videoHeight); gl.uniform1f(gl.getUniformLocation(p, 'flip'), 1); });
-    this.lastDraw = performance.now();
     run(this.pSh, null, this.tMid, this.ow, this.oh, (p) => {
       gl.uniform2f(gl.getUniformLocation(p, 'dst'), this.ow, this.oh);
       gl.uniform1f(gl.getUniformLocation(p, 'flip'), 0);
@@ -654,47 +653,66 @@ class SuperRes {
   }
   // Рисуем по кадрам экрана и только когда у видео сменился кадр.
   // (requestVideoFrameCallback не используем: когда наш слой закрывает видео, Chromium может перестать его вызывать — картинка «застывала»)
+  // Проверки «зависания» больше нет: рисуем, только когда у видео сменился кадр, значит наш слой
+  // всегда показывает то же, что и само видео; если видео стоит (буферизация, реклама) — стоит и он.
   loop() {
     if (!this.alive) return;
     const v = this.v;
-    // вкладка была скрыта или окно свёрнуто — кадры не рисовались не по нашей вине, отсчёт «зависания» начинаем заново
-    const now = performance.now();
-    if (now - (this.lastLoop || now) > 400 || document.hidden) this.lastDraw = now;
-    this.lastLoop = now;
     const t = v.currentTime;
     if (v.readyState >= 2 && (t !== this.lastT || this.dirty)) {
       this.lastT = t; this.dirty = false;
       try { this.draw(); this.frames++; } catch (e) { this.fail('cors'); return; }
-      if (this.frames === 8 || this.frames === 60 || this.frames % 600 === 0) { if (!this.selfTest()) return; }
-      if (this.frames === 1) this.c.style.visibility = 'visible';
+      const f = this.frames;
+      if (f === 8 || f === 60 || f % 600 === 0 || f === this.retestAt) { if (!this.selfTest()) return; }
+      if (f === 1) { this.c.style.visibility = 'visible'; this.uiCheck(); }
     }
-    // видео идёт, а мы давно ничего не рисовали — значит что-то сломалось, показываем обычное видео
-    if (!v.paused && v.readyState >= 3 && this.frames > 0 && performance.now() - this.lastDraw > 1500) { this.fail('stall'); return; }
     requestAnimationFrame(() => this.loop());
   }
   // Проверяем, что видеокарта реально отдаёт кадр, а не чёрный экран
+  // Видеокарта иногда отдаёт пустой кадр на переходах (реклама, смена ролика, перемотка) — это не поломка.
+  // Сравниваем 5 одинаковых точек кадра: видео и наш слой. Сбой — только если слой чёрный там, где видео светлое,
+  // в большинстве точек и три проверки подряд; одна неудачная проверка просто назначает повторную через 10 кадров.
   selfTest() {
     const v = this.v, gl = this.gl;
     try {
-      const s2 = this.probe || (this.probe = Object.assign(document.createElement('canvas'), { width: 8, height: 8 }));
+      const W = 32, H = 18;
+      const s2 = this.probe || (this.probe = Object.assign(document.createElement('canvas'), { width: W, height: H }));
       const g = s2.getContext('2d', { willReadFrequently: true });
-      const vw = v.videoWidth, vh = v.videoHeight;
-      g.drawImage(v, vw * 0.3, vh * 0.3, vw * 0.4, vh * 0.4, 0, 0, 8, 8);
-      const a = g.getImageData(0, 0, 8, 8).data;
-      let sv = 0; for (let i = 0; i < a.length; i += 4) sv += a[i] + a[i + 1] + a[i + 2];
-      const px = new Uint8Array(4 * 64);
-      gl.readPixels(Math.floor(this.ow * 0.5) - 4, Math.floor(this.oh * 0.5) - 4, 8, 8, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      let sg = 0; for (let i = 0; i < px.length; i += 4) sg += px[i] + px[i + 1] + px[i + 2];
-      sv /= 64 * 3; sg /= 64 * 3;
-      if (sv > 18 && sg < 3) { this.fail('gpu'); return false; }
+      g.drawImage(v, 0, 0, W, H);
+      const a = g.getImageData(0, 0, W, H).data;
+      const px = new Uint8Array(4 * 4);
+      let bad = 0;
+      for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+        const i = (Math.floor(fy * H) * W + Math.floor(fx * W)) * 4;
+        const sv = (a[i] + a[i + 1] + a[i + 2]) / 3;
+        gl.readPixels(Math.floor(fx * this.ow), Math.floor((1 - fy) * this.oh), 2, 2, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        let sg = 0; for (let k = 0; k < 16; k += 4) sg += (px[k] + px[k + 1] + px[k + 2]) / 3;
+        if (sv > 24 && sg / 4 < 4) bad++;
+      }
+      if (bad >= 3) {
+        this.bad++;
+        if (this.bad >= 3) { this.fail('gpu'); return false; }
+        this.retestAt = this.frames + 10;
+      } else this.bad = 0;
     } catch (e) { /* кросс-доменное видео — сравнить не можем, верим отрисовке */ }
     return true;
+  }
+  // слой появился — не закрыл ли он кнопки плеера; плееры меняют интерфейс (Shorts — при каждом ролике), поэтому повторяем
+  uiCheck() {
+    if (!this.alive) return;
+    if (uiAtRisk(this.v)) {
+      const v = this.v;
+      console.warn(`[liquid] супер-чёткость закрывала бы кнопки плеера — выключена для этого видео @ ${location.hostname}`);
+      this.destroy(); vt.skip.set(v, 'ui'); barRender();
+      return;
+    }
+    clearTimeout(this.uiT); this.uiT = setTimeout(() => this.uiCheck(), 3000);
   }
   fail(reason) {
     if (reason === 'cors' || reason === 'cover') {
       const v = this.v;
       console.warn(`[liquid] супер-чёткость в лёгком режиме: ${reason} @ ${location.hostname}`);
-      this.destroy(); vt.lite.add(v); applyFilter(v); barRender();
+      this.destroy(); vt.lite.add(v); liteApply(v); barRender();
       return;
     }
     console.warn(`[liquid] супер-чёткость отключена: ${reason}, видео ${this.v.videoWidth}x${this.v.videoHeight} @ ${location.hostname}`);
@@ -703,15 +721,67 @@ class SuperRes {
     toHost({ type: 'srFail', reason });
     barRender();
   }
-  destroy() { if (!this.alive) return; this.alive = false; clearInterval(this.posT); this.ro.disconnect(); this.c.remove(); vt.srMap.delete(this.v); }
+  destroy() { if (!this.alive) return; this.alive = false; clearInterval(this.posT); clearTimeout(this.uiT); this.ro.disconnect(); this.c.remove(); vt.srMap.delete(this.v); }
 }
 vt.srMap = new Map();
+vt.skip = new WeakMap(); // видео, которые не улучшаем: 'drm' — защищённое, 'ui' — улучшение закрыло бы кнопки плеера
+// Кнопки и подписи плеера поверх видео (YouTube Shorts и др.). Наш слой и фильтр поднимают видео в порядке
+// отрисовки, и элементы плеера, у которых нет своего слоя, оказываются под ним — интерфейс «пропадает».
+// Проверяем честно: что лежит выше в стопке на месте каждой кнопки — она или наше видео/слой.
+// Рисуется ли элемент el выше видео v только благодаря порядку в документе. Холст и фильтр поднимают видео
+// в слой «позиционированных» элементов, и такие кнопки оказываются под ним — интерфейс «пропадает» (YouTube Shorts и др.).
+// Считаем по правилам CSS, а не по клику: у видео есть свой невидимый слой, который всегда «сверху» для elementsFromPoint.
+function layered(n) {
+  const cs = getComputedStyle(n);
+  if (cs.position !== 'static') return true;
+  if (cs.zIndex !== 'auto' && n.parentElement && /flex|grid/.test(getComputedStyle(n.parentElement).display)) return true;
+  return parseFloat(cs.opacity) < 1 || cs.transform !== 'none' || cs.filter !== 'none' || cs.isolation === 'isolate' || cs.mixBlendMode !== 'normal' ||
+    /transform|opacity|filter/.test(cs.willChange) || /paint|strict|content/.test(cs.contain);
+}
+function paintRoot(el, stop) {
+  for (let n = el; n && n !== stop; n = n.parentElement) if (layered(n)) return n;
+  return null;
+}
+function uiAtRisk(v) {
+  if (layered(v)) return false; // видео и так в своём слое — наш холст/фильтр порядок не меняет
+  const vr = v.getBoundingClientRect();
+  if (vr.width < 50) return false;
+  let root = v; for (let i = 0; i < 6 && root.parentElement; i++) root = root.parentElement;
+  for (const el of root.querySelectorAll('button, a, [role="button"], svg, img, h1, h2, h3, yt-formatted-string, span')) {
+    if (el === v || el.contains(v) || el.closest('lq-video-bar')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 6 || r.height < 6 || r.left >= vr.right || r.right <= vr.left || r.top >= vr.bottom || r.bottom <= vr.top) continue;
+    if (getComputedStyle(el).visibility === 'hidden') continue;
+    let ca = v.parentElement; while (ca && !ca.contains(el)) ca = ca.parentElement; // общий предок
+    const pr = paintRoot(el, ca);
+    if (!pr) return true; // кнопка в обычном потоке — окажется под поднятым видео
+    const z = getComputedStyle(pr).zIndex;
+    // слой без z-index, который в документе раньше видео, тоже окажется под ним
+    if ((z === 'auto' || z === '0') && (pr.compareDocumentPosition(v) & Node.DOCUMENT_POSITION_FOLLOWING)) return true;
+  }
+  return false;
+}
+// лёгкий режим: фильтр прямо на видео — если только он не утопит кнопки плеера
+function liteApply(v) {
+  const f0 = v.style.filter; v.style.filter = '';
+  const risk = uiAtRisk(v);
+  v.style.filter = f0;
+  if (risk && vt.sr !== 'off') { vt.skip.set(v, 'ui'); vt.lite.delete(v); }
+  applyFilter(v);
+}
 function srSync() {
   for (const v of videos()) {
     const big = v.offsetWidth >= 240;
     let r = vt.srMap.get(v);
     if (vt.sr === 'off' || !big) { if (r) r.destroy(); if (vt.lite.has(v)) applyFilter(v); continue; }
-    if (vt.lite.has(v)) { applyFilter(v); continue; }
+    // защищённое видео (DRM: кинотеатры, платные сервисы) видеокарте не отдаётся, а фильтры могут его зачернить
+    if (v.mediaKeys) { if (r) r.destroy(); vt.skip.set(v, 'drm'); continue; }
+    if (vt.skip.has(v)) continue;
+    if (!r && !vt.lite.has(v) && uiAtRisk(v)) { vt.skip.set(v, 'ui'); continue; } // улучшение закрыло бы кнопки плеера
+    if (vt.lite.has(v)) {
+      liteApply(v);
+      continue;
+    }
     if (!r) { if (vt.srBroken) continue; try { r = new SuperRes(v); vt.srMap.set(v, r); } catch (e) { toHost({ type: 'srFail', reason: 'nogl' }); continue; } }
     r.level = vt.sr; r.hdr = vt.srHdr;
   }
@@ -843,7 +913,9 @@ function barRender() {
   q('[data-a="hdr"]').classList.toggle('on', vt.srHdr);
   const st = q('[data-v="st"]'), r = vt.srMap.get(v);
   const WHY = { cors: 'сайт не даёт обработать своё видео', gpu: 'видеокарта не отдала кадр', stall: 'кадры перестали обновляться', nogl: 'нет WebGL', small: 'видео слишком маленькое' };
-  if (vt.srBroken) { st.className = 'st bad'; st.textContent = `Не работает: ${WHY[vt.srWhy] || 'ошибка'}. Нажми «Чёткость», чтобы попробовать снова.`; }
+  if (vt.sr !== 'off' && vt.skip.get(v) === 'drm') { st.className = 'st'; st.textContent = 'Защищённое видео (DRM) — сервис не разрешает его обрабатывать.'; }
+  else if (vt.sr !== 'off' && vt.skip.get(v) === 'ui') { st.className = 'st'; st.textContent = 'Для этого плеера выключено: улучшение закрыло бы его кнопки.'; }
+  else if (vt.srBroken) { st.className = 'st bad'; st.textContent = `Не работает: ${WHY[vt.srWhy] || 'ошибка'}. Нажми «Чёткость», чтобы попробовать снова.`; }
   else if (vt.sr !== 'off' && vt.lite.has(v)) { st.className = 'st ok'; st.textContent = `Работает в лёгком режиме: резкость${vt.srHdr ? ' и HDR-цвет' : ''} без апскейла — этот плеер не отдаёт кадры видеокарте.`; }
   else if (vt.sr !== 'off' && r && r.frames > 0) { st.className = 'st ok'; st.textContent = `Работает: ${v.videoWidth}×${v.videoHeight} → ${r.ow}×${r.oh}${vt.srHdr ? ' · HDR' : ''}`; }
   else if (vt.sr !== 'off' && v.offsetWidth < 240) { st.className = 'st'; st.textContent = 'Включится, когда видео станет больше.'; }

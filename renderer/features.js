@@ -501,6 +501,8 @@
     $('#vpnMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === m));
     $('#vpnModeHint').textContent = MODE_HINT[m];
     $('#autoVpn').checked = settings.autoVpn !== false;
+    $('#antiDpi').checked = settings.antiDpi !== false;
+    $('#antiDpiState').textContent = settings.antiDpi === false ? 'Выключен' : settings.antiDpiOn ? 'Работает: Twitch, YouTube, Discord — напрямую, без сервера' : 'Не запустился — подробности в «Настройки → Отладка»';
     if (document.activeElement !== $('#vpnSites')) $('#vpnSites').value = settings.vpnSites || '';
     const ls = (settings.learned || []).slice().sort();
     const box = $('#learnedInfo');
@@ -524,6 +526,12 @@
     toast(b.dataset.v === 'smart' ? 'Умный VPN: только заблокированные сайты' : 'VPN для всего трафика');
   });
   $('#autoVpn').onchange = async (e) => { settings = await L.settings.set({ autoVpn: e.target.checked }); };
+  $('#antiDpi').onchange = async (e) => {
+    settings = await L.settings.set({ antiDpi: e.target.checked });
+    renderVpnExtras();
+    toast(e.target.checked ? (settings.antiDpiOn ? 'Обход замедления включён — обнови страницу Twitch или YouTube' : 'Обход не запустился — подробности в «Настройки → Отладка»') : 'Обход замедления выключен', e.target.checked && !settings.antiDpiOn);
+    if (active && /twitch|youtube|discord/.test(active.url)) active.wv?.reload();
+  };
   let sitesT = 0;
   $('#vpnSites').addEventListener('input', () => { clearTimeout(sitesT); sitesT = setTimeout(async () => { settings = await L.settings.set({ vpnSites: $('#vpnSites').value }); renderVpnExtras(); }, 700); });
   $('#forgetLearned').onclick = async () => { settings = await L.settings.set({ forgetLearned: true }); renderVpnExtras(); toast('Выученные сайты сброшены'); };

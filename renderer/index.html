@@ -180,6 +180,10 @@
       <span>Сам включать VPN, если сайт заблокирован</span>
       <input type="checkbox" id="autoVpn" class="switch" />
     </label>
+    <label class="switch-row" style="margin-top:10px" title="Twitch, YouTube и Discord идут напрямую, без сервера VPN, но первое сообщение соединения режется на куски — фильтр провайдера не узнаёт сайт">
+      <span>Обход замедления без VPN<small id="antiDpiState" class="muted sm" style="display:block;margin-top:2px">Twitch, YouTube, Discord — напрямую, без сервера</small></span>
+      <input type="checkbox" id="antiDpi" class="switch" />
+    </label>
     <details class="vpn-more">
       <summary>Сайты через VPN</summary>
       <div class="muted sm" style="margin:8px 0 6px">В умном режиме через VPN идут YouTube, Twitch, Discord, Instagram, X, Claude, ChatGPT и ещё ~80 сайтов, плюс те, что браузер выучил сам. Добавь свои — по одному в строке:</div>
