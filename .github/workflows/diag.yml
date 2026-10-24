@@ -7,6 +7,7 @@ permissions:
 jobs:
   win:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: NetFix
         shell: pwsh
@@ -23,8 +24,17 @@ jobs:
           $bytes = [IO.File]::ReadAllBytes("$PWD\setup.exe"); $txt = [Text.Encoding]::ASCII.GetString($bytes)
           foreach ($k in 'Inno Setup','Nullsoft','NSIS','WiX','Squirrel','Advanced Installer','InstallShield') { if ($txt.Contains($k)) { W "installer marker: $k" } }
           $sig = Get-AuthenticodeSignature setup.exe; W "signature: $($sig.Status) $($sig.SignerCertificate.Subject)"
-          $p = Start-Process .\setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -PassThru -Wait
-          W "inno silent exit: $($p.ExitCode)"
+          W "size: $((Get-Item setup.exe).Length)"
+          # найти, чем собран установщик: строки-маркеры и вывод /? (у Inno — окно справки, у NSIS — ничего)
+          $m = [regex]::Matches($txt, '(Inno Setup[^\x00]{0,40}|Nullsoft[^\x00]{0,40}|InnoSetupLdrWindow|\.NET[^\x00]{0,30}Desktop[^\x00]{0,30}|Velopack[^\x00]{0,20}|Squirrel[^\x00]{0,20})') | select -First 8 | % Value
+          foreach ($x in $m) { W "marker: $x" }
+          foreach ($args in @(@('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-'), @('/S'), @('/quiet'))) {
+            $p = Start-Process .\setup.exe -ArgumentList $args -PassThru
+            $done = $p.WaitForExit(150000)
+            W "try $($args -join ' ') -> finished=$done exit=$(if ($done) { $p.ExitCode } else { 'timeout' })"
+            if (-not $done) { Get-Process | ? { $_.MainWindowTitle } | % { W "   window: $($_.ProcessName) '$($_.MainWindowTitle)'" }; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Get-Process | ? { $_.ProcessName -match 'setup|NetFix|\.tmp' } | Stop-Process -Force -ErrorAction SilentlyContinue }
+            if ($done -and $p.ExitCode -eq 0) { break }
+          }
           Start-Sleep 5
           Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | % { Get-ItemProperty $_.PSPath } | ? { $_.DisplayName -match 'NetFix' } | % { W "uninstall key: $($_.PSChildName) | $($_.DisplayName) | $($_.DisplayVersion) | $($_.InstallLocation) | $($_.UninstallString)" }
           $exe = Get-ChildItem 'C:\Program Files','C:\Program Files (x86)',"$env:LOCALAPPDATA","$env:APPDATA" -Recurse -Filter NetFix.exe -ErrorAction SilentlyContinue | select -First 3
