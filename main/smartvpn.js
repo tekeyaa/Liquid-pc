@@ -22,11 +22,20 @@ const BUILTIN = [
   'pornhub.com', 'quora.com', 'deviantart.com', 'tiktok.com', 'tiktokcdn.com', 'tiktokv.com',
 ];
 
+// Сайты, которые провайдеры замедляют по имени в TLS: без VPN их открывает обход замедления
+const DPI_SITES = [
+  'twitch.tv', 'ttvnw.net', 'jtvnw.net', 'live-video.net', 'twitchcdn.net', 'twitchsvc.net', 'ext-twitch.tv',
+  'youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'youtubei.googleapis.com', 'youtube-nocookie.com',
+  'discord.com', 'discord.gg', 'discordapp.com', 'discordapp.net', 'discord.media',
+];
+
 class SmartVpn {
   constructor() {
     this.proxy = '';           // "SOCKS5 127.0.0.1:1234; SOCKS 127.0.0.1:1234" или "PROXY host:port"
     this.learned = new Set();  // домены, которые не открылись напрямую
     this.custom = new Set();   // домены, добавленные вручную
+    this.dpi = '';
+    this.vpnOn = false;             // локальный xray обхода замедления: "SOCKS5 127.0.0.1:N; SOCKS 127.0.0.1:N"
     this.server = null;
     this.port = 0;
     this.version = 0;
@@ -49,12 +58,17 @@ class SmartVpn {
     return this.domains().some((d) => host === d || host.endsWith('.' + d));
   }
 
-  pac() {
-    const list = JSON.stringify(this.domains());
-    return `var D=${list};var P=${JSON.stringify(this.proxy)};
+  // vpnOn — включён ли VPN (тогда список D идёт через него); без VPN сайты из DPI идут через обход замедления,
+  // а если обход упал, Chromium сам откроет их напрямую (DIRECT в конце)
+  pac(vpnOn) {
+    const list = JSON.stringify(vpnOn ? this.domains() : []);
+    const dpi = JSON.stringify(this.dpi ? DPI_SITES : []);
+    return `var D=${list};var P=${JSON.stringify(this.proxy)};var F=${dpi};var Q=${JSON.stringify(this.dpi ? this.dpi + '; DIRECT' : 'DIRECT')};
+function m(h,L){for(var i=0;i<L.length;i++){var d=L[i];if(h===d||dnsDomainIs(h,"."+d))return true;}return false;}
 function FindProxyForURL(url,host){host=host.toLowerCase();
 if(isPlainHostName(host)||host==="localhost"||shExpMatch(host,"127.*")||shExpMatch(host,"10.*")||shExpMatch(host,"192.168.*"))return "DIRECT";
-for(var i=0;i<D.length;i++){var d=D[i];if(host===d||dnsDomainIs(host,"."+d))return P;}
+if(m(host,D))return P;
+if(m(host,F))return Q;
 return "DIRECT";}`;
   }
 
@@ -62,7 +76,7 @@ return "DIRECT";}`;
     if (this.server) return;
     this.server = http.createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'application/x-ns-proxy-autoconfig', 'cache-control': 'no-store' });
-      res.end(this.pac());
+      res.end(this.pac(!!this.vpnOn));
     });
     await new Promise((ok, fail) => { this.server.once('error', fail); this.server.listen(0, '127.0.0.1', ok); });
     this.port = this.server.address().port;
@@ -72,4 +86,4 @@ return "DIRECT";}`;
   url() { return `http://127.0.0.1:${this.port}/proxy.pac?v=${++this.version}`; }
 }
 
-module.exports = { SmartVpn };
+module.exports = { SmartVpn, DPI_SITES };

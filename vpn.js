@@ -178,20 +178,34 @@ function waitPort(port, ms = 6000) {
   });
 }
 
+// Обход замедления без VPN (как GoodbyeDPI / zapret): соединение идёт напрямую, но первое сообщение TLS
+// (ClientHello, где открытым текстом написано имя сайта) xray режет на мелкие куски с паузами —
+// фильтр провайдера не может прочитать имя и не трогает соединение. Имена сайтов xray узнаёт через DNS по HTTPS.
+const DPI_CONFIG = (port) => ({
+  log: { loglevel: 'warning' },
+  dns: { servers: ['https+local://1.1.1.1/dns-query', 'https+local://8.8.8.8/dns-query', 'localhost'], queryStrategy: 'UseIPv4' },
+  inbounds: [{ tag: 'socks-in', listen: '127.0.0.1', port, protocol: 'socks', settings: { udp: false } }],
+  outbounds: [{
+    tag: 'frag', protocol: 'freedom',
+    settings: { domainStrategy: 'UseIPv4', fragment: { packets: 'tlshello', length: '40-80', interval: '1-2' } },
+  }],
+});
+
 class Xray {
-  constructor(binDir, workDir) { this.binDir = binDir; this.workDir = workDir; this.proc = null; this.port = 0; this.log = ''; }
+  constructor(binDir, workDir, name = 'xray') { this.binDir = binDir; this.workDir = workDir; this.name = name; this.proc = null; this.port = 0; this.log = ''; }
 
   binPath() {
     const exe = process.platform === 'win32' ? 'xray.exe' : 'xray';
     return path.join(this.binDir, exe);
   }
 
-  async start(outbound) {
+  // config — готовый конфиг (для обхода замедления); иначе собираем VPN-конфиг из outbound
+  async start(outbound, makeConfig) {
     this.stop();
     const bin = this.binPath();
     if (!fs.existsSync(bin)) throw new Error('Не найден xray (папка bin). Запусти Liquid-Setup.exe ещё раз — он скачает xray заново');
     this.port = await freePort();
-    const config = {
+    const config = makeConfig ? makeConfig(this.port) : {
       log: { loglevel: 'warning' },
       dns: { servers: ['1.1.1.1', '8.8.8.8'] },
       inbounds: [{
@@ -200,7 +214,7 @@ class Xray {
       }],
       outbounds: [{ ...outbound, tag: 'proxy' }, { protocol: 'freedom', tag: 'direct' }],
     };
-    const cfgPath = path.join(this.workDir, 'xray-config.json');
+    const cfgPath = path.join(this.workDir, this.name + '-config.json');
     fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
     this.log = '';
     this.proc = spawn(bin, ['run', '-c', cfgPath], { windowsHide: true });
@@ -219,4 +233,4 @@ class Xray {
   alive() { return !!this.proc && this.proc.exitCode === null; }
 }
 
-module.exports = { parseKey, Xray };
+module.exports = { parseKey, Xray, DPI_CONFIG };

@@ -1,0 +1,41 @@
+name: diag
+on:
+  push:
+    branches: [diag]
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: xray
+        run: node scripts/get-xray.js && ./bin/xray version | head -1
+      - name: конфиг обхода
+        run: |
+          node -e "const {DPI_CONFIG}=require('./vpn'); require('fs').writeFileSync('dpi.json', JSON.stringify(DPI_CONFIG(10808),null,1))"
+          ./bin/xray run -test -c dpi.json
+          (./bin/xray run -c dpi.json > xray.log 2>&1 &) ; sleep 2
+          for u in https://www.twitch.tv/ https://usher.ttvnw.net/ https://www.youtube.com/ https://rr1---sn-4g5e6nzz.googlevideo.com/ https://discord.com/; do
+            curl -sS -o /dev/null --max-time 20 -w "%{http_code} %{time_total}s $u\n" --socks5-hostname 127.0.0.1:10808 "$u" || echo "FAIL $u"
+          done
+          tail -5 xray.log
+      - name: PAC
+        run: |
+          node -e "
+          const {SmartVpn}=require('./main/smartvpn');
+          const s=new SmartVpn(); s.dpi='SOCKS5 127.0.0.1:1; SOCKS 127.0.0.1:1'; s.proxy='SOCKS5 127.0.0.1:2';
+          for (const on of [false,true]) {
+            const src=s.pac(on);
+            const f=new Function('isPlainHostName','dnsDomainIs','shExpMatch', src+'; return FindProxyForURL;')((h)=>!h.includes('.'),(h,d)=>h.endsWith(d),(h,p)=>new RegExp('^'+p.replace(/\./g,'\\\\.').replace(/\*/g,'.*')+'$').test(h));
+            for (const h of ['www.twitch.tv','video-weaver.fra05.hls.ttvnw.net','rr3---sn-x.googlevideo.com','ya.ru','gosuslugi.ru','claude.ai','192.168.1.1']) console.log(on?'VPN вкл ':'VPN выкл', h.padEnd(36), f('https://'+h+'/', h));
+          }"
+      - name: правила блокировщика для Shorts
+        run: |
+          for u in https://filters.adtidy.org/extension/ublock/filters/1.txt https://easylist-downloads.adblockplus.org/advblock.txt https://filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt https://easylist.to/easylist/easylist.txt https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt; do
+            echo "=== $u"; curl -sSL --max-time 60 "$u" | grep -inE "reel|shorts" | grep -iE "youtube|^##|^#\?#" | head -60
+          done
+      - name: версия ghostery и как он применяет :has
+        run: |
+          npm view @ghostery/adblocker-electron version
+          npm pack @ghostery/adblocker-electron-preload >/dev/null 2>&1 && tar xzf ghostery-adblocker-electron-preload-*.tgz && grep -n "extended\|:has\|display" package/dist/esm/index.js | head -30 || true
