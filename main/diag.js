@@ -66,8 +66,8 @@ class Diag {
     const line = `${new Date(e.t).toISOString()} [${e.level.toUpperCase()}] [${e.source}] ${e.msg}${e.extra ? ' | ' + e.extra : ''}\n`;
     try {
       const f = this.file();
-      if (fs.existsSync(f) && fs.statSync(f).size > 5 * 1024 * 1024) return; // не больше 5 МБ в день
-      fs.appendFileSync(f, line);
+      // не больше 5 МБ в день (значок новых ошибок при этом всё равно обновляется)
+      if (!(fs.existsSync(f) && fs.statSync(f).size > 5 * 1024 * 1024)) fs.appendFileSync(f, line);
     } catch {}
     for (const l of this.listeners) { try { l(e, this.unseen); } catch {} }
   }
@@ -112,4 +112,4 @@ function sysInfo(app, extra = {}) {
   };
 }
 
-module.exports = { Diag, sysInfo, redact };
+module.exports = { Diag, sysInfo };

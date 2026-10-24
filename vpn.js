@@ -102,7 +102,7 @@ async function parseKey(raw, fetcher) {
     let name = '';
     const h = body.indexOf('#');
     if (h >= 0) { name = dec(body.slice(h + 1)); body = body.slice(0, h); }
-    body = body.split('?')[0].split('/?')[0];
+    body = body.split('?')[0]; // параметры плагина (…/?plugin=) не нужны, хвостовой «/» уберёт splitHostPort
     let userinfo, hostport;
     if (body.includes('@')) {
       const at = body.lastIndexOf('@');
@@ -189,7 +189,7 @@ class Xray {
   async start(outbound) {
     this.stop();
     const bin = this.binPath();
-    if (!fs.existsSync(bin)) throw new Error('Не найден xray. Запусти install.bat ещё раз (он скачивает xray в папку bin)');
+    if (!fs.existsSync(bin)) throw new Error('Не найден xray (папка bin). Запусти Liquid-Setup.exe ещё раз — он скачает xray заново');
     this.port = await freePort();
     const config = {
       log: { loglevel: 'warning' },
@@ -208,6 +208,7 @@ class Xray {
     this.proc.stdout.on('data', grab);
     this.proc.stderr.on('data', grab);
     const p = this.proc;
+    p.on('error', (e) => grab('\n' + e.message)); // без обработчика ошибка запуска xray уронила бы браузер
     p.on('exit', (code) => { if (this.proc === p) { this.proc = null; try { this.onExit && this.onExit(code); } catch {} } });
     try { await waitPort(this.port); }
     catch (e) { const l = this.log; this.stop(); throw new Error('xray не стартовал: ' + (l.trim().split('\n').pop() || e.message)); }

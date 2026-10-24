@@ -1,9 +1,12 @@
 // Игровой режим: следим, не запущена ли игра на весь экран (или из списка известных),
-// и тогда отдаём ресурсы игре — понижаем приоритет процессов браузера и усыпляем вкладки.
+// и тогда отдаём ресурсы игре — понижаем приоритет процессов браузера и замораживаем вкладки.
 const { spawn } = require('child_process');
 const os = require('os');
 
 const KNOWN = /^(cs2|csgo|dota2|valorant|valorant-win64-shipping|r5apex|fortniteclient-win64-shipping|gta5|gta5_enhanced|playgta5|rdr2|eldenring|cyberpunk2077|robloxplayerbeta|league of legends|overwatch|warframe\.x64|tslgame|destiny2|rocketleague|witcher3|bg3|bg3_dx11|starfield|helldivers2|palworld-win64-shipping|deadlock|project8|marvel-win64-shipping|cod|blackops6|modernwarfare|escapefromtarkov|rustclient|terraria|osu!|genshinimpact|zenlesszonezero|starrail|wow|hearthstone|minecraft\.windows|forzahorizon5|forzahorizon4|nba2k\d+|fc\d+|fifa\d+|eafc\d+|dyinglight2|re4|re8|monsterhunterwilds|stalker2|hogwartslegacy|darksouls3|sekiro|apexlegends|pathofexile|pathofexile2|diablo iv|wuthering waves|client-win64-shipping|bf2042|bf6|thefinals|arc raiders|pioneergame|lethalcompany|phasmophobia|schedulei|gorilla tag)$/i;
+
+// полноэкранные окна, которые игрой не являются: плееры, браузеры, офис, мессенджеры
+const NOT_GAME = /^(vlc|mpc-hc64|mpc-hc|mpc-be64|potplayermini64|potplayermini|mpv|wmplayer|video\.ui|microsoft\.media\.player|powerpnt|winword|excel|acrord32|chrome|msedge|firefox|opera|browser|yandex|telegram|discord|obs64|zoom|teams|ms-teams|explorer|applicationframehost|photos|steamwebhelper)$/i;
 
 const PS = `
 $ErrorActionPreference = 'SilentlyContinue'
@@ -56,8 +59,7 @@ class GameMode {
     const own = this.isOwnPid(Number(pid));
     // 3 = полноэкранный Direct3D (игра). 2 = просто чужое окно на весь экран — это бывает и видеоплеер, и презентация,
     // поэтому его считаем игрой, только если это не известный плеер, браузер или офис
-    const notGame = /^(vlc|mpc-hc64|mpc-hc|mpc-be64|potplayermini64|potplayermini|mpv|wmplayer|video\.ui|microsoft\.media\.player|powerpnt|winword|excel|acrord32|chrome|msedge|firefox|opera|browser|yandex|telegram|discord|obs64|zoom|teams|ms-teams|explorer|applicationframehost|photos|steamwebhelper)$/i;
-    const game = !own && (st === 3 || KNOWN.test(name || '') || (st === 2 && name && !notGame.test(name)));
+    const game = !own && (st === 3 || KNOWN.test(name || '') || (st === 2 && name && !NOT_GAME.test(name)));
     if (game) { this.hits++; this.miss = 0; } else { this.miss++; this.hits = 0; }
     if (!this.on && this.hits >= 2) this.set(true, name);
     else if (this.on && this.miss >= 3) this.set(false);

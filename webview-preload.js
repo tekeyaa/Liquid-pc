@@ -1,8 +1,8 @@
-// Preload для сайтов (изолированный мир: сайт не видит этот код).
-// 1) Вход Google: маскировка под Firefox.
-// 2) Перевод страницы на месте, без поломки вёрстки.
-// 3) Сведения о странице для браузера (язык, есть ли видео).
-// 4) Тема оформления для стартовой страницы.
+// Preload для сайтов (изолированный мир: сайт не видит этот код). Работает на странице и во фреймах.
+// 1) Вход Google: маскировка под Firefox.  2) Перевод страницы на месте, без поломки вёрстки.
+// 3) Сведения о странице для браузера (язык, есть ли видео).  4) Тема оформления для стартовой страницы.
+// 5) Режим чтения.  6) Видео: скорость, громкость до 300 %, фильтры.  7) Супер-чёткость (WebGL).
+// 8) Кружок с панелью видео.  Плюс боковые кнопки мыши и команды от браузера.
 const { contextBridge, webFrame, ipcRenderer } = require('electron');
 // стартовая страница хранит избранное в настройках приложения, а не в localStorage (его стирает «Очистить данные»)
 if (location.protocol === 'file:' && /\/newtab\.html$/.test(location.pathname)) {
@@ -12,6 +12,13 @@ if (location.protocol === 'file:' && /\/newtab\.html$/.test(location.pathname)) 
 const toHost = (msg) => { try { ipcRenderer.sendToHost('liquid', msg); } catch {} };
 // Этот код работает и во фреймах (встроенные плееры фильмов, видео соцсетей, YouTube на чужих сайтах).
 // Во фрейме нужны только видео и кнопки мыши; перевод, режим чтения и сведения о странице — только на самой странице
+// ошибки нашего кода на странице — в журнал отладки браузера (раньше функции не было, и сама запись об ошибке падала)
+function report(where, err) {
+  try {
+    const msg = String((err && err.message) || err || 'ошибка');
+    ipcRenderer.send('diag:log', { level: 'warn', source: 'страница: ' + where, message: msg, extra: location.hostname + (err && err.stack ? '\n' + String(err.stack).split('\n').slice(1, 4).join('\n') : '') });
+  } catch {}
+}
 const IS_FRAME = (() => { try { return window.top !== window; } catch { return true; } })();
 
 // Вставка своей разметки. YouTube и другие сайты включают Trusted Types: любой разбор HTML-строки
@@ -503,12 +510,6 @@ document.addEventListener('loadedmetadata', (e) => {
   if (vt.want.speed && v.playbackRate !== vt.want.speed) v.playbackRate = vt.want.speed;
   if (vt.want.bright || vt.want.contrast || vt.want.sat || vt.want.sharp) applyFilter(v);
 }, true);
-function videoState() {
-  const v = mainVideo();
-  if (!v) return { has: false };
-  return { has: true, speed: v.playbackRate, volume: getVolume(v), loop: v.loop, comp: !!vt.graphs.get(v)?.compOn,
-    bright: vt.want.bright ?? 1, contrast: vt.want.contrast ?? 1, sat: vt.want.sat ?? 1, sharp: !!vt.want.sharp };
-}
 function videoCmd(m) {
   const v = mainVideo();
   if (m.op === 'prefs') {
@@ -520,17 +521,11 @@ function videoCmd(m) {
   }
   if (m.op === 'overlay') { const v0 = mainVideo(); if (v0) { barShow(v0, true); barOpen(!bar.open); } return; }
   if (m.op === 'pip') { pipToggle(); return; }
-  if (!v) { toHost({ type: 'videoState', has: false }); return; }
+  if (!v) return;
   try {
-    if (m.op === 'set') {
-      if (m.speed != null) { v.playbackRate = m.speed; vt.want.speed = m.speed; }
-      if (m.volume != null) setVolume(v, m.volume);
-      if (m.loop != null) v.loop = m.loop;
-      if (m.comp != null) setComp(v, m.comp);
-      for (const k of ['bright', 'contrast', 'sat', 'sharp']) if (m[k] != null) vt.want[k] = m[k];
-      if (['bright', 'contrast', 'sat', 'sharp'].some((k) => m[k] != null)) applyFilter(v);
-    } else if (m.op === 'reset') {
-      vt.want = {}; v.playbackRate = 1; v.loop = false; v.style.filter = '';
+    if (m.op === 'reset') {
+      vt.want = {}; v.playbackRate = 1; v.loop = false;
+      applyFilter(v); // яркость и контраст сбрасываются, лёгкий режим чёткости (если включён) остаётся
       if (vt.graphs.get(v)) { setComp(v, false); setVolume(v, 1); } else v.volume = 1;
     } else if (m.op === 'frame') {
       const c = document.createElement('canvas');
@@ -539,8 +534,11 @@ function videoCmd(m) {
       toHost({ type: 'frame', data: c.toDataURL('image/png'), t: Math.floor(v.currentTime) });
       return;
     }
-  } catch (err) { report('видео ' + m.op, err); toHost({ type: 'videoErr', error: String(err && err.message || err) }); }
-  toHost({ type: 'videoState', ...videoState() });
+  } catch (err) {
+    report('видео ' + m.op, err);
+    const sec = err && (err.name === 'SecurityError' || /tainted|cross-origin/i.test(err.message || ''));
+    toHost({ type: 'videoErr', error: sec ? 'этот сайт не разрешает сохранять кадры своего видео' : String(err && err.message || err) });
+  }
 }
 
 

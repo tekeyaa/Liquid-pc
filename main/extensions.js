@@ -93,6 +93,8 @@ class Extensions {
     if (!res.ok) throw new Error(`Chrome Web Store не отдал расширение (ошибка ${res.status})`);
     const buf = Buffer.from(await res.arrayBuffer());
     const dest = path.join(this.dir, id);
+    // старую версию сначала выгружаем из сессий, потом удаляем её файлы
+    for (const s of sessions) { try { this.api(s).removeExtension(this.loaded.get(id)?.id || ''); } catch {} }
     fs.rmSync(dest, { recursive: true, force: true });
     fs.mkdirSync(dest, { recursive: true });
     unzip(crxToZip(buf), dest);
@@ -108,7 +110,6 @@ class Extensions {
     this.list = this.list.filter((x) => x.id !== id);
     this.list.push(entry);
     this.save();
-    for (const s of sessions) { try { this.api(s).removeExtension(this.loaded.get(id)?.id || ''); } catch {} }
     await this.loadOne(entry, sessions);
     this.save();
     return entry;
@@ -154,4 +155,4 @@ class Extensions {
   }
 }
 
-module.exports = { Extensions, POPULAR, parseId };
+module.exports = { Extensions, POPULAR };

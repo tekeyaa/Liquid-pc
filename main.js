@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, safeStorage, Menu, clipboard, shell, net, dialog, screen, webContents, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, session, safeStorage, Menu, clipboard, shell, net, dialog, screen, webContents, Notification, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { parseKey, Xray } = require('./vpn');
@@ -10,7 +10,6 @@ const { translateBatch } = require('./main/translate');
 const { GameMode } = require('./main/gamemode');
 const { Diag, sysInfo } = require('./main/diag');
 const os = require('os');
-const { nativeImage } = require('electron');
 let game = null;
 
 const PARTITION = 'persist:liquid';
@@ -91,7 +90,7 @@ process.on('unhandledRejection', (e) => {
   diag.log(/Script failed to execute/.test(m) ? 'debug' : 'error', 'main', e);
 });
 app.on('render-process-gone', (_e, wc, d) => {
-  let url = ''; try { url = wc.getURL(); } catch {}
+  let url = ''; try { url = wc.getURL(); if (ses && wc.session && wc.session !== ses) url = '(инкогнито — адрес не записан)'; } catch {}
   diag.log(d.reason === 'clean-exit' ? 'info' : 'crash', wc.getType() === 'webview' ? 'вкладка' : 'интерфейс', `Процесс упал: ${d.reason} (код ${d.exitCode})`, url);
 });
 app.on('child-process-gone', (_e, d) => {
@@ -116,13 +115,12 @@ let adblock = null;
 const smart = new SmartVpn();
 let exts = null;
 let proxyRules = '';     // текущий прокси, если VPN включён
-let proxyPac = '';       // то же в синтаксисе PAC
 const downloads = new Map(); // id -> { item, host }
 let dlSeq = 0;
 let xray = null;
 let vpnStartup = null;
-let permDecided = null;
-let iconSes = null; // решения о доступе для сайтов (обычный режим), загружаются при старте
+let permDecided = null;  // решения о доступе для сайтов (обычный режим), загружаются при старте
+let iconSes = null;      // сессия без куки для значков и подсказок поиска
 let vpnState = { on: false, name: '', country: '', ip: '', busy: false };
 let proxyAuth = null;
 const claudeJobs = new Map();
@@ -260,6 +258,7 @@ app.on('web-contents-created', (_e, contents) => {
   if (contents.getType() !== 'webview') return;
   const host = () => hostOf(contents);
   contents.on('did-navigate', () => { if (adblock) adblock.resetCount(contents.id); });
+  contents.once('destroyed', () => { if (adblock) adblock.counts.delete(contents.id); }); // счётчик закрытой вкладки больше не нужен
   applyRtcPolicy(contents);
   contents.on('did-start-navigation', (d) => { if (d.isMainFrame) applyRtcPolicy(contents, d.url); });
 
@@ -379,8 +378,6 @@ function syncSmartLists() {
   smart.custom.add('1.1.1.1');
 }
 
-// sessions — каким сессиям, close — рвать ли открытые соединения (нужно при смене режима, не нужно, когда
-// просто добавился сайт в «умный» список или открылось новое окно — иначе прерываются видео и загрузки)
 // WebRTC: при VPN звонки не должны выдавать настоящий IP — но только на сайтах, которые идут через VPN,
 // иначе на российских сайтах (VK, Телемост) звонки шли бы хуже без причины
 function applyRtcPolicy(wc, url) {
@@ -392,7 +389,6 @@ function applyRtcPolicy(wc, url) {
   } catch {}
 }
 
-// настоящие всплывающие окна (вход, оплата): в заголовке — адрес сайта, лишние окна внутри блокируются
 // Проверка страницы в окне входа: тот же разбор, что у вкладок (renderer/app.js guardScan), вердикт считает окно браузера
 const GUARD_SCAN = `(() => {
   const q = (s) => Array.from(document.querySelectorAll(s));
@@ -422,6 +418,7 @@ async function popupGuard(w, openerHost) {
   }
 }
 
+// настоящие всплывающие окна (вход, оплата): в заголовке — адрес сайта, лишние окна внутри блокируются
 function setupPopup(w, openerHost) {
   const wc = w.webContents;
   const show = () => {
@@ -456,6 +453,8 @@ function setupPopup(w, openerHost) {
   show();
 }
 
+// sessions — каким сессиям, close — рвать ли открытые соединения (нужно при смене режима, не нужно, когда
+// просто добавился сайт в «умный» список или открылось новое окно — иначе прерываются видео и загрузки)
 async function applyProxy({ sessions = allSessions(), close = true } = {}) {
   const mode = loadSettings().vpnMode || 'smart';
   if (iconSes && !sessions.includes(iconSes)) sessions = [...sessions, iconSes]; // значки стартовой — тоже через VPN
@@ -496,7 +495,7 @@ async function vpnConnect(rawKey) {
       await vpnDisconnect(true);
       throw new Error('Сервер не отвечает. Проверь ключ или попробуй другой.' + (xray.log ? '\n' + xray.log.trim().split('\n').pop() : ''));
     }
-    if (rawKey) { s.vpnKey = enc(key); s.vpnName = cfg.name; saveSettings(s); }
+    if (rawKey) { const s2 = loadSettings(); s2.vpnKey = enc(key); s2.vpnName = cfg.name; saveSettings(s2); }
     vpnState = { on: true, name: cfg.name, ip: info.ip, country: info.country, busy: false, mode: loadSettings().vpnMode || 'smart' };
     sendVpn();
     return vpnState;
@@ -572,7 +571,8 @@ async function vpnUnblock(url) {
     diag.log('info', 'vpn', 'Не учу: сайт открывается напрямую или нет интернета', host);
     return { ok: false, reason: 'notblocked' };
   }
-  if (!(s.learned || []).includes(base)) { s.learned = [...(s.learned || []), base].slice(-300); saveSettings(s); }
+  const s2 = loadSettings();
+  if (!(s2.learned || []).includes(base)) { s2.learned = [...(s2.learned || []), base].slice(-300); saveSettings(s2); }
   syncSmartLists();
   try {
     if (!vpnState.on) await vpnConnect();
@@ -723,7 +723,7 @@ async function checkUpdates(manual = false) {
     if (s.autoUpdate === false || !app.isPackaged || process.platform !== 'win32') {
       if (s.updSnooze && Date.now() < s.updSnooze && !manual) return;
       pendingSetup = { version, asset, sum };
-      win?.webContents.send('update', { latest: version, current: cur, liquid: true, canRun: true });
+      win?.webContents.send('update', { latest: version, current: cur });
       return;
     }
     if (!manual && failedRecently(version)) return;
@@ -888,29 +888,12 @@ async function guardCheck(info) {
 }
 
 
-// Разовый запрос к Claude API (агент идей и т.п.)
-async function claudeOnce({ system, user, model = 'claude-sonnet-5-5', maxTokens = 2000 }) {
-  const key = dec(loadSettings().claudeKey);
-  if (!key) return { ok: false, error: 'nokey' };
-  try {
-    const res = await ses.fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
-    });
-    const j = await res.json();
-    if (!res.ok) return { ok: false, error: j.error?.message || `Ошибка ${res.status}` };
-    return { ok: true, text: (j.content || []).map((c) => c.text || '').join('') };
-  } catch (e) { return { ok: false, error: e.message }; }
-}
-
 // ---------- IPC ----------
 function registerIpc() {
   const bw = (e) => BrowserWindow.fromWebContents(e.sender);
   ipcMain.on('win:min', (e) => bw(e)?.minimize());
   ipcMain.on('win:max', (e) => { const w = bw(e); if (w) w.isMaximized() ? w.unmaximize() : w.maximize(); });
   ipcMain.on('win:close', (e) => bw(e)?.close());
-  ipcMain.on('win:fullscreen', (e, on) => bw(e)?.setFullScreen(!!on));
 
   ipcMain.handle('settings:get', () => publicSettings());
   ipcMain.handle('settings:set', (_e, patch) => {
@@ -968,8 +951,13 @@ function registerIpc() {
     if (!site) return false;
     const s = loadSettings(); s.popupAllow = [...new Set([...(s.popupAllow || []), String(site)])].slice(-200); saveSettings(s); return true;
   });
-  // значки для стартовой: качаем сами без куки, кэш 14 дней — сайты не видят каждое открытие стартовой
   // подсказки поисковика при вводе (как в Chrome): через сессию без куки и через VPN, если он включён; в инкогнито не шлём
+  async function useIconSes() {
+    if (iconSes) return iconSes;
+    iconSes = session.fromPartition('liquid-icons', { cache: false });
+    if (proxyRules) await applyProxy({ sessions: [iconSes], close: false });
+    return iconSes;
+  }
   const SUGGEST = {
     google: (q) => `https://suggestqueries.google.com/complete/search?client=firefox&hl=ru&ie=utf-8&oe=utf-8&q=${q}`,
     yandex: (q) => `https://suggest.yandex.ru/suggest-ff.cgi?uil=ru&part=${q}`,
@@ -985,7 +973,7 @@ function registerIpc() {
     const eng = SUGGEST[loadSettings().search] ? loadSettings().search : 'google';
     const key = eng + '\n' + q.toLowerCase();
     if (sugCache.has(key)) return sugCache.get(key);
-    if (!iconSes) { iconSes = session.fromPartition('liquid-icons', { cache: false }); if (proxyRules) await applyProxy({ sessions: [iconSes], close: false }); }
+    await useIconSes();
     const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 2500);
     try {
       const r = await iconSes.fetch(SUGGEST[eng](encodeURIComponent(q)), { signal: ctrl.signal, credentials: 'omit', headers: { accept: 'application/json' } });
@@ -1067,7 +1055,7 @@ function registerIpc() {
     if (!/^file:.*\/newtab\.html(#|$)/.test(u) || !Array.isArray(hosts)) return {};
     const dir = path.join(app.getPath('userData'), 'icons2'); fs.mkdirSync(dir, { recursive: true });
     try { fs.rmSync(path.join(app.getPath('userData'), 'icons'), { recursive: true, force: true }); } catch {} // старый кэш мелких значков
-    if (!iconSes) { iconSes = session.fromPartition('liquid-icons', { cache: false }); if (proxyRules) await applyProxy({ sessions: [iconSes], close: false }); }
+    await useIconSes();
     const out = {};
     await Promise.all(hosts.slice(0, 80).map(String).map((h) => h.toLowerCase()).filter((h) => /^[a-z0-9.-]{3,100}$/.test(h) && h.includes('.')).map(async (h) => {
       const f = path.join(dir, h + '.txt'), miss = path.join(dir, h + '.none');
@@ -1108,10 +1096,9 @@ function registerIpc() {
   });
   ipcMain.handle('vpn:disconnect', async () => ({ ok: true, state: await vpnDisconnect() }));
   ipcMain.handle('vpn:state', () => vpnState);
-  // окно ждёт автозапуска VPN перед тем, как открыть вкладки (не дольше 9 секунд)
+  // окно ждёт автозапуска VPN перед тем, как открыть вкладки (не дольше 20 секунд)
   ipcMain.handle('vpn:startup', () => Promise.race([vpnStartup || Promise.resolve(), new Promise((r) => setTimeout(r, 20000))]).then(() => vpnState));
   ipcMain.handle('vpn:unblock', (_e, url) => vpnUnblock(url));
-  ipcMain.handle('vpn:routed', (_e, url) => { try { return vpnState.on && ((loadSettings().vpnMode || 'smart') === 'all' || smart.matches(new URL(url).hostname)); } catch { return false; } });
 
   // окна
   ipcMain.on('win:incognito', () => createWindow({ priv: true }));
@@ -1122,9 +1109,6 @@ function registerIpc() {
     const sess = e.sender.session || ses;
     return translateBatch((u, o) => sess.fetch(u, o), texts.slice(0, 200).map((t) => String(t).slice(0, 2000)), 'ru', (lvl, m) => diag.log(lvl, 'перевод', m));
   });
-
-  // блокировщик рекламы
-  ipcMain.handle('adblock:count', (_e, wcId) => adblock?.counts.get(wcId) || 0);
 
   // загрузки
   ipcMain.on('dl:act', (_e, { id, act }) => {
@@ -1294,7 +1278,6 @@ function registerIpc() {
     return { hz: Math.round(d.displayFrequency || 60), all, primary: Math.round(screen.getPrimaryDisplay().displayFrequency || 60) };
   });
   ipcMain.on('app:relaunch', () => { app.relaunch(); app.exit(0); });
-  ipcMain.handle('claude:once', (_e, req) => claudeOnce(req));
   ipcMain.on('clipboard:write', (_e, t) => clipboard.writeText(String(t || '')));
   ipcMain.handle('update:check', async () => { await checkUpdates(true); return { ...upd, poll: undefined, current: app.getVersion(), auto: loadSettings().autoUpdate !== false }; });
   ipcMain.handle('update:state', () => ({ ...upd, poll: undefined, current: app.getVersion(), auto: loadSettings().autoUpdate !== false }));
@@ -1319,7 +1302,6 @@ function registerIpc() {
   });
 
   ipcMain.on('webview:devtools', (_e, wcId) => {
-    const { webContents } = require('electron');
     const wc = webContents.fromId(wcId);
     if (wc) wc.isDevToolsOpened() ? wc.closeDevTools() : wc.openDevTools({ mode: 'detach' });
   });
@@ -1371,7 +1353,6 @@ function setupSession(sess, priv) {
   if (!permDecided) permDecided = new Map(Object.entries(loadSettings().perms || {}));
   hardenSession(sess);
   if (adblock) adblock.addSession(sess);
-  if (!priv) {} // расширения грузятся отдельно, только в обычном режиме
   // Безопасные разрешения — сразу, опасные (камера, микрофон, геолокация, уведомления, чтение буфера) — только с вопросом
   const SAFE = ['fullscreen', 'clipboard-sanitized-write', 'pointerLock', 'mediaKeySystem'];
   const ASK = { media: 'камеру/микрофон', geolocation: 'твоё местоположение', notifications: 'показ уведомлений', 'clipboard-read': 'чтение буфера обмена' };
@@ -1454,7 +1435,10 @@ app.whenReady().then(async () => {
 
   const s = loadSettings();
   if (s.vpnAuto && s.vpnKey) {
-    vpnStartup = vpnConnect().catch((e) => { win?.webContents.once('did-finish-load', () => broadcast('toast', { text: 'VPN: ' + e.message, error: true })); });
+    vpnStartup = vpnConnect().catch((e) => {
+      const say = () => broadcast('toast', { text: 'VPN: ' + e.message, error: true });
+      if (win && win.webContents.isLoading()) win.webContents.once('did-finish-load', say); else say();
+    });
   }
 });
 

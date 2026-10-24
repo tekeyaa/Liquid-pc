@@ -1,4 +1,4 @@
-/* Liquid — история, закладки, подсказки, загрузки, расширения, перевод, PiP, кинотеатр, реклама, темы, меню */
+/* Liquid — история, закладки, подсказки, загрузки, расширения, перевод, PiP, реклама, темы, меню, обновления, разрешения */
 (function () {
   const lsGet = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -145,7 +145,7 @@
     $('#adCount').textContent = adOn && tab.ads ? (tab.ads > 99 ? '99+' : tab.ads) : '';
   }
   window.syncOmniExtras = syncOmniExtras;
-  window.onTabActivated = (tab) => { syncOmniExtras(tab); };
+  window.onTabActivated = syncOmniExtras;
 
   $('#starBtn').onclick = () => window.toggleBookmark();
 

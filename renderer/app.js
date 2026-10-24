@@ -154,8 +154,13 @@ function attachWebview(tab, url) {
     const hint = settings._vpnOn ? '' : 'vpn';
     wv.loadURL(`${ERRPAGE}#${encodeURIComponent(JSON.stringify({ url: e.validatedURL, code: e.errorCode, desc: e.errorDescription, hint }))}`);
   });
-  wv.addEventListener('crashed', () => { L.diag.log('crash', 'вкладка', 'Вкладка упала', tab.url); toast('Вкладка упала — нажми «Обновить». Ошибка записана в журнал.', true); });
-  wv.addEventListener('render-process-gone', (e) => { if (e.details && e.details.reason !== 'clean-exit') { L.diag.log('crash', 'вкладка', `Вкладка упала: ${e.details.reason}`, tab.url); } });
+  // событие «crashed» в новых Electron убрано — падение вкладки приходит только так
+  wv.addEventListener('render-process-gone', (e) => {
+    const why = (e.details && e.details.reason) || e.reason || '';
+    if (why === 'clean-exit') return;
+    // в журнал падение пишет основной процесс, здесь только сообщение
+    if (tab === active) toast('Вкладка упала — нажми «Обновить». Ошибка записана в журнал.', true);
+  });
   wv.addEventListener('enter-html-full-screen', () => document.body.classList.add('fs'));
   wv.addEventListener('leave-html-full-screen', () => document.body.classList.remove('fs'));
   wv.addEventListener('found-in-page', (e) => {
@@ -358,13 +363,14 @@ let saveT = 0;
 function saveSession() {
   if (L.incognito) return;
   clearTimeout(saveT);
-  saveT = setTimeout(() => {
-    const data = {
-      tabs: tabs.map((t) => ({ url: t.wv ? (safeUrl(t.wv) || t.url) : t.url, title: t.title, favicon: t.favicon || '' })),
-      active: Math.max(0, tabs.indexOf(active)),
-    };
-    try { localStorage.setItem('liquid.session', JSON.stringify(data)); } catch {}
-  }, 400);
+  saveT = setTimeout(writeSession, 400);
+}
+function writeSession() {
+  const data = {
+    tabs: tabs.map((t) => ({ url: t.wv ? (safeUrl(t.wv) || t.url) : t.url, title: t.title, favicon: t.favicon || '' })),
+    active: Math.max(0, tabs.indexOf(active)),
+  };
+  try { localStorage.setItem('liquid.session', JSON.stringify(data)); } catch {}
 }
 function safeUrl(wv) { try { return wv.getURL(); } catch { return ''; } }
 function restoreSession() {
@@ -384,7 +390,7 @@ function restoreSession() {
   activate(tabs[ai]);
   return true;
 }
-window.addEventListener('beforeunload', () => { clearTimeout(saveT); saveT = 0; if (!L.incognito) { try { localStorage.setItem('liquid.session', JSON.stringify({ tabs: tabs.map((t) => ({ url: t.wv ? (safeUrl(t.wv) || t.url) : t.url, title: t.title, favicon: t.favicon || '' })), active: Math.max(0, tabs.indexOf(active)) })); } catch {} } });
+window.addEventListener('beforeunload', () => { clearTimeout(saveT); if (!L.incognito) writeSession(); });
 
 function fitTabs() {
   requestAnimationFrame(() => {
@@ -491,11 +497,7 @@ function showVpnErr(t) { const e = $('#vpnErr'); e.textContent = t; e.classList.
 
 $('#vpnBtn').onclick = () => { openPop('#vpnPop'); renderVpnFromState(); };
 $('#vpnOrb').onclick = () => vpnToggle($('#vpnKey').value.trim());
-$('#vpnConnect').onclick = async () => {
-  const st = await L.vpn.state();
-  if (st.on && !$('#vpnKey').value.trim()) vpnToggle();
-  else vpnToggle($('#vpnKey').value.trim());
-};
+$('#vpnConnect').onclick = () => vpnToggle($('#vpnKey').value.trim());
 $('#vpnForget').onclick = async () => {
   await L.vpn.disconnect();
   settings = await L.settings.set({ forgetVpn: true });
@@ -562,25 +564,24 @@ async function guardScan(tab, force) {
   } catch { return; }
   if (!info || (!info.pass && !info.card && !force)) return;
 
-  if (isTrusted(u.hostname) && !force) {
-    tab.guard = { verdict: 'safe', reason: `${u.hostname} — известный сайт.` };
-  } else if (u.protocol === 'http:' && !force) {
-    tab.guard = { verdict: 'caution', reason: 'Сайт без шифрования (http) просит пароль или карту — данные могут перехватить.' };
-  } else {
-    tab.guard = { verdict: 'checking' };
-    renderGuard(tab);
-    let r = settings.hasClaudeKey
-      ? await L.claude.check({ url: tab.url, host: u.hostname, title: info.title, passwordFields: info.pass, cardFields: info.card, formTargets: info.actions, text: info.text })
-      : { verdict: 'unknown' };
-    if (r.verdict === 'unknown') r = localGuard(u, info);
-    tab.guard = r;
-  }
+  tab.guard = { verdict: 'checking' };
+  renderGuard(tab);
+  tab.guard = await guardVerdict(u, info, force);
   if (tab.guard.verdict !== 'unknown') guardCache.set(origin, tab.guard);
   renderGuard(tab);
   if (tab === active && tab.guard.verdict === 'danger') showDanger(tab.guard.reason);
   if (tab === active && tab.guard.verdict === 'caution') toast('⚠ ' + tab.guard.reason, true);
 }
 
+// вердикт для страницы с паролем или картой — одни правила для вкладок и окон входа
+async function guardVerdict(u, info, force) {
+  if (isTrusted(u.hostname) && !force) return { verdict: 'safe', reason: `${u.hostname} — известный сайт.` };
+  if (u.protocol === 'http:' && !force) return { verdict: 'caution', reason: 'Сайт без шифрования (http) просит пароль или карту — данные могут перехватить.' };
+  let r = { verdict: 'unknown' };
+  if (settings.hasClaudeKey) r = await L.claude.check({ url: u.href, host: u.hostname, title: info.title, passwordFields: info.pass, cardFields: info.card, formTargets: info.actions, text: info.text });
+  if (!r || r.verdict === 'unknown') r = localGuard(u, info);
+  return r;
+}
 
 // Базовая проверка без API: двойники брендов, мусорные домены, формы на чужой сайт
 const BRANDS = ['steamcommunity', 'steampowered', 'steam', 'google', 'yandex', 'sberbank', 'tinkoff', 'tbank', 'gosuslugi', 'telegram',
@@ -630,14 +631,8 @@ L.claude.onPopupCheck(async ({ id, url, info }) => {
   let r = { verdict: 'unknown' };
   try {
     const u = new URL(url);
-    if (guardCache.has(u.origin)) r = guardCache.get(u.origin);
-    else if (isTrusted(u.hostname)) r = { verdict: 'safe', reason: `${u.hostname} — известный сайт.` };
-    else if (u.protocol === 'http:') r = { verdict: 'caution', reason: 'Сайт без шифрования (http) просит пароль или карту — данные могут перехватить.' };
-    else {
-      if (settings.hasClaudeKey) r = await L.claude.check({ url, host: u.hostname, title: info.title, passwordFields: info.pass, cardFields: info.card, formTargets: info.actions, text: info.text });
-      if (!r || r.verdict === 'unknown') r = localGuard(u, info);
-      if (r.verdict !== 'unknown') guardCache.set(u.origin, r);
-    }
+    r = guardCache.get(u.origin) || await guardVerdict(u, info, false);
+    if (r.verdict !== 'unknown') guardCache.set(u.origin, r);
   } catch {}
   L.claude.popupResult(id, r);
 });
@@ -659,17 +654,9 @@ $('#dangerStay').onclick = () => $('#danger').classList.remove('open');
 $('#guard').onchange = async (e) => { settings = await L.settings.set({ guard: e.target.checked }); };
 
 // ---------- обновления ----------
-L.update.on(({ latest, current, major, canRun, liquid }) => {
-  if (liquid) {
-    $('#updText').textContent = `Вышел Liquid ${latest} (у тебя ${current}). Браузер скачает установщик, закроется, обновится и откроется сам. Что нового — в CHANGELOG.`;
-    $('#updRun').style.display = '';
-    $('#update').classList.add('open');
-    return;
-  }
-  $('#updText').textContent = `Новая версия движка ${latest} (у тебя ${current}).` +
-    (major ? ' Крупное обновление с исправлениями безопасности.' : ' Исправления безопасности и стабильности.') +
-    (canRun ? ' Браузер закроется, обновится и откроется сам.' : ' Запусти install.bat в папке браузера.');
-  $('#updRun').style.display = canRun ? '' : 'none';
+// автообновление выключено — предлагаем поставить новую версию вручную
+L.update.on(({ latest, current }) => {
+  $('#updText').textContent = `Вышел Liquid ${latest} (у тебя ${current}). Браузер скачает установщик, закроется, обновится и откроется сам. Что нового — в CHANGELOG.`;
   $('#update').classList.add('open');
 });
 $('#updRun').onclick = () => { $('#update').classList.remove('open'); L.update.run(); };
@@ -769,7 +756,6 @@ async function sendPageToClaudeWeb(extra) {
   let text = '';
   if (ctx) text += `Вот страница, которую я сейчас смотрю.\nНазвание: ${ctx.title}\nАдрес: ${ctx.url}\n\n${ctx.text.slice(0, 15000)}\n\n`;
   if (extra) text += extra + '\n\n';
-  text += '';
   toggleSide(true);
   const wv = ensureClaudeWeb();
   L.copy(text);
@@ -928,10 +914,9 @@ L.win.onState((s) => { if ('full' in s) document.body.classList.toggle('fs', s.f
 L.onShortcut(({ key, shift }) => {
   switch (key) {
     case 't': shift ? reopenClosed() : createTab(); break;
-    case 'n': if (shift) L.newIncognito(); else createTab(); break;
+    case 'n': createTab(); break; // Ctrl+Shift+N (инкогнито) основной процесс обрабатывает сам
     case '\\': split ? endSplit(true) : startSplit(); break;
-    case 'h': window.openLibrary && window.openLibrary('history'); break;
-    case 'y': window.openLibrary && window.openLibrary('history'); break;
+    case 'h': case 'y': window.openLibrary && window.openLibrary('history'); break;
     case 'b': if (shift) window.openLibrary && window.openLibrary('bookmarks'); break;
     case 'd': window.toggleBookmark && window.toggleBookmark(); break;
     case 'pip': window.togglePip && window.togglePip(); break;

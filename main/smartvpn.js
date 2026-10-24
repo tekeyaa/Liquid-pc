@@ -72,4 +72,4 @@ return "DIRECT";}`;
   url() { return `http://127.0.0.1:${this.port}/proxy.pac?v=${++this.version}`; }
 }
 
-module.exports = { SmartVpn, BUILTIN };
+module.exports = { SmartVpn };

@@ -1,4 +1,4 @@
-/* Liquid 1.3 — скриншоты, режим чтения, заметки, видео-панель, игровой режим */
+/* Liquid — скриншоты, режим чтения, заметки, видео, игровой режим */
 (function () {
   const lsGet = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -42,7 +42,6 @@
   function shotArea() {
     const t = active; if (!t?.wv) return;
     const ov = $('#areaShot');
-    const views = $('#views').getBoundingClientRect();
     const wvr = t.wv.getBoundingClientRect();
     ov.classList.add('open');
     const sel = ov.querySelector('.sel');
@@ -74,7 +73,6 @@
     }
     ov.addEventListener('pointerdown', down); ov.addEventListener('pointermove', move); ov.addEventListener('pointerup', up);
     document.addEventListener('keydown', key);
-    void views;
   }
   function flash() { const f = $('#shotFlash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go'); }
   $('#shotPop').addEventListener('click', (e) => {
@@ -94,9 +92,8 @@
   $('#readerBtn').onclick = () => window.toggleReader();
 
   // ================= Видео =================
-  // Панель видео теперь всплывает прямо над видео (её рисует скрипт страницы); тут — запоминание скорости и сохранение кадров
+  // Панель видео рисует скрипт страницы (кружок на видео); тут — запоминание скорости и сохранение кадров
   const vidPrefs = lsGet('liquid.videoSpeed', {}); // host -> скорость
-  window.openVideo = () => active?.wv?.send('liquid', { type: 'video', op: 'overlay' });
 
   // ================= Заметки =================
   let notes = lsGet('liquid.notes', []);
@@ -166,11 +163,10 @@
       return;
     }
     if (m.type === 'readerPrefs') { readerPrefs = m.prefs; lsSet('liquid.reader', readerPrefs); return; }
-    if (m.type === 'videoState') return;
     if (m.type === 'videoRemember') { const h = hostOf(tab.url); if (m.on) vidPrefs[h] = m.speed || 1; else delete vidPrefs[h]; lsSet('liquid.videoSpeed', vidPrefs); return; }
     if (m.type === 'pipFail') { toast('Этот сайт не разрешает картинку в картинке', true); return; }
     if (m.type === 'srFail') {
-      const why = { cors: 'этот сайт не даёт обработать своё видео', gpu: 'видеокарта не отдала кадр', stall: 'кадры перестали обновляться', nogl: 'нет WebGL' }[m.reason] || 'не получилось обработать видео';
+      const why = { gpu: 'видеокарта не отдала кадр', stall: 'кадры перестали обновляться', nogl: 'нет WebGL' }[m.reason] || 'не получилось обработать видео';
       toast(`Супер-чёткость выключена: ${why}. Показываю обычное видео.`, true);
       return;
     }
@@ -228,7 +224,7 @@
   function syncGameUi() {
     $('#gameMenuLbl').textContent = gameOn ? 'Выключить игровой режим' : 'Игровой режим';
     $('#gameBtn').classList.toggle('on', gameOn);
-    $('#gameBtn').title = gameOn ? `Игровой режим включён${$('#gameBadge').title ? '' : ''} — нажми, чтобы выключить` : 'Игровой режим: усыпить вкладки и отдать ресурсы игре';
+    $('#gameBtn').title = gameOn ? 'Игровой режим включён — нажми, чтобы выключить' : 'Игровой режим: заморозить вкладки и отдать ресурсы игре';
   }
   window.toggleGame = () => L.game.force(gameOn ? null : true);
   $('#gameBadge').onclick = () => L.game.force(null);
@@ -267,7 +263,6 @@
     $('#srHdr').checked = !!settings.srHdr;
     $('#vidBar').checked = settings.vidBar !== false;
   }
-  window.renderSr = renderSr;
   $('#srLevel').addEventListener('click', async (e) => { const b = e.target.closest('button'); if (!b) return; settings = await L.settings.set({ superRes: b.dataset.v }); renderSr(); pushVideoPrefs(); });
   $('#srHdr').onchange = async (e) => { settings = await L.settings.set({ srHdr: e.target.checked }); pushVideoPrefs(); };
   $('#vidBar').onchange = async (e) => { settings = await L.settings.set({ vidBar: e.target.checked }); pushVideoPrefs(); };
