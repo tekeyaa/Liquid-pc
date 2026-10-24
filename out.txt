@@ -1,0 +1,30 @@
+Ищу последний релиз xray-core…
+Качаю Xray-linux-64.zip (v26.10.21)…
+Archive:  /tmp/xray-1792846961856.zip
+  inflating: /tmp/xray-1792846961965/geosite.dat  
+  inflating: /tmp/xray-1792846961965/LICENSE  
+  inflating: /tmp/xray-1792846961965/geoip.dat  
+  inflating: /tmp/xray-1792846961965/README.md  
+  inflating: /tmp/xray-1792846961965/xray  
+Готово: /home/runner/work/Liquid-pc/Liquid-pc/bin/xray
+Xray 26.10.21 (Xray, Penetrates Everything.) 1b1647c (go1.27.3 linux/amd64)
+A unified platform for anti-censorship.
+2026/10/24 13:02:42.355472 [Info] infra/conf/serial: Reading config: &{Name:dpi.json Format:json}
+Configuration OK.
+200 0.083365s https://www.twitch.tv/
+200 0.214663s https://www.youtube.com/
+
+loadExtendedSelectors=false | в стилях: true | в extended: false
+    #contents > ytd-rich-item-renderer:has(> ytd-ad-slot-renderer),
+#description-inner > ytd-merch-shelf-renderer > #main.ytd-merch-shelf-renderer,
+#shopping-timely-shelf,
+#shorts-inner-container > .ytd-s
+loadExtendedSelectors=true | в стилях: true | в extended: false
+    #contents > ytd-rich-item-renderer:has(> ytd-ad-slot-renderer),
+#description-inner > ytd-merch-shelf-renderer > #main.ytd-merch-shelf-renderer,
+#shopping-timely-shelf,
+#shorts-inner-container > .ytd-s
+с исключением в списке | в стилях: false | в extended: false
+есть update: function | CosmeticFilter.parse: function | merge: function
+исключение через update | в стилях: false | в extended: false
+Config по умолчанию loadExtendedSelectors = false
