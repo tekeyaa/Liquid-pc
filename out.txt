@@ -1,0 +1,29 @@
+tag: v1.2.0  published: 09/20/2026 14:36:46
+asset: NetFix_Setup_v1.2.0.exe  118443408  digest=sha256:560592b6fe16e16d386f0fd2099221573d61f28986c1e785906f13c6815eb851
+Flowseal/zapret-discord-youtube -> 1.10.4: zapret-discord-youtube-1.10.4.rar, zapret-discord-youtube-1.10.4.tar.gz, zapret-discord-youtube-1.10.4.zip
+Flowseal/tg-ws-proxy -> v1.11.2: TgWsProxy_linux_amd64, TgWsProxy_linux_amd64.deb, TgWsProxy_linux_amd64.rpm, TgWsProxy_macos_universal.dmg, TgWsProxy_windows.exe, TgWsProxy_windows_7_32bit.exe, TgWsProxy_windows_7_64bit.exe, TgWsProxy_windows_arm64.exe
+installer marker: Inno Setup
+installer marker: WiX
+signature: UnknownError CN=rupleide
+size: 118443408
+marker: Inno Setup Setup Data (6.7.0)
+marker: Inno Setup Messages (6.5.0) (u)
+marker: Inno Setup</description>
+                        
+marker: Inno Setup Setup Data (6.7.0)
+try /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- -> finished=True exit=0
+uninstall key: {551BC3CA-4FAC-4797-8E9F-9BAA236BAEE9}_is1 | NetFix, версия 1.2.0 | 1.2.0 | C:\Program Files\NetFix\ | "C:\Program Files\NetFix\unins000.exe"
+NetFix.exe: C:\Program Files\NetFix\NetFix.exe  216800 bytes  version=1.2.0.0
+   Mods  1
+   Tracks  1
+   DiscordRPC.dll  92672
+   NetFix.dll  24505344
+   NetFix.exe  216800
+   NetFix.runtimeconfig.json  464
+   Newtonsoft.Json.dll  695336
+   unins000.dat  21281
+   unins000.exe  4402400
+   unins000.msg  27020
+dotnet runtimes: Microsoft.AspNetCore.App 8.0.6 [C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App]; Microsoft.AspNetCore.App 8.0.22 [C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App]; Microsoft.AspNetCore.App 8.0.32 [C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App]; Microsoft.AspNetCore.App 9.0.6 [C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App]; Microsoft.AspNetCore.App 9.0.21 [C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App]; Microsoft.AspNetCore.App 10.0.8 [C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App]; Microsoft.AspNetCore.App 10.0.11 [C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App]; Microsoft.AspNetCore.App 10.0.13 [C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App]; Microsoft.NETCore.App 8.0.6 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]; Microsoft.NETCore.App 8.0.22 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]; Microsoft.NETCore.App 8.0.32 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]; Microsoft.NETCore.App 9.0.6 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]; Microsoft.NETCore.App 9.0.21 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]; Microsoft.NETCore.App 10.0.8 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]; Microsoft.NETCore.App 10.0.11 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]; Microsoft.NETCore.App 10.0.13 [C:\Program Files\dotnet\shared\Microsoft.NETCore.App]; Microsoft.WindowsDesktop.App 8.0.6 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]; Microsoft.WindowsDesktop.App 8.0.22 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]; Microsoft.WindowsDesktop.App 8.0.32 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]; Microsoft.WindowsDesktop.App 9.0.6 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]; Microsoft.WindowsDesktop.App 9.0.21 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]; Microsoft.WindowsDesktop.App 10.0.8 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]; Microsoft.WindowsDesktop.App 10.0.11 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]; Microsoft.WindowsDesktop.App 10.0.13 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]
+shortcut: C:\Users\Public\Desktop\NetFix.lnk
+shortcut: C:\ProgramData\Microsoft\Windows\Start Menu\Programs\NetFix.lnk
