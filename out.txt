@@ -1,0 +1,6 @@
+
+CosmeticFilter в electron-пакете: function
+собран: true | правило Shorts активно: false
+другие правила YouTube на месте: true
+из кэша, правило Shorts активно: false
+реклама блокируется: true
