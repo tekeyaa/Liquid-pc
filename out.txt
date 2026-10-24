@@ -1,0 +1,46 @@
+Xray 26.10.21 (Xray, Penetrates Everything.) 1b1647c (go1.27.3 linux/amd64)
+Xray 26.10.21 (Xray, Penetrates Everything.) 1b1647c (go1.27.3 linux/amd64)
+A unified platform for anti-censorship.
+2026/10/24 13:01:23.102977 [Info] infra/conf/serial: Reading config: &{Name:dpi.json Format:json}
+2026/10/24 13:01:23.103562 [Warning] infra/conf: The "freedom.domainStrategy" setting is deprecated and will be removed. For compatibility, its value has been automatically migrated to "sockopt.domainStrategy". Please update your config before removal.
+Configuration OK.
+200 0.129525s https://www.twitch.tv/
+403 0.081374s https://usher.ttvnw.net/
+200 0.354359s https://www.youtube.com/
+404 0.573854s https://rr1---sn-4g5e6nzz.googlevideo.com/
+200 0.108439s https://discord.com/
+2026/10/24 13:01:25.117506 from DNS accepted https://1.1.1.1/dns-query [local]
+2026/10/24 13:01:25.252693 from tcp:127.0.0.1:54070 accepted tcp:usher.ttvnw.net:443 [socks-in >> frag]
+2026/10/24 13:01:25.338813 from tcp:127.0.0.1:54072 accepted tcp:www.youtube.com:443 [socks-in >> frag]
+2026/10/24 13:01:25.699259 from tcp:127.0.0.1:54084 accepted tcp:rr1---sn-4g5e6nzz.googlevideo.com:443 [socks-in >> frag]
+2026/10/24 13:01:26.279682 from tcp:127.0.0.1:54092 accepted tcp:discord.com:443 [socks-in >> frag]
+VPN выкл www.twitch.tv                        SOCKS5 127.0.0.1:1; SOCKS 127.0.0.1:1; DIRECT
+VPN выкл video-weaver.fra05.hls.ttvnw.net     SOCKS5 127.0.0.1:1; SOCKS 127.0.0.1:1; DIRECT
+VPN выкл rr3---sn-x.googlevideo.com           SOCKS5 127.0.0.1:1; SOCKS 127.0.0.1:1; DIRECT
+VPN выкл ya.ru                                DIRECT
+VPN выкл gosuslugi.ru                         DIRECT
+VPN выкл claude.ai                            DIRECT
+VPN выкл 192.168.1.1                          DIRECT
+VPN вкл  www.twitch.tv                        SOCKS5 127.0.0.1:2
+VPN вкл  video-weaver.fra05.hls.ttvnw.net     SOCKS5 127.0.0.1:2
+VPN вкл  rr3---sn-x.googlevideo.com           SOCKS5 127.0.0.1:2
+VPN вкл  ya.ru                                DIRECT
+VPN вкл  gosuslugi.ru                         DIRECT
+VPN вкл  claude.ai                            SOCKS5 127.0.0.1:2
+VPN вкл  192.168.1.1                          DIRECT
+=== https://filters.adtidy.org/extension/ublock/filters/1.txt
+=== https://easylist-downloads.adblockplus.org/advblock.txt
+=== https://filters.adtidy.org/extension/ublock/filters/2_without_easylist.txt
+39930:! Fix ads on https://www.youtube.com/shorts/
+39934:youtube.com##+js(json-prune, entries.[-].command.reelWatchEndpoint.adClientParams.isAd)
+=== https://easylist.to/easylist/easylist.txt
+83030:youtube.com###shorts-inner-container > .ytd-shorts:has(> .ytd-reel-video-renderer > ytd-ad-slot-renderer)
+83032:youtube.com##.ytReelMetapanelViewModelHost > .ytReelMetapanelViewModelMetapanelItem > .ytShortsSuggestedActionViewModelStaticHost
+=== https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt
+46:m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(json-prune-fetch-response, reelWatchSequenceResponse.entries.[-].command.reelWatchEndpoint.adClientParams.isAd entries.[-].command.reelWatchEndpoint.adClientParams.isAd, , propsToMatch, url:/reel_watch_sequence?)
+47:m.youtube.com,music.youtube.com,tv.youtube.com,www.youtube.com,youtubekids.com,youtube-nocookie.com##+js(json-prune, entries.[-].command.reelWatchEndpoint.adClientParams.isAd)
+=== https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt
+38:! www.youtube.com##+js(trusted-edit-inbound-object, JSON.stringify, 0, [?..playbackContext.contentPlaybackContext][?!.attestationRequest][?!.captionsRequested][?!.settingItemIds][?!.params^="YAHIAQ"][?!..mainAppWebInfo.graftUrl*="&list="][?!..mainAppWebInfo.graftUrl*="/shorts/"][?!..userAgent*="premium"]..client[?.clientName=="WEB"]+={"clientScreen":"CHANNEL"})
+88:youtube.com##+js(json-prune, entries.[-].command.reelWatchEndpoint.adClientParams.isAd)
+2.20.1
+grep: package/dist/esm/index.js: No such file or directory
