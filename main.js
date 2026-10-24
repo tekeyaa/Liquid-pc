@@ -249,7 +249,8 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('will-attach-webview', (_ev, wp) => {
     wp.preload = WEBVIEW_PRELOAD;
     wp.nodeIntegration = false;
-    wp.nodeIntegrationInSubFrames = false;
+    // preload запускается и во фреймах (встроенные плееры), Node.js там по-прежнему выключен
+    wp.nodeIntegrationInSubFrames = true;
     wp.contextIsolation = true;
     wp.sandbox = true;
   });
@@ -976,6 +977,8 @@ function registerIpc() {
     bing: (q) => `https://api.bing.com/osjson.aspx?query=${q}`,
   };
   const sugCache = new Map();
+  // настройки видео для фреймов (в главную страницу их присылает окно браузера)
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false }; });
   ipcMain.handle('search:suggest', async (e, q) => {
     q = String(q || '').trim().slice(0, 120);
     if (!q || e.sender.session !== ses || /^[a-z]+:\/\//i.test(q)) return [];

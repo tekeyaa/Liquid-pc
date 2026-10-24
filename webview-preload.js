@@ -10,6 +10,9 @@ if (location.protocol === 'file:' && /\/newtab\.html$/.test(location.pathname)) 
 }
 
 const toHost = (msg) => { try { ipcRenderer.sendToHost('liquid', msg); } catch {} };
+// Этот код работает и во фреймах (встроенные плееры фильмов, видео соцсетей, YouTube на чужих сайтах).
+// Во фрейме нужны только видео и кнопки мыши; перевод, режим чтения и сведения о странице — только на самой странице
+const IS_FRAME = (() => { try { return window.top !== window; } catch { return true; } })();
 
 // Вставка своей разметки. YouTube и другие сайты включают Trusted Types: любой разбор HTML-строки
 // (innerHTML, DOMParser, даже в отдельном документе) там запрещён. Поэтому разбираем свою разметку сами
@@ -186,7 +189,7 @@ function translateOff() {
 
 // ---------- 3. Сведения о странице ----------
 function pageInfo() {
-  if (!/^https?:$/.test(location.protocol) || !document.body) return;
+  if (IS_FRAME || !/^https?:$/.test(location.protocol) || !document.body) return;
   const sample = (document.body.innerText || '').slice(0, 4000);
   const letters = (sample.match(/\p{L}/gu) || []).length;
   const cyr = (sample.match(/[а-яё]/giu) || []).length;
@@ -364,7 +367,27 @@ function readerClose() {
 
 // ---------- 6. Видео: скорость, громкость до 300%, картинка ----------
 const vt = { graphs: new WeakMap(), want: {}, hud: null, hudT: 0, svg: false };
-function videos() { return [...document.querySelectorAll('video')]; }
+function videos() {
+  const out = [...document.querySelectorAll('video')];
+  // плееры-компоненты прячут <video> в shadow DOM — заглядываем в открытые
+  const walk = (root, depth) => {
+    if (depth > 3) return;
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) { out.push(...el.shadowRoot.querySelectorAll('video')); walk(el.shadowRoot, depth + 1); }
+  };
+  if (!out.length) { try { walk(document, 0); } catch {} } // обходим, только если обычных <video> нет — это дорого
+  return out;
+}
+function videoAt(x, y) {
+  const els = document.elementsFromPoint(x, y);
+  const v = els.find((el) => el.tagName === 'VIDEO');
+  if (v) return v;
+  for (const el of els.slice(0, 8)) {
+    if (!el.shadowRoot) continue;
+    const inner = [...el.shadowRoot.querySelectorAll('video')].find((iv) => { const r = iv.getBoundingClientRect(); return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; });
+    if (inner) return inner;
+  }
+  return null;
+}
 function mainVideo() {
   const vs = videos().filter((v) => v.offsetWidth > 120);
   return vs.find((v) => !v.paused) || vs.sort((a, b) => b.offsetWidth * b.offsetHeight - a.offsetWidth * a.offsetHeight)[0] || null;
@@ -403,17 +426,24 @@ function setComp(v, on) {
   g.compOn = on;
 }
 function ensureSharpSvg() {
-  if (vt.svg) return;
+  if (vt.svg && vt.svg.isConnected) return;
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('width', '0'); svg.setAttribute('height', '0'); svg.style.position = 'absolute';
-  const filter = document.createElementNS(ns, 'filter'); filter.setAttribute('id', 'lq-sharp');
-  const conv = document.createElementNS(ns, 'feConvolveMatrix');
-  conv.setAttribute('order', '3'); conv.setAttribute('preserveAlpha', 'true'); conv.setAttribute('kernelMatrix', '0 -0.6 0 -0.6 3.4 -0.6 0 -0.6 0');
-  filter.appendChild(conv); svg.appendChild(filter);
+  svg.setAttribute('width', '0'); svg.setAttribute('height', '0'); svg.style.cssText = 'position:absolute;width:0;height:0;pointer-events:none';
+  // lq-sharp — ручная «резкость» из панели; lq-sharp-mid/max — лёгкий режим супер-чёткости
+  for (const [id, k] of [['lq-sharp', 0.6], ['lq-sharp-mid', 0.35], ['lq-sharp-max', 0.7]]) {
+    const filter = document.createElementNS(ns, 'filter'); filter.setAttribute('id', id); filter.setAttribute('color-interpolation-filters', 'sRGB');
+    const conv = document.createElementNS(ns, 'feConvolveMatrix');
+    conv.setAttribute('order', '3'); conv.setAttribute('preserveAlpha', 'true');
+    conv.setAttribute('kernelMatrix', `0 ${-k} 0 ${-k} ${1 + 4 * k} ${-k} 0 ${-k} 0`);
+    filter.appendChild(conv); svg.appendChild(filter);
+  }
   (document.body || document.documentElement).appendChild(svg);
-  vt.svg = true;
+  vt.svg = svg;
 }
+// видео, кадры которого видеокарте читать нельзя (чужой сервер без CORS) или которое обрезано object-fit: cover —
+// для них супер-чёткость работает «легко»: резкость и HDR-цвет фильтрами на самом видео, без апскейла
+vt.lite = new WeakSet();
 function applyFilter(v) {
   const w = vt.want;
   const parts = [];
@@ -421,7 +451,12 @@ function applyFilter(v) {
   if (w.contrast != null && w.contrast !== 1) parts.push(`contrast(${w.contrast})`);
   if (w.sat != null && w.sat !== 1) parts.push(`saturate(${w.sat})`);
   if (w.sharp) { ensureSharpSvg(); parts.push('url(#lq-sharp)'); }
-  v.style.filter = parts.join(' ');
+  if (vt.lite.has(v) && vt.sr !== 'off' && !vt.srBroken) {
+    ensureSharpSvg(); parts.push(`url(#lq-sharp-${vt.sr === 'max' ? 'max' : 'mid'})`);
+    if (vt.srHdr) parts.push('saturate(1.28) contrast(1.1) brightness(1.03)');
+  }
+  const f = parts.join(' ');
+  if (v.style.filter !== f) v.style.filter = f;
 }
 function hud(v, text) {
   if (!vt.hud) {
@@ -459,9 +494,12 @@ window.addEventListener('wheel', (e) => {
   }
 }, { capture: true, passive: false });
 // сайты (YouTube) сбрасывают скорость при смене ролика — возвращаем выбранную
+let framePrefs = null;
 document.addEventListener('loadedmetadata', (e) => {
   const v = e.target;
   if (v.tagName !== 'VIDEO') return;
+  // во фрейм настройки видео браузер сам не присылает — спрашиваем один раз
+  if (IS_FRAME && !framePrefs) framePrefs = ipcRenderer.invoke('video:prefs').then((m) => { if (m) videoCmd({ op: 'prefs', ...m }); }).catch(() => {});
   if (vt.want.speed && v.playbackRate !== vt.want.speed) v.playbackRate = vt.want.speed;
   if (vt.want.bright || vt.want.contrast || vt.want.sat || vt.want.sharp) applyFilter(v);
 }, true);
@@ -573,9 +611,11 @@ class SuperRes {
     if (!v.isConnected) return this.destroy();
     if (!c.isConnected) v.insertAdjacentElement('afterend', c);
     // учитываем «чёрные полосы» (object-fit: contain)
+    const fit = getComputedStyle(v).objectFit;
+    if (fit === 'cover' || fit === 'none' || fit === 'scale-down') { setTimeout(() => this.fail('cover'), 0); return; }
     const ew = v.offsetWidth, eh = v.offsetHeight, vw = v.videoWidth || ew, vh = v.videoHeight || eh;
     const k = Math.min(ew / vw, eh / vh) || 1;
-    const w = Math.round(vw * k), h = Math.round(vh * k);
+    const w = fit === 'fill' ? ew : Math.round(vw * k), h = fit === 'fill' ? eh : Math.round(vh * k);
     const x = v.offsetLeft + (ew - w) / 2, y = v.offsetTop + (eh - h) / 2;
     Object.assign(c.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
     const cs = getComputedStyle(v); c.style.zIndex = cs.zIndex === 'auto' ? '' : cs.zIndex; c.style.transform = cs.transform === 'none' ? '' : cs.transform;
@@ -653,6 +693,12 @@ class SuperRes {
     return true;
   }
   fail(reason) {
+    if (reason === 'cors' || reason === 'cover') {
+      const v = this.v;
+      console.warn(`[liquid] супер-чёткость в лёгком режиме: ${reason} @ ${location.hostname}`);
+      this.destroy(); vt.lite.add(v); applyFilter(v); barRender();
+      return;
+    }
     console.warn(`[liquid] супер-чёткость отключена: ${reason}, видео ${this.v.videoWidth}x${this.v.videoHeight} @ ${location.hostname}`);
     this.destroy();
     vt.srBroken = true; vt.srWhy = reason;
@@ -666,7 +712,8 @@ function srSync() {
   for (const v of videos()) {
     const big = v.offsetWidth >= 240;
     let r = vt.srMap.get(v);
-    if (vt.sr === 'off' || !big) { if (r) r.destroy(); continue; }
+    if (vt.sr === 'off' || !big) { if (r) r.destroy(); if (vt.lite.has(v)) applyFilter(v); continue; }
+    if (vt.lite.has(v)) { applyFilter(v); continue; }
     if (!r) { if (vt.srBroken) continue; try { r = new SuperRes(v); vt.srMap.set(v, r); } catch (e) { toHost({ type: 'srFail', reason: 'nogl' }); continue; } }
     r.level = vt.sr; r.hdr = vt.srHdr;
   }
@@ -799,6 +846,7 @@ function barRender() {
   const st = q('[data-v="st"]'), r = vt.srMap.get(v);
   const WHY = { cors: 'сайт не даёт обработать своё видео', gpu: 'видеокарта не отдала кадр', stall: 'кадры перестали обновляться', nogl: 'нет WebGL', small: 'видео слишком маленькое' };
   if (vt.srBroken) { st.className = 'st bad'; st.textContent = `Не работает: ${WHY[vt.srWhy] || 'ошибка'}. Нажми «Чёткость», чтобы попробовать снова.`; }
+  else if (vt.sr !== 'off' && vt.lite.has(v)) { st.className = 'st ok'; st.textContent = `Работает в лёгком режиме: резкость${vt.srHdr ? ' и HDR-цвет' : ''} без апскейла — этот плеер не отдаёт кадры видеокарте.`; }
   else if (vt.sr !== 'off' && r && r.frames > 0) { st.className = 'st ok'; st.textContent = `Работает: ${v.videoWidth}×${v.videoHeight} → ${r.ow}×${r.oh}${vt.srHdr ? ' · HDR' : ''}`; }
   else if (vt.sr !== 'off' && v.offsetWidth < 240) { st.className = 'st'; st.textContent = 'Включится, когда видео станет больше.'; }
   else if (vt.sr !== 'off') { st.className = 'st'; st.textContent = 'Включается…'; setTimeout(barRender, 600); }
@@ -845,7 +893,7 @@ document.addEventListener('mousemove', (e) => {
   if (barRaf) return;
   barRaf = requestAnimationFrame(() => {
     barRaf = 0;
-    const v = document.elementsFromPoint(e.clientX, e.clientY).find((el) => el.tagName === 'VIDEO');
+    const v = videoAt(e.clientX, e.clientY);
     if (v) barShow(v);
   });
 }, { passive: true, capture: true });
