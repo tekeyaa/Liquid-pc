@@ -8,6 +8,7 @@ const on = (ch) => (cb) => {
 
 contextBridge.exposeInMainWorld('liquid', {
   platform: process.platform,
+  boot: () => ipcRenderer.invoke('boot:ready'),
   win: {
     min: () => ipcRenderer.send('win:min'),
     max: () => ipcRenderer.send('win:max'),

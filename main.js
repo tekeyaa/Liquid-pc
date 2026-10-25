@@ -98,9 +98,10 @@ app.on('child-process-gone', (_e, d) => {
 });
 diag.log('info', 'main', `Запуск Liquid ${app.getVersion()} (Electron ${process.versions.electron})`);
 
-// Экономия памяти: без «запасного» процесса и без кэша страниц «назад/вперёд» в ОЗУ
+// Экономия памяти: без кэша страниц «назад/вперёд» в ОЗУ. «Запасной» процесс оставляем —
+// с ним новая вкладка и переход на другой сайт начинаются без ожидания запуска процесса.
 if (bootSettings.memSaver !== false) {
-  app.commandLine.appendSwitch('disable-features', 'SpareRendererForSitePerProcess,BackForwardCache');
+  app.commandLine.appendSwitch('disable-features', 'BackForwardCache');
 }
 if (bootSettings.fps === '60') {
   // Ограничение кадров до 60 — меньше нагрузка на видеокарту и батарею
@@ -120,6 +121,7 @@ let dlSeq = 0;
 let xray = null;
 let dpiXray = null;       // обход замедления без VPN (Twitch, YouTube, Discord)
 let vpnStartup = null;
+let bootReady = Promise.resolve();
 let permDecided = null;  // решения о доступе для сайтов (обычный режим), загружаются при старте
 let iconSes = null;      // сессия без куки для значков и подсказок поиска
 let vpnState = { on: false, name: '', country: '', ip: '', busy: false };
@@ -1124,6 +1126,7 @@ function registerIpc() {
   ipcMain.handle('vpn:disconnect', async () => ({ ok: true, state: await vpnDisconnect() }));
   ipcMain.handle('vpn:state', () => vpnState);
   // окно ждёт автозапуска VPN перед тем, как открыть вкладки (не дольше 20 секунд)
+  ipcMain.handle('boot:ready', () => bootReady.then(() => true));
   ipcMain.handle('vpn:startup', () => Promise.race([vpnStartup || Promise.resolve(), new Promise((r) => setTimeout(r, 20000))]).then(() => vpnState));
   ipcMain.handle('vpn:unblock', (_e, url) => vpnUnblock(url));
 
@@ -1413,6 +1416,7 @@ function setupSession(sess, priv) {
 
 // ---------- старт ----------
 app.whenReady().then(async () => {
+  const bootT0 = Date.now();
   Menu.setApplicationMenu(null);
   ses = session.fromPartition(PARTITION);
   hardenSession(session.defaultSession);
@@ -1435,7 +1439,6 @@ app.whenReady().then(async () => {
     diag.log('warn', 'обход', `xray обхода остановился (код ${code})`, dpiXray.log ? dpiXray.log.trim().split('\n').slice(-3).join(' / ') : '');
     if (dpiRestarts++ < 3) setTimeout(() => startDpi(), 5000);
   };
-  await Promise.race([startDpi(), new Promise((r) => setTimeout(r, 3000))]); // вкладки открываются уже через обход
   // xray неожиданно завершился: снимаем прокси, иначе ни один сайт не откроется
   xray.onExit = (code) => {
     if (!vpnState.on) return;
@@ -1444,13 +1447,24 @@ app.whenReady().then(async () => {
   };
 
   exts = new Extensions(app.getPath('userData'));
-  await Promise.race([exts.loadAll([ses]), new Promise((r) => setTimeout(r, 2000))]).catch(() => {});
+  // Окно показываем сразу, а медленные шаги запуска идут параллельно, а не друг за другом.
+  // Вкладки страницы ждут их через boot:ready (не дольше 3 секунд), поэтому порядок как раньше.
+  const limit = (p, ms) => Promise.race([Promise.resolve(p).catch(() => {}), new Promise((r) => setTimeout(r, ms))]);
+  bootReady = Promise.all([limit(startDpi(), 3000), limit(exts.loadAll([ses]), 2000)]);
+  bootReady.then(() => diag.log('info', 'запуск', `готово за ${Date.now() - bootT0} мс`));
 
   app.getGPUInfo('basic').then((g) => {
     const dev = (g.gpuDevice || []).find((x) => x.active) || (g.gpuDevice || [])[0];
     gpuLine = dev ? `${dev.vendorId?.toString(16)}:${dev.deviceId?.toString(16)} драйвер ${dev.driverVersion || '?'}` : '?';
   }).catch(() => {});
   registerIpc();
+  // VPN при запуске назначаем до окна: иначе вкладки спросят vpn:startup раньше и откроются напрямую
+  if (st0.vpnAuto && st0.vpnKey) {
+    vpnStartup = bootReady.then(() => vpnConnect()).catch((e) => {
+      const say = () => broadcast('toast', { text: 'VPN: ' + e.message, error: true });
+      if (win && win.webContents.isLoading()) win.webContents.once('did-finish-load', say); else say();
+    });
+  }
   createWindow();
   // игровой режим
   game = new GameMode({
@@ -1469,13 +1483,6 @@ app.whenReady().then(async () => {
   setTimeout(() => checkUpdates(), 60_000);          // через минуту после запуска
   setInterval(() => checkUpdates(), 3 * 3600e3);     // и раз в 3 часа
 
-  const s = loadSettings();
-  if (s.vpnAuto && s.vpnKey) {
-    vpnStartup = vpnConnect().catch((e) => {
-      const say = () => broadcast('toast', { text: 'VPN: ' + e.message, error: true });
-      if (win && win.webContents.isLoading()) win.webContents.once('did-finish-load', say); else say();
-    });
-  }
 });
 
 app.on('before-quit', () => { if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); });

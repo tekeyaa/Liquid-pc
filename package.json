@@ -1,7 +1,7 @@
 {
   "name": "liquid-browser",
   "productName": "Liquid",
-  "version": "1.7.5",
+  "version": "1.7.6",
   "description": "Минималистичный браузер в стиле liquid glass с VPN и Claude",
   "main": "main.js",
   "scripts": {

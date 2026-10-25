@@ -949,6 +949,8 @@ function zoom(d) {
 
 // ---------- старт ----------
 window.addEventListener('DOMContentLoaded', async function init() {
+  // окно уже нарисовано; фоновые шаги запуска (расширения и т.п.) ждём только перед заполнением вкладок
+  try { await Promise.race([L.boot(), new Promise((r) => setTimeout(r, 4000))]); } catch {}
   settings = await L.settings.get();
   $('#model').value = settings.model;
   $('#search').value = settings.search;
