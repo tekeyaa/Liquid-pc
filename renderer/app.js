@@ -278,7 +278,8 @@ function reopenClosed() {
   const t = createTab(c.url, { title: c.title });
   const at = Math.min(c.i, tabs.length - 1);
   tabs.splice(tabs.indexOf(t), 1); tabs.splice(at, 0, t);
-  $('#tabs').insertBefore(t.el, $('#tabs').children[at] || null);
+  // вставляем перед следующей вкладкой, а не по номеру элемента: в полосе вкладок есть ещё и подсветка активной
+  $('#tabs').insertBefore(t.el, tabs[at + 1]?.el || null);
   saveSession();
 }
 

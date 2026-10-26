@@ -613,3 +613,113 @@ body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.35); }
 #updCard .uc-acts button { all: unset; cursor: pointer; padding: 6px 13px; border-radius: 11px; font-size: 13px; font-weight: 600; }
 #updCard .uc-acts .uc-sec { background: rgba(255,255,255,.08); } #updCard .uc-acts .uc-sec:hover { background: rgba(255,255,255,.14); }
 #updCard .uc-acts .uc-main { color: #fff; background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo)); }
+
+/* =====================================================================
+   Плавность и красота (1.7.7). Правила ниже перекрывают прежние.
+   ===================================================================== */
+
+/* ---------- жидкое стекло под активным элементом (renderer/motion.js) ---------- */
+#tabs, #setNav, .seg2 { position: relative; }
+.has-glider > :not(.glider) { position: relative; z-index: 1; }
+.glider { position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; opacity: 0; transition: opacity .25s var(--ease); contain: layout style; will-change: transform, width; --speed: 0; }
+.glider.on { opacity: 1; }
+.glider::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: radial-gradient(80% 120% at 30% -20%, rgba(255,255,255,calc(.18 + var(--speed) * .25)), transparent 60%); }
+
+.tab-glider { border-radius: 13px;
+  background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.06));
+  box-shadow: inset 0 0 0 1px var(--stroke), inset 0 1px 0 rgba(255,255,255,.35), 0 8px 22px -12px rgba(0,0,0,.6),
+    0 0 calc(var(--speed) * 26px) calc(var(--speed) * 2px) color-mix(in srgb, var(--accent-2) 35%, transparent); }
+.has-glider .tab.active, .has-glider .tab.active:hover { background: transparent; border-color: transparent; box-shadow: none; }
+.has-glider .tab.active.paired { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent-2) 70%, transparent); }
+
+.nav-glider { border-radius: 11px; background: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-2) 35%, transparent), 0 0 calc(var(--speed) * 22px) color-mix(in srgb, var(--accent) 45%, transparent); }
+#setNav button.on { background: transparent; box-shadow: none; }
+
+.seg-glider { border-radius: 9px; background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 4px 14px -6px var(--accent), 0 0 calc(var(--speed) * 18px) color-mix(in srgb, var(--accent-2) 50%, transparent); }
+.seg2 button.on { background: transparent; box-shadow: none; }
+.seg2 button { transition: color .3s var(--ease); }
+
+/* ---------- вкладки: раскрываются и схлопываются, соседи плавно отъезжают ---------- */
+.tab {
+  transition: background .3s var(--ease), color .25s, border-color .3s, box-shadow .3s,
+    flex-basis .3s var(--ease), min-width .3s var(--ease), padding .3s var(--ease), margin .3s var(--ease),
+    opacity .22s var(--ease), transform .38s var(--spring);
+  animation: tabIn .46s var(--ease);
+}
+@keyframes tabIn { from { opacity: 0; flex-basis: 0; min-width: 0; padding-left: 0; padding-right: 0; transform: scale(.82); } 60% { opacity: 1; } }
+.tab.closing { transform: scale(.75) translateY(2px); }
+.tab .fav { transition: transform .4s var(--spring); }
+.tab:active .fav { transform: scale(.85); }
+.tab::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .3s var(--ease);
+  background: radial-gradient(90px circle at var(--mx, 50%) var(--my, 50%), rgba(255,255,255,.1), transparent 70%); }
+.tab.lit::after { opacity: 1; }
+
+/* ---------- блик стекла идёт за курсором ---------- */
+.glass::after {
+  background:
+    radial-gradient(150px circle at var(--mx, 50%) var(--my, -60px), rgba(255,255,255,.16), transparent 70%),
+    radial-gradient(120% 90% at 50% -30%, rgba(255,255,255,.12), transparent 60%);
+}
+
+/* ---------- кнопки: мягкое свечение ---------- */
+.pill.accent.on { box-shadow: inset 0 1px 0 rgba(255,255,255,.35), inset 0 0 18px rgba(255,255,255,.05), 0 10px 28px -10px color-mix(in srgb, var(--accent) 75%, transparent); }
+.chip { transition: color .3s var(--ease), background .3s var(--ease), border-color .3s var(--ease), transform .35s var(--spring); }
+.chip:active { transform: scale(.94); }
+
+/* ---------- всплывающие панели: открываются пружиной, закрываются быстро и мягко ---------- */
+/* закрытая панель скрыта совсем — размытие фона под ней больше не считается впустую */
+.pop { visibility: hidden; transition: opacity .2s var(--ease), transform .3s var(--ease), visibility 0s .3s; }
+.pop.open { visibility: visible; transition: opacity .22s var(--ease), transform .5s var(--spring), visibility 0s; }
+@keyframes itemIn { from { opacity: 0; transform: translate3d(0, -5px, 0) scale(.97); } }
+.pop.open:not(.settings) > *, .ctx.open > *, #setPop.open #setNav > button { animation: itemIn .42s var(--spring) both; }
+.pop.open:not(.settings) > :nth-child(2), .ctx.open > :nth-child(2), #setPop.open #setNav > :nth-child(2) { animation-delay: 15ms; }
+.pop.open:not(.settings) > :nth-child(3), .ctx.open > :nth-child(3), #setPop.open #setNav > :nth-child(3) { animation-delay: 30ms; }
+.pop.open:not(.settings) > :nth-child(4), .ctx.open > :nth-child(4), #setPop.open #setNav > :nth-child(4) { animation-delay: 45ms; }
+.pop.open:not(.settings) > :nth-child(5), .ctx.open > :nth-child(5), #setPop.open #setNav > :nth-child(5) { animation-delay: 60ms; }
+.pop.open:not(.settings) > :nth-child(6), .ctx.open > :nth-child(6), #setPop.open #setNav > :nth-child(6) { animation-delay: 75ms; }
+.pop.open:not(.settings) > :nth-child(7), .ctx.open > :nth-child(7), #setPop.open #setNav > :nth-child(7) { animation-delay: 90ms; }
+.pop.open:not(.settings) > :nth-child(8), .ctx.open > :nth-child(8), #setPop.open #setNav > :nth-child(8) { animation-delay: 105ms; }
+.pop.open:not(.settings) > :nth-child(9), .ctx.open > :nth-child(9), #setPop.open #setNav > :nth-child(9) { animation-delay: 120ms; }
+.pop.open:not(.settings) > :nth-child(10), .ctx.open > :nth-child(10), #setPop.open #setNav > :nth-child(10) { animation-delay: 135ms; }
+.pop.open:not(.settings) > :nth-child(n+11), .ctx.open > :nth-child(n+11), #setPop.open #setNav > :nth-child(n+11) { animation-delay: 150ms; }
+
+/* меню вкладки и подсказки адресной строки исчезают плавно, а не пропадают */
+.ctx { display: block; opacity: 0; visibility: hidden; pointer-events: none; transform-origin: top left; transform: translate3d(0, -6px, 0) scale(.95);
+  transition: opacity .16s var(--ease), transform .26s var(--ease), visibility 0s .26s; }
+.ctx.open { opacity: 1; visibility: visible; pointer-events: auto; transform: none; animation: none;
+  transition: opacity .18s var(--ease), transform .45s var(--spring), visibility 0s; }
+#suggest { display: block; opacity: 0; visibility: hidden; pointer-events: none; transform-origin: top center; transform: translate3d(0, -6px, 0) scale(.985);
+  transition: opacity .15s var(--ease), transform .26s var(--ease), visibility 0s .26s; }
+#suggest.open { opacity: 1; visibility: visible; pointer-events: auto; transform: none; animation: none;
+  transition: opacity .18s var(--ease), transform .42s var(--spring), visibility 0s; }
+.sg { transition: background .18s var(--ease); }
+
+/* окно настроек: фон за ним мягко темнеет и размывается */
+body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.35); backdrop-filter: blur(3px); transition: background .3s var(--ease), backdrop-filter .3s var(--ease); }
+@starting-style { body.popped #scrim { background: rgba(0,0,0,0); backdrop-filter: blur(0); } }
+@keyframes secIn { from { opacity: 0; transform: translate3d(0, 10px, 0); } }
+.set-sec.on { animation: secIn .38s var(--ease); }
+#setNav button { transition: color .25s var(--ease), background .2s; }
+
+/* ---------- смена вкладки: страница проявляется, а не мигает ---------- */
+#views webview.active { animation: wvIn .26s var(--ease); }
+@keyframes wvIn { from { opacity: .35; } }
+
+/* ---------- полоса загрузки с бегущим бликом ---------- */
+#progress { overflow: hidden; box-shadow: 0 0 10px color-mix(in srgb, var(--accent-2) 60%, transparent); }
+#progress::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.85), transparent); transform: translateX(-120%); }
+body.loading #progress::after { animation: shimmer 1.15s var(--ease) infinite; }
+@keyframes shimmer { to { transform: translateX(380%); } }
+body.game #progress::after { animation-play-state: paused; }
+
+/* ---------- запуск: панель браузера мягко выезжает ---------- */
+@keyframes chromeIn { from { opacity: 0; transform: translate3d(0, -8px, 0); } }
+#tabsrow { animation: chromeIn .55s var(--ease) both; }
+#bar { animation: chromeIn .55s .06s var(--ease) both; }
+
+/* ---------- уведомления ---------- */
+#toast { transition: opacity .25s var(--ease), transform .55s var(--spring); }
