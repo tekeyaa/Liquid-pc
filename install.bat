@@ -16,8 +16,12 @@ echo [1/5] Закрываю Liquid, если открыт...
 taskkill /im Liquid.exe /f >nul 2>nul
 timeout /t 1 /nobreak >nul
 
-echo [2/5] Ставлю свежий движок Electron (пару минут)...
-call npm install --no-fund --no-audit --save-dev electron@latest electron-builder@latest
+echo [2/5] Ставлю движок Electron 45 (пару минут)...
+rem версии берём из package.json (Electron 45, не старее 45.1.0), а не «самые свежие»:
+rem electron@latest перескочил бы на новую ветку движка, на которой Liquid не проверен
+call npm install --no-fund --no-audit
+if errorlevel 1 goto fail
+call npm update electron --no-fund --no-audit
 if errorlevel 1 goto fail
 
 echo.
