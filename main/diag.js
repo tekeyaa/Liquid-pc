@@ -23,7 +23,12 @@ class Diag {
     this.listeners = new Set();
     this.dedupe = new Map(); // одинаковые сообщения не пишем чаще раза в 10 секунд
     this.started = Date.now();
+    this.queue = [];         // строки, ещё не записанные в файл
+    this.flushT = 0;
+    this.cur = '';           // файл сегодняшнего журнала и его размер — без проверки диска на каждую строку
+    this.size = 0;
     this.cleanup();
+    process.on('exit', () => this.flush());
   }
 
   file() {
@@ -64,12 +69,26 @@ class Diag {
     if (this.ring.length > 2000) this.ring.splice(0, this.ring.length - 2000);
     if (LEVELS[e.level] >= LEVELS.error) this.unseen++;
     const line = `${new Date(e.t).toISOString()} [${e.level.toUpperCase()}] [${e.source}] ${e.msg}${e.extra ? ' | ' + e.extra : ''}\n`;
+    // Сайты сыплют предупреждениями в консоль; раньше каждая строка — это три обращения к диску из основного
+    // процесса браузера. Теперь строки копятся и пишутся пачкой раз в секунду; ошибки и сбои — сразу.
+    this.queue.push(line);
+    if (LEVELS[e.level] >= LEVELS.error) this.flush();
+    else if (!this.flushT) this.flushT = setTimeout(() => this.flush(), 1000);
+    for (const l of this.listeners) { try { l(e, this.unseen); } catch {} }
+  }
+
+  flush() {
+    clearTimeout(this.flushT); this.flushT = 0;
+    if (!this.queue.length) return;
+    const data = this.queue.join(''); this.queue = [];
     try {
       const f = this.file();
+      if (f !== this.cur) { this.cur = f; try { this.size = fs.statSync(f).size; } catch { this.size = 0; } }
       // не больше 5 МБ в день (значок новых ошибок при этом всё равно обновляется)
-      if (!(fs.existsSync(f) && fs.statSync(f).size > 5 * 1024 * 1024)) fs.appendFileSync(f, line);
+      if (this.size > 5 * 1024 * 1024) return;
+      fs.appendFileSync(f, data);
+      this.size += Buffer.byteLength(data);
     } catch {}
-    for (const l of this.listeners) { try { l(e, this.unseen); } catch {} }
   }
 
   list(minLevel = 'warn', limit = 300) {

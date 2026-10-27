@@ -115,11 +115,17 @@
   const $ = (s) => document.getElementById(s);
 
   // ---------- часы ----------
+  // часы без секунд: текст меняем только когда сменилась минута — иначе крупные цифры с тенью перерисовывались каждую секунду
+  const fmtT = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const fmtD = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
   function tick() {
+    if (document.hidden) return;
     const d = new Date();
-    $('clock').textContent = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    $('date').textContent = d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
+    const t = fmtT.format(d), dt = fmtD.format(d);
+    if ($('clock').textContent !== t) $('clock').textContent = t;
+    if ($('date').textContent !== dt) $('date').textContent = dt;
   }
+  document.addEventListener('visibilitychange', tick);
   tick(); setInterval(tick, 1000);
 
   function toUrl(s) {

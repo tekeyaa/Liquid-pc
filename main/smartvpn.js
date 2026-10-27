@@ -22,12 +22,17 @@ const BUILTIN = [
   'pornhub.com', 'quora.com', 'deviantart.com', 'tiktok.com', 'tiktokcdn.com', 'tiktokv.com',
 ];
 
+const BUILTIN_SET = new Set(BUILTIN);
+
 // Сайты, которые провайдеры замедляют по имени в TLS: без VPN их открывает обход замедления
 const DPI_SITES = [
   'twitch.tv', 'ttvnw.net', 'jtvnw.net', 'live-video.net', 'twitchcdn.net', 'twitchsvc.net', 'ext-twitch.tv',
   'youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com', 'ggpht.com', 'youtubei.googleapis.com', 'youtube-nocookie.com',
   'discord.com', 'discord.gg', 'discordapp.com', 'discordapp.net', 'discord.media',
 ];
+
+// JSON-массив доменов -> текст объекта {"youtube.com":1,...} для PAC
+const toMap = (json) => JSON.stringify(Object.fromEntries(JSON.parse(json).map((d) => [String(d).toLowerCase(), 1])));
 
 class SmartVpn {
   constructor() {
@@ -53,9 +58,17 @@ class SmartVpn {
     return p.slice(-2).join('.');
   }
 
+  // Совпадает ли сайт (или его поддомен) со списком. Раньше на каждый переход склеивался массив из всех
+  // списков и перебирался целиком; теперь проверяются только «хвосты» имени: a.b.youtube.com → b.youtube.com → youtube.com
   matches(host) {
     host = String(host || '').toLowerCase();
-    return this.domains().some((d) => host === d || host.endsWith('.' + d));
+    for (let h = host; h; ) {
+      if (BUILTIN_SET.has(h) || this.learned.has(h) || this.custom.has(h)) return true;
+      const i = h.indexOf('.');
+      if (i < 0) break;
+      h = h.slice(i + 1);
+    }
+    return false;
   }
 
   // vpnOn — включён ли VPN (тогда список D идёт через него); без VPN сайты из DPI идут через обход замедления,
@@ -63,8 +76,10 @@ class SmartVpn {
   pac(vpnOn) {
     const list = JSON.stringify(vpnOn ? this.domains() : []);
     const dpi = JSON.stringify(this.dpi ? DPI_SITES : []);
-    return `var D=${list};var P=${JSON.stringify(this.proxy)};var F=${dpi};var Q=${JSON.stringify(this.dpi ? this.dpi + '; DIRECT' : 'DIRECT')};
-function m(h,L){for(var i=0;i<L.length;i++){var d=L[i];if(h===d||dnsDomainIs(h,"."+d))return true;}return false;}
+    // списки — таблицами, а не массивами: Chromium вызывает FindProxyForURL на КАЖДЫЙ запрос, и раньше она
+    // перебирала больше сотни сайтов; теперь проверяет только «хвосты» имени (a.b.youtube.com → b.youtube.com → youtube.com)
+    return `var D=${toMap(list)};var P=${JSON.stringify(this.proxy)};var F=${toMap(dpi)};var Q=${JSON.stringify(this.dpi ? this.dpi + '; DIRECT' : 'DIRECT')};
+function m(h,L){for(;;){if(L.hasOwnProperty(h))return true;var i=h.indexOf(".");if(i<0)return false;h=h.substring(i+1);}}
 function FindProxyForURL(url,host){host=host.toLowerCase();
 if(isPlainHostName(host)||host==="localhost"||shExpMatch(host,"127.*")||shExpMatch(host,"10.*")||shExpMatch(host,"192.168.*"))return "DIRECT";
 if(m(host,D))return P;

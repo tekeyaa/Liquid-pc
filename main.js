@@ -45,13 +45,25 @@ const FF_VER = 128 + Math.floor((Date.now() - Date.UTC(2024, 6, 9)) / (28 * 864e
 const FF_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${FF_VER}.0) Gecko/20100101 Firefox/${FF_VER}.0`;
 const AUTH_HOSTS = /^https:\/\/(accounts\.google\.com|accounts\.youtube\.com|myaccount\.google\.com)\//;
 const WEBVIEW_PRELOAD = path.join(__dirname, 'webview-preload.js');
+const USER_INPUT = new Set(['mouseDown', 'mouseUp', 'keyDown', 'rawKeyDown', 'char', 'gestureTap', 'touchStart', 'touchEnd']);
+const POPUP_INPUT = new Set(['mouseDown', 'keyDown', 'rawKeyDown', 'char', 'gestureTap']);
+
+// Адрес страницы в каждой вкладке. Обработчики сетевых запросов спрашивали его у фрейма на КАЖДЫЙ запрос
+// (сотни на одну страницу), а это вызов в движок; теперь — поиск в таблице.
+const topUrls = new Map(); // webContentsId -> адрес главной страницы
+const GOOGLEISH = /google|gstatic|youtube|ggpht/i;
+function topUrlOf(d, exact) {
+  const u = exact ? undefined : topUrls.get(d.webContentsId);
+  if (u !== undefined) return u;
+  try { return d.frame?.top?.url || ''; } catch { return ''; }
+}
 
 function hardenSession(sess) {
   sess.setUserAgent(UA);
   sess.webRequest.onBeforeSendHeaders((d, cb) => {
     const h = d.requestHeaders;
-    let topUrl = '';
-    try { topUrl = d.frame?.top?.url || ''; } catch {}
+    // для запросов к Google — всегда точный адрес из фрейма, как раньше: от этого зависит вход в аккаунт
+    const topUrl = topUrlOf(d, GOOGLEISH.test(d.url));
     const auth = AUTH_HOSTS.test(d.url) || AUTH_HOSTS.test(topUrl);
     for (const k of Object.keys(h)) {
       const lk = k.toLowerCase();
@@ -130,8 +142,15 @@ const claudeJobs = new Map();
 
 // ---------- настройки ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
-function loadSettings() { try { return JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch { return {}; } }
-function saveSettings(s) { fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2)); }
+// Настройки держим в памяти: раньше файл читался с диска при каждом переходе по ссылке, подсказке поиска,
+// открытии окна — и всё это время основной процесс браузера стоял. Пишет файл только сам браузер.
+// Наружу отдаём копию: код меняет полученный объект и сохраняет его — как и раньше с прочитанным из файла.
+let settingsMem = null;
+function loadSettings() {
+  if (!settingsMem) { try { settingsMem = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch { settingsMem = {}; } }
+  return structuredClone(settingsMem);
+}
+function saveSettings(s) { fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2)); settingsMem = structuredClone(s); }
 function enc(str) {
   if (!str) return '';
   return safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(str).toString('base64') : 'plain:' + str;
@@ -230,6 +249,13 @@ function handleShortcut(e, input, target) {
 // Каждый webview получает только наш безопасный preload, без доступа к Node
 app.on('web-contents-created', (_e, contents) => {
   const kind = () => (contents.getType() === 'webview' ? 'вкладка' : 'интерфейс');
+  const cid = contents.id;
+  // адрес меняем уже в начале перехода: запросы новой страницы идут после этого
+  const setTop = (d) => { if (d && d.isMainFrame && !d.isSameDocument && d.url) topUrls.set(cid, d.url); };
+  contents.on('did-start-navigation', setTop);
+  contents.on('did-redirect-navigation', setTop);
+  contents.on('did-navigate', (_ev, url) => { if (url) topUrls.set(cid, url); });
+  contents.once('destroyed', () => topUrls.delete(cid));
   contents.setMaxListeners(40); // вкладку слушают блокировщик, журнал и интерфейс — 10 по умолчанию мало
   // один аргумент: в Electron 45 старая форма (ev, lvl, msg, …) выдаёт предупреждение об устаревании
   contents.on('console-message', function (ev) {
@@ -268,7 +294,7 @@ app.on('web-contents-created', (_e, contents) => {
 
   // Всплывающие окна разрешаем только сразу после нажатия или клавиши (как блокировщик попапов в Chrome)
   let lastInput = 0, lastPopupToast = 0;
-  contents.on('input-event', (_ev, ie) => { if (/^(mouseDown|mouseUp|keyDown|rawKeyDown|char|gestureTap|touchStart|touchEnd)$/.test(ie.type)) lastInput = Date.now(); });
+  contents.on('input-event', (_ev, ie) => { if (USER_INPUT.has(ie.type)) lastInput = Date.now(); }); // приходит и на каждое движение мыши — проверка должна быть дешёвой
   contents.setWindowOpenHandler(({ url, disposition, features }) => {
     let site = ''; try { site = new URL(contents.getURL()).hostname.replace(/^www\./, ''); } catch {}
     const allowed = (loadSettings().popupAllow || []).includes(site);
@@ -399,7 +425,8 @@ const GUARD_SCAN = `(() => {
   const pass = q('input[type=password]').length;
   const card = q('input[autocomplete^="cc-"], input[name*="card" i], input[id*="card" i], input[placeholder*="карт" i], input[name*="cvv" i], input[name*="cvc" i]').length;
   const actions = Array.from(new Set(q('form').map(f => { try { return new URL(f.action, location.href).host; } catch { return ''; } }).filter(Boolean)));
-  return { pass, card, actions, title: document.title, text: (document.body ? document.body.innerText : '').slice(0, 2500) };
+  // текст страницы (дорогой: пересчёт раскладки) нужен только для проверки страниц с паролем или картой
+  return { pass, card, actions, title: document.title, text: (pass || card) && document.body ? document.body.innerText.slice(0, 2500) : '' };
 })()`;
 let guardSeq = 0;
 const guardWait = new Map();
@@ -438,7 +465,7 @@ function setupPopup(w, openerHost) {
   applyRtcPolicy(wc);
   wc.on('did-start-navigation', (d) => { if (d.isMainFrame) applyRtcPolicy(wc, d.url); });
   let lastInput = 0;
-  wc.on('input-event', (_e, ie) => { if (/^(mouseDown|keyDown|rawKeyDown|char|gestureTap)$/.test(ie.type)) lastInput = Date.now(); });
+  wc.on('input-event', (_e, ie) => { if (POPUP_INPUT.has(ie.type)) lastInput = Date.now(); });
   wc.setWindowOpenHandler(({ url }) => {
     if (Date.now() - lastInput > 5000) { diag.log('info', 'попап', 'Заблокировано окно из окна входа', ''); return { action: 'deny' }; }
     if (!/^https?:/.test(url)) return { action: 'deny' };
@@ -1079,17 +1106,27 @@ function registerIpc() {
     if (w < 16) return null;
     return { data: 'data:image/png;base64,' + (w > 256 ? img.resize({ width: 256, quality: 'best' }) : img).toPNG().toString('base64'), w };
   }
+  let iconDirReady = false;
+  const iconMem = new Map(); // host -> { data, at }
   ipcMain.handle('newtab:icons', async (e, hosts) => {
     let u = ''; try { u = e.sender.getURL(); } catch {}
     if (!/^file:.*\/newtab\.html(#|$)/.test(u) || !Array.isArray(hosts)) return {};
-    const dir = path.join(app.getPath('userData'), 'icons2'); fs.mkdirSync(dir, { recursive: true });
-    try { fs.rmSync(path.join(app.getPath('userData'), 'icons'), { recursive: true, force: true }); } catch {} // старый кэш мелких значков
-    await useIconSes();
+    const dir = path.join(app.getPath('userData'), 'icons2');
+    if (!iconDirReady) { // папку готовим один раз за запуск, а не при каждом открытии новой вкладки
+      iconDirReady = true; fs.mkdirSync(dir, { recursive: true });
+      fs.promises.rm(path.join(app.getPath('userData'), 'icons'), { recursive: true, force: true }).catch(() => {}); // старый кэш мелких значков
+    }
     const out = {};
-    await Promise.all(hosts.slice(0, 80).map(String).map((h) => h.toLowerCase()).filter((h) => /^[a-z0-9.-]{3,100}$/.test(h) && h.includes('.')).map(async (h) => {
+    const want = hosts.slice(0, 80).map(String).map((h) => h.toLowerCase()).filter((h) => /^[a-z0-9.-]{3,100}$/.test(h) && h.includes('.'));
+    // значки, которые уже показывали, отдаём из памяти — без диска и без сети
+    const todo = want.filter((h) => { const m = iconMem.get(h); if (m && Date.now() - m.at < (m.data ? 14 * 864e5 : 864e5)) { out[h] = m.data; return false; } return true; });
+    if (!todo.length) return out;
+    await useIconSes();
+    await Promise.all(todo.map(async (h) => {
       const f = path.join(dir, h + '.txt'), miss = path.join(dir, h + '.none');
-      try { if (Date.now() - fs.statSync(f).mtimeMs < 14 * 864e5) { out[h] = fs.readFileSync(f, 'utf8'); return; } } catch {}
-      try { if (Date.now() - fs.statSync(miss).mtimeMs < 864e5) { out[h] = ''; return; } } catch {}
+      const fsp = fs.promises; // чтение с диска — без остановки основного процесса
+      try { const st = await fsp.stat(f); if (Date.now() - st.mtimeMs < 14 * 864e5) { out[h] = await fsp.readFile(f, 'utf8'); iconMem.set(h, { data: out[h], at: st.mtimeMs }); return; } } catch {}
+      try { const st = await fsp.stat(miss); if (Date.now() - st.mtimeMs < 864e5) { out[h] = ''; iconMem.set(h, { data: '', at: st.mtimeMs }); return; } } catch {}
       let best = null;
       for (const c of (await iconCandidates(h)).slice(0, 8)) {
         try {
@@ -1098,8 +1135,9 @@ function registerIpc() {
           if (best && best.w >= 96) break; // достаточно чёткий — дальше не ищем
         } catch {}
       }
-      if (best) { try { fs.writeFileSync(f, best.data); } catch {} out[h] = best.data; }
-      else { try { fs.writeFileSync(miss, ''); } catch {} out[h] = ''; }
+      if (best) { fs.promises.writeFile(f, best.data).catch(() => {}); out[h] = best.data; }
+      else { fs.promises.writeFile(miss, '').catch(() => {}); out[h] = ''; }
+      iconMem.set(h, { data: out[h], at: Date.now() });
     }));
     return out;
   });
@@ -1267,13 +1305,14 @@ function registerIpc() {
     const d = new Date(); const p2 = (n) => String(n).padStart(2, '0');
     const f = uniquePath(app.getPath('downloads'), `Liquid-отчёт ${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}-${p2(d.getMinutes())}.txt`);
     let full = diag.report(sys(), 400) + '\n\n## Полный журнал за сегодня\n';
+    diag.flush(); // строки, которые ещё копятся в памяти, — в файл, чтобы попали в отчёт
     try { full += fs.readFileSync(diag.file(), 'utf8').slice(-400_000); } catch {}
     fs.writeFileSync(f, full);
     return f;
   });
   ipcMain.on('diag:clear', () => diag.clear());
   ipcMain.on('diag:seen', () => diag.seen());
-  ipcMain.on('diag:folder', () => shell.openPath(diag.dir));
+  ipcMain.on('diag:folder', () => { diag.flush(); shell.openPath(diag.dir); });
   let diagT = 0;
   diag.listeners.add((e, unseen) => {
     if (e && e.level !== 'error' && e.level !== 'crash') return;
@@ -1426,7 +1465,16 @@ app.whenReady().then(async () => {
   const st0 = loadSettings();
   adblock.enabled = st0.adblock !== false;
   adblock.allow = new Set(st0.adAllow || []);
-  adblock.onCount = (id, n) => { const wc = webContents.fromId(id); const h = hostOf(wc); if (h && !h.isDestroyed()) h.send('adblock:count', { wcId: id, n }); };
+  adblock.topUrlOf = (d) => topUrlOf(d);
+  // счётчик рекламы: раньше сообщение в окно уходило на КАЖДЫЙ заблокированный запрос (на тяжёлой странице — сотни),
+  // теперь — не чаще 4 раз в секунду на вкладку; обнуление при переходе — сразу
+  const adPending = new Map(); let adT = 0;
+  const adFlush = () => {
+    clearTimeout(adT); adT = 0;
+    for (const [id, n] of adPending) { const wc = webContents.fromId(id); const h = hostOf(wc); if (h && !h.isDestroyed()) h.send('adblock:count', { wcId: id, n }); }
+    adPending.clear();
+  };
+  adblock.onCount = (id, n) => { adPending.set(id, n); if (n === 0) adFlush(); else if (!adT) adT = setTimeout(adFlush, 250); };
   setupSession(ses, false);
   adblock.init((url, opts) => ses.fetch(url, opts)).catch(() => {});
   const binDir = app.isPackaged ? path.join(process.resourcesPath, 'bin') : path.join(__dirname, 'bin');
@@ -1467,8 +1515,16 @@ app.whenReady().then(async () => {
   }
   createWindow();
   // игровой режим
+  let ownPids = null, ownPidsAt = 0;
   game = new GameMode({
-    isOwnPid: (pid) => app.getAppMetrics().some((m) => m.pid === pid),
+    // список процессов браузера обновляем раз в 30 с, а не при каждой проверке (каждые 4 с)
+    isOwnPid: (pid) => {
+      const now = Date.now();
+      if (!ownPids || now - ownPidsAt > 30e3) { ownPids = new Set(app.getAppMetrics().map((m) => m.pid)); ownPidsAt = now; }
+      if (ownPids.has(pid)) return true;
+      ownPids = new Set(app.getAppMetrics().map((m) => m.pid)); ownPidsAt = now; // новый процесс вкладки — перепроверяем сразу
+      return ownPids.has(pid);
+    },
     onChange: ({ on, game: name }) => {
       for (const m of app.getAppMetrics()) {
         try { os.setPriority(m.pid, on ? os.constants.priority.PRIORITY_BELOW_NORMAL : os.constants.priority.PRIORITY_NORMAL); } catch {}

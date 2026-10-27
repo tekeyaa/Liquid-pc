@@ -65,7 +65,16 @@
       if (!raf) { last = 0; raf = requestAnimationFrame(frame); }
     }
 
-    new MutationObserver(() => kick()).observe(box, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    // будим расчёт, только когда меняется то, что двигает выделение: состав, активный пункт, ширина вкладки.
+    // Значок загрузки на вкладке (класс loading) переключается на каждой загрузке страницы — его пропускаем
+    const MOVES = /\b(active|on|closing|narrow|paired)\b/g;
+    const sig = (v) => ((v || '').match(MOVES) || []).sort().join(' ');
+    new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.target === g) continue;
+        if (m.type === 'childList' ? m.target === box : sig(m.oldValue) !== sig(m.target.getAttribute('class'))) { kick(); return; }
+      }
+    }).observe(box, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'], attributeOldValue: true });
     new ResizeObserver(() => kick(120)).observe(box);
     addEventListener('resize', () => kick(120));
     kick();

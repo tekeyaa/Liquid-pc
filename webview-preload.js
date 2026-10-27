@@ -195,9 +195,20 @@ function translateOff() {
 }
 
 // ---------- 3. Сведения о странице ----------
+// Образец текста для определения языка. Раньше брали document.body.innerText — он заставляет браузер
+// пересчитать раскладку и собирает текст ВСЕЙ страницы (на длинных лентах — десятки мс), а нужно 4000 символов
+const NO_TEXT = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'svg']);
+function textSample(max) {
+  const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentNode && NO_TEXT.has(n.parentNode.nodeName) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  let s = '';
+  for (let n = w.nextNode(); n && s.length < max; n = w.nextNode()) { const v = n.nodeValue.trim(); if (v) s += v + ' '; }
+  return s.slice(0, max);
+}
 function pageInfo() {
   if (IS_FRAME || !/^https?:$/.test(location.protocol) || !document.body) return;
-  const sample = (document.body.innerText || '').slice(0, 4000);
+  const sample = textSample(4000);
   const letters = (sample.match(/\p{L}/gu) || []).length;
   const cyr = (sample.match(/[а-яё]/giu) || []).length;
   const lang = (document.documentElement.lang || '').toLowerCase();
@@ -207,8 +218,10 @@ function pageInfo() {
   for (const p of document.querySelectorAll('p')) { const n = (p.textContent || '').trim().length; if (n > 80) { ptext += n; pcount++; } if (ptext > 3000) break; }
   toHost({ type: 'page', lang, foreign, video: vids.length > 0, translated: tr.on, readable: pcount >= 4 && ptext > 1500 });
 }
-window.addEventListener('DOMContentLoaded', () => { pageInfo(); setTimeout(pageInfo, 2500); setTimeout(pageInfo, 8000); });
-window.addEventListener('load', () => setTimeout(pageInfo, 600));
+// повторные проверки — в свободное время страницы, чтобы не отнимать кадры у её загрузки и анимаций
+const idleInfo = () => (window.requestIdleCallback ? requestIdleCallback(pageInfo, { timeout: 1500 }) : pageInfo());
+window.addEventListener('DOMContentLoaded', () => { idleInfo(); setTimeout(idleInfo, 2500); setTimeout(idleInfo, 8000); });
+window.addEventListener('load', () => setTimeout(idleInfo, 600));
 
 // ---------- 4. Тема стартовой страницы ----------
 function applyTheme(t) {
@@ -483,7 +496,22 @@ function hud(v, text) {
   vt.hudT = setTimeout(() => vt.hudEl.classList.remove('on'), 900);
 }
 const fmtRate = (r) => (Math.round(r * 100) / 100).toString().replace('.', ',') + '×';
-window.addEventListener('wheel', (e) => {
+// Shift/Alt + колесо над видео — скорость и громкость. Обработчик, который может отменить прокрутку, заставляет
+// браузер перед КАЖДЫМ шагом колеса ждать скрипт страницы — на тяжёлых сайтах прокрутка от этого дёргается.
+// Поэтому такой обработчик висит только пока зажат Shift или Alt, а обычная прокрутка идёт без ожидания.
+let wheelHot = false;
+function wheelMode(on) {
+  if (on === wheelHot) return;
+  wheelHot = on;
+  if (on) window.addEventListener('wheel', onVideoWheel, { capture: true, passive: false });
+  else window.removeEventListener('wheel', onVideoWheel, { capture: true });
+}
+window.addEventListener('keydown', (e) => { if (e.key === 'Shift' || e.key === 'Alt') wheelMode(true); }, true);
+window.addEventListener('keyup', (e) => { if (!e.shiftKey && !e.altKey) wheelMode(false); }, true);
+window.addEventListener('blur', () => wheelMode(false));
+// клавишу зажали, пока фокус был не на странице (например, в адресной строке): включаемся с первого же шага колеса
+window.addEventListener('wheel', (e) => { if (e.shiftKey || e.altKey) wheelMode(true); }, { capture: true, passive: true });
+function onVideoWheel(e) {
   if (!e.shiftKey && !e.altKey) return;
   const v = document.elementsFromPoint(e.clientX, e.clientY).find((el) => el.tagName === 'VIDEO');
   if (!v) return;
@@ -499,7 +527,7 @@ window.addEventListener('wheel', (e) => {
     setVolume(v, vol);
     hud(v, `Громкость ${Math.round(vol * 100)}%`);
   }
-}, { capture: true, passive: false });
+}
 // сайты (YouTube) сбрасывают скорость при смене ролика — возвращаем выбранную
 let framePrefs = null;
 document.addEventListener('loadedmetadata', (e) => {
@@ -589,6 +617,10 @@ class SuperRes {
     const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o); if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
     const prog = (fs) => { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, SR_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); return p; };
     this.pUp = prog(SR_UP); this.pSh = prog(SR_SHARP);
+    // адреса атрибутов и параметров шейдеров узнаём один раз, а не на каждом кадре видео
+    const at = (p) => ({ p: gl.getAttribLocation(p, 'p'), t: gl.getUniformLocation(p, 't'), src: gl.getUniformLocation(p, 'src'), flip: gl.getUniformLocation(p, 'flip'),
+      dst: gl.getUniformLocation(p, 'dst'), sharp: gl.getUniformLocation(p, 'sharp'), boost: gl.getUniformLocation(p, 'boost'), hdr: gl.getUniformLocation(p, 'hdr') });
+    this.lUp = at(this.pUp); this.lSh = at(this.pSh);
     const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     const tex = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -600,7 +632,7 @@ class SuperRes {
     this.c.style.visibility = 'hidden';
     v.insertAdjacentElement('afterend', this.c);
     this.ro = new ResizeObserver(() => this.place()); this.ro.observe(v);
-    this.posT = setInterval(() => this.place(), 700);
+    this.posT = setInterval(() => { if (!document.hidden) this.place(); }, 700); // свёрнутую вкладку не пересчитываем
     this.place();
     this.loop();
   }
@@ -609,14 +641,19 @@ class SuperRes {
     if (!v.isConnected) return this.destroy();
     if (!c.isConnected) v.insertAdjacentElement('afterend', c);
     // учитываем «чёрные полосы» (object-fit: contain)
-    const fit = getComputedStyle(v).objectFit;
+    const cs = getComputedStyle(v);
+    const fit = cs.objectFit;
     if (fit === 'cover' || fit === 'none' || fit === 'scale-down') { setTimeout(() => this.fail('cover'), 0); return; }
     const ew = v.offsetWidth, eh = v.offsetHeight, vw = v.videoWidth || ew, vh = v.videoHeight || eh;
     const k = Math.min(ew / vw, eh / vh) || 1;
     const w = fit === 'fill' ? ew : Math.round(vw * k), h = fit === 'fill' ? eh : Math.round(vh * k);
     const x = v.offsetLeft + (ew - w) / 2, y = v.offsetTop + (eh - h) / 2;
+    // ничего не сдвинулось — не трогаем стили и не перерисовываем кадр заново (место проверяется каждые 0,7 с)
+    const sig = `${x},${y},${w},${h},${cs.zIndex},${cs.transform},${window.devicePixelRatio},${v.readyState >= 2 && this.frames > 0}`;
+    if (sig === this.sig) return;
+    this.sig = sig;
     Object.assign(c.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
-    const cs = getComputedStyle(v); c.style.zIndex = cs.zIndex === 'auto' ? '' : cs.zIndex; c.style.transform = cs.transform === 'none' ? '' : cs.transform;
+    c.style.zIndex = cs.zIndex === 'auto' ? '' : cs.zIndex; c.style.transform = cs.transform === 'none' ? '' : cs.transform;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     let ow = Math.round(w * dpr), oh = Math.round(h * dpr);
     const cap = Math.sqrt((3840 * 2160) / Math.max(1, ow * oh)); if (cap < 1) { ow = Math.round(ow * cap); oh = Math.round(oh * cap); }
@@ -636,19 +673,19 @@ class SuperRes {
     if (v.readyState < 2 || !v.videoWidth) return;
     gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v); // кросс-доменное видео без CORS здесь бросит SecurityError
-    const run = (p, fb, tex, w, h, set) => {
+    const run = (p, L, fb, tex, w, h, set) => {
       gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); gl.useProgram(p);
-      const loc = gl.getAttribLocation(p, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(gl.getUniformLocation(p, 't'), 0);
-      set(p); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.enableVertexAttribArray(L.p); gl.vertexAttribPointer(L.p, 2, gl.FLOAT, false, 0, 0);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(L.t, 0);
+      set(L); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     };
-    run(this.pUp, this.fb, this.tSrc, this.ow, this.oh, (p) => { gl.uniform2f(gl.getUniformLocation(p, 'src'), v.videoWidth, v.videoHeight); gl.uniform1f(gl.getUniformLocation(p, 'flip'), 1); });
-    run(this.pSh, null, this.tMid, this.ow, this.oh, (p) => {
-      gl.uniform2f(gl.getUniformLocation(p, 'dst'), this.ow, this.oh);
-      gl.uniform1f(gl.getUniformLocation(p, 'flip'), 0);
-      gl.uniform1f(gl.getUniformLocation(p, 'sharp'), this.level === 'max' ? 1.0 : 0.75);
-      gl.uniform1f(gl.getUniformLocation(p, 'boost'), this.level === 'max' ? 0.6 : 0.25);
-      gl.uniform1f(gl.getUniformLocation(p, 'hdr'), this.hdr ? 1 : 0);
+    run(this.pUp, this.lUp, this.fb, this.tSrc, this.ow, this.oh, (L) => { gl.uniform2f(L.src, v.videoWidth, v.videoHeight); gl.uniform1f(L.flip, 1); });
+    run(this.pSh, this.lSh, null, this.tMid, this.ow, this.oh, (L) => {
+      gl.uniform2f(L.dst, this.ow, this.oh);
+      gl.uniform1f(L.flip, 0);
+      gl.uniform1f(L.sharp, this.level === 'max' ? 1.0 : 0.75);
+      gl.uniform1f(L.boost, this.level === 'max' ? 0.6 : 0.25);
+      gl.uniform1f(L.hdr, this.hdr ? 1 : 0);
     });
   }
   // Рисуем по кадрам экрана и только когда у видео сменился кадр.
@@ -700,6 +737,8 @@ class SuperRes {
   // слой появился — не закрыл ли он кнопки плеера; плееры меняют интерфейс (Shorts — при каждом ролике), поэтому повторяем
   uiCheck() {
     if (!this.alive) return;
+    // в свёрнутой вкладке кнопки плеера никто не видит — проверим, когда вернутся
+    if (document.hidden) { clearTimeout(this.uiT); this.uiT = setTimeout(() => this.uiCheck(), 3000); return; }
     if (uiAtRisk(this.v)) {
       const v = this.v;
       console.warn(`[liquid] супер-чёткость закрывала бы кнопки плеера — выключена для этого видео @ ${location.hostname}`);
@@ -958,14 +997,19 @@ function barHideSoon() {
   clearTimeout(bar.hideT);
   bar.hideT = setTimeout(() => { if (!bar.hover && !bar.open) bar.dot && bar.dot.classList.remove('vis'); }, 2400);
 }
-let barRaf = 0;
+// Видео под курсором ищем не на каждом кадре движения мыши (на 180 Гц — 180 раз в секунду на любом сайте),
+// а раз в 60 мс; на страницах без обычных <video> — раз в 0,4 с (видео там может быть только внутри компонентов).
+let barT = 0, barLast = 0, barX = 0, barY = 0;
+const liveVideos = document.getElementsByTagName('video'); // «живой» список: узнать, есть ли видео, ничего не стоит
 document.addEventListener('mousemove', (e) => {
-  if (barRaf) return;
-  barRaf = requestAnimationFrame(() => {
-    barRaf = 0;
-    const v = videoAt(e.clientX, e.clientY);
+  barX = e.clientX; barY = e.clientY;
+  if (barT) return;
+  const gap = liveVideos.length ? 60 : 400;
+  barT = setTimeout(() => {
+    barT = 0; barLast = performance.now();
+    const v = videoAt(barX, barY);
     if (v) barShow(v);
-  });
+  }, Math.max(0, barLast + gap - performance.now()));
 }, { passive: true, capture: true });
 document.addEventListener('scroll', () => { if (bar.dot && bar.dot.classList.contains('vis')) barPlace(); }, { passive: true, capture: true });
 document.addEventListener('fullscreenchange', () => { if (bar.v) setTimeout(() => barShow(bar.v), 100); for (const r of vt.srMap.values()) setTimeout(() => r.place(), 120); });

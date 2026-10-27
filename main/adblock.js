@@ -66,7 +66,8 @@ class AdBlock {
   hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
   pageHost(d) {
     let top = '';
-    try { top = d.frame?.top?.url || ''; } catch {}
+    if (this.topUrlOf) top = this.topUrlOf(d); // адрес вкладки из таблицы основного процесса — без обращения к фрейму
+    else { try { top = d.frame?.top?.url || ''; } catch {} }
     return this.hostOf(top || d.referrer || d.url);
   }
 
@@ -81,7 +82,8 @@ class AdBlock {
     b.enableBlockingInSession(sess); // косметика (скрытие баннеров) + сетевые правила
     // Перехватываем сетевой фильтр, чтобы работали «выключить на этом сайте» и счётчик
     sess.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (d, cb) => {
-      if (!this.enabled || d.resourceType === 'mainFrame' || this.allow.has(this.pageHost(d))) return cb({});
+      // адрес страницы разбираем, только если есть сайты-исключения (раньше — на каждый запрос)
+      if (!this.enabled || d.resourceType === 'mainFrame' || (this.allow.size && this.allow.has(this.pageHost(d)))) return cb({});
       b.onBeforeRequest(d, (res) => {
         if (res && (res.cancel || res.redirectURL)) {
           const id = d.webContentsId;

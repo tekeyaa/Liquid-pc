@@ -560,7 +560,8 @@ async function guardScan(tab, force) {
       const pass = q('input[type=password]').length;
       const card = q('input[autocomplete^="cc-"], input[name*="card" i], input[id*="card" i], input[placeholder*="карт" i], input[name*="cvv" i], input[name*="cvc" i]').length;
       const actions = Array.from(new Set(q('form').map(f => { try { return new URL(f.action, location.href).host; } catch { return ''; } }).filter(Boolean)));
-      return { pass, card, actions, title: document.title, text: (document.body ? document.body.innerText : '').slice(0, 2500) };
+      // текст страницы (дорогой: пересчёт раскладки всей страницы) нужен только для проверки страниц с паролем или картой
+      return { pass, card, actions, title: document.title, text: (pass || card || ${force ? 'true' : 'false'}) && document.body ? document.body.innerText.slice(0, 2500) : '' };
     })()`);
   } catch { return; }
   if (!info || (!info.pass && !info.card && !force)) return;
