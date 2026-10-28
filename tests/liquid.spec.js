@@ -62,7 +62,9 @@ function logErrors() {
 
 test.beforeAll(async () => {
   await startServer();
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'liquid-test-'));
+  // папка данных браузера — внутри test-results: при падении её журнал попадает в отчёт
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
+  dataDir = fs.mkdtempSync(path.join(ROOT, 'test-results', 'userdata-'));
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir },
@@ -72,8 +74,6 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  // журнал — в отчёт теста, чтобы при падении было видно, что браузер записал
-  try { for (const f of fs.readdirSync(path.join(dataDir, 'logs'))) fs.copyFileSync(path.join(dataDir, 'logs', f), path.join(test.info().outputDir || os.tmpdir(), f)); } catch {}
   await app?.close().catch(() => {});
   server?.close();
 });

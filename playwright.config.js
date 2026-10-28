@@ -5,7 +5,8 @@ module.exports = {
   expect: { timeout: 10_000 },
   workers: 1,
   fullyParallel: false,
-  reporter: [['list']],
+  // в GitHub ошибки ещё и пометками у запуска — их видно без скачивания логов
+  reporter: process.env.CI ? [['github'], ['list']] : [['list']],
   outputDir: 'test-results',
   use: { trace: 'retain-on-failure', screenshot: 'only-on-failure' },
 };

@@ -29,6 +29,16 @@ jobs:
       - name: Тесты
         run: npx playwright test
 
+      - name: Журнал Liquid при падении
+        if: failure()
+        shell: bash
+        run: |
+          # строки журнала браузера — пометками у запуска, чтобы причину было видно сразу
+          for f in test-results/userdata-*/logs/*.log; do
+            [ -f "$f" ] || continue
+            grep -E "\[(WARN|ERROR|CRASH)\]" "$f" | tail -20 | while IFS= read -r l; do echo "::warning::${l:0:900}"; done
+          done
+
       - name: Отчёт при падении
         if: failure()
         uses: actions/upload-artifact@v4
