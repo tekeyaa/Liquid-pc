@@ -108,7 +108,9 @@ app.on('render-process-gone', (_e, wc, d) => {
 app.on('child-process-gone', (_e, d) => {
   if (d.reason !== 'clean-exit' && d.reason !== 'killed') diag.log('crash', d.type, `Процесс ${d.type}${d.name ? ' ' + d.name : ''} упал: ${d.reason} (код ${d.exitCode})`);
 });
-diag.log('info', 'main', `Запуск Liquid ${app.getVersion()} (Electron ${process.versions.electron})`);
+// вторая копия (ярлык нажали, когда Liquid уже открыт) сразу отдаёт окно первой и не пишет в журнал «Запуск»
+const firstInstance = app.requestSingleInstanceLock();
+if (firstInstance) diag.log('info', 'main', `Запуск Liquid ${app.getVersion()} (Electron ${process.versions.electron})`);
 
 // Экономия памяти: без кэша страниц «назад/вперёд» в ОЗУ. «Запасной» процесс оставляем —
 // с ним новая вкладка и переход на другой сайт начинаются без ожидания запуска процесса.
@@ -218,10 +220,20 @@ function createWindow({ priv = false } = {}) {
   return w;
 }
 
+const CODE_KEYS = { Equal: '=', Minus: '-', Backslash: '\\', Tab: 'tab', NumpadAdd: '+', NumpadSubtract: '-', Numpad0: '0' };
+function keyOf(input) {
+  const c = input.code || '';
+  if (/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
+  if (/^Digit\d$/.test(c)) return c.slice(5);
+  if (CODE_KEYS[c]) return CODE_KEYS[c];
+  return (input.key || '').toLowerCase(); // F5, F11, Escape, стрелки — от раскладки не зависят
+}
 const SHORTCUTS = new Set(['t', 'w', 'l', 'r', 'tab', 'j', 'k', 'h', '=', '+', '-', '0', 'f', 'i', 'n', 'd', 'b', '\\', 'y', 's']);
 function handleShortcut(e, input, target) {
   if (input.type !== 'keyDown' || !target || target.isDestroyed()) return;
-  const k = (input.key || '').toLowerCase();
+  // Клавишу узнаём по её месту на клавиатуре, а не по букве: с русской раскладкой Ctrl+T приходит как Ctrl+Е,
+  // и раньше почти все сочетания (Ctrl+T, W, L, F, J…) при русской раскладке не работали
+  const k = keyOf(input);
   const mod = input.control || input.meta;
   let hit = null;
   if (mod && SHORTCUTS.has(k)) hit = k;
@@ -229,7 +241,7 @@ function handleShortcut(e, input, target) {
   else if (k === 'f12') hit = 'i';
   else if (input.alt && k === 'arrowleft') hit = 'back';
   else if (input.alt && k === 'arrowright') hit = 'forward';
-  else if (input.alt && (k === 'p' || k === 'з')) hit = 'pip';
+  else if (input.alt && k === 'p') hit = 'pip';
   else if (k === 'f11') hit = 'f11';
   else if (k === 'f9') hit = 'reader';
   else if (k === 'escape') hit = 'escape';
@@ -1545,5 +1557,5 @@ app.on('before-quit', () => { if (xray) xray.stop(); dpiXray?.stop(); game?.stop
 app.on('window-all-closed', () => { if (xray) xray.stop(); app.quit(); });
 
 // Одна копия приложения
-if (!app.requestSingleInstanceLock()) app.quit();
+if (!firstInstance) app.quit();
 else app.on('second-instance', () => { if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.focus(); } else createWindow(); });
