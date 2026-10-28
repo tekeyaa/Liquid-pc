@@ -22,7 +22,9 @@
 - `renderer/` — интерфейс: вкладки, адресная строка, настройки, стартовая страница, Claude.
 - `vpn.js` — разбор ключей и запуск xray.
 - `installer/` — исходники Liquid-Setup.exe на Go.
-- `.github/workflows/release.yml` — при каждом изменении в `main` собирает установщик и выкладывает релиз
+- `tests/` — автотесты: запускают настоящий Liquid и проверяют основное (`.github/workflows/tests.yml`, на Windows).
+  У себя: `npm install --no-save @playwright/test` и `npx playwright test`.
+- `.github/workflows/release.yml` — при каждом изменении в `main` сначала гоняет автотесты, потом собирает установщик и выкладывает релиз
   с номером из `package.json` и описанием из `CHANGELOG.md`.
 
 Новая версия: подними `version` в `package.json`, добавь раздел в `CHANGELOG.md` и отправь в `main`.

@@ -12,6 +12,12 @@ const { Diag, sysInfo } = require('./main/diag');
 const os = require('os');
 let game = null;
 
+// Автотесты (tests/): отдельная папка данных, чтобы тест не трогал настоящие настройки, вкладки и входы,
+// и программная отрисовка WebGL — у серверов GitHub нет видеокарты. Обычный запуск это не затрагивает.
+const TEST = !!process.env.LIQUID_TEST;
+if (process.env.LIQUID_USER_DATA) app.setPath('userData', process.env.LIQUID_USER_DATA);
+if (TEST) app.commandLine.appendSwitch('enable-unsafe-swiftshader');
+
 const PARTITION = 'persist:liquid';
 const UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 app.userAgentFallback = UA;
@@ -97,9 +103,10 @@ process.on('uncaughtException', (e) => {
   }
 });
 process.on('unhandledRejection', (e) => {
-  // «Script failed to execute» — это скрипт блокировщика рекламы, упавший на странице сайта; браузеру он не вредит
+  // «Script failed to execute» — скрипт блокировщика рекламы, упавший на странице сайта; «Render frame was disposed» —
+  // вкладку или фрейм закрыли, пока в нём выполнялся скрипт (блокировщика или проверки). Браузеру это не вредит
   const m = String((e && e.message) || e);
-  diag.log(/Script failed to execute/.test(m) ? 'debug' : 'error', 'main', e);
+  diag.log(/Script failed to execute|Render frame was disposed/.test(m) ? 'debug' : 'error', 'main', e);
 });
 app.on('render-process-gone', (_e, wc, d) => {
   let url = ''; try { url = wc.getURL(); if (ses && wc.session && wc.session !== ses) url = '(инкогнито — адрес не записан)'; } catch {}
@@ -1544,8 +1551,8 @@ app.whenReady().then(async () => {
       broadcast('game:state', { on, game: name, keepAudio: loadSettings().gameKeepAudio !== false });
     },
   });
-  game.enabled = loadSettings().gameMode !== false;
-  setTimeout(() => game.start(), 6000);
+  game.enabled = loadSettings().gameMode !== false && !TEST;
+  if (!TEST) setTimeout(() => game.start(), 6000);
   announceUpdate();
   fixShortcuts();
   setTimeout(() => checkUpdates(), 60_000);          // через минуту после запуска

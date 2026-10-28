@@ -1,6 +1,6 @@
 name: Сборка установщика
 
-# При каждом изменении в main собирает Liquid-Setup.exe и выкладывает его в релиз своей версии
+# При каждом изменении в main — автотесты (tests.yml), затем собирает Liquid-Setup.exe и выкладывает его в релиз своей версии
 # (номер берётся из package.json, описание — из CHANGELOG.md).
 on:
   push:
@@ -11,7 +11,12 @@ permissions:
   contents: write
 
 jobs:
+  # сначала автотесты на Windows: если браузер что-то сломал, установщик не собирается и релиз не выходит
+  test:
+    uses: ./.github/workflows/tests.yml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +31,7 @@ jobs:
 
       - name: Код браузера внутрь установщика
         run: |
-          zip -qr installer/payload.zip . -x ".git/*" ".github/*" "installer/*" "node_modules/*" "dist/*" "Liquid/*" "bin/xray*"
+          zip -qr installer/payload.zip . -x ".git/*" ".github/*" "installer/*" "node_modules/*" "dist/*" "Liquid/*" "bin/xray*" "tests/*" "test-results/*" "playwright.config.js"
           ls -la installer/payload.zip
 
       - name: Установщик
