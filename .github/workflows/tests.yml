@@ -1,0 +1,38 @@
+name: Автотесты
+
+# Запускает настоящий Liquid на Windows и проверяет основное (tests/liquid.spec.js).
+# Вызывается перед каждой сборкой установщика (release.yml), а ещё — на любой ветке, кроме main, и вручную.
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Движок и зависимости (как у установщика)
+        run: |
+          npm install --no-fund --no-audit
+          npm update electron --no-fund --no-audit
+          npm install --no-save --no-fund --no-audit @playwright/test@1
+          node -p "'Electron ' + require('electron/package.json').version"
+
+      - name: Тесты
+        run: npx playwright test
+
+      - name: Отчёт при падении
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 7

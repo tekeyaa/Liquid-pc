@@ -6,3 +6,5 @@ bin/*.dat
 installer/payload.zip
 Liquid-Setup.exe
 *.log
+test-results/
+playwright-report/

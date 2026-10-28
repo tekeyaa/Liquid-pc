@@ -12,6 +12,12 @@ const { Diag, sysInfo } = require('./main/diag');
 const os = require('os');
 let game = null;
 
+// Автотесты (tests/): отдельная папка данных, чтобы тест не трогал настоящие настройки, вкладки и входы,
+// и программная отрисовка WebGL — у серверов GitHub нет видеокарты. Обычный запуск это не затрагивает.
+const TEST = !!process.env.LIQUID_TEST;
+if (process.env.LIQUID_USER_DATA) app.setPath('userData', process.env.LIQUID_USER_DATA);
+if (TEST) app.commandLine.appendSwitch('enable-unsafe-swiftshader');
+
 const PARTITION = 'persist:liquid';
 const UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 app.userAgentFallback = UA;
@@ -1544,8 +1550,8 @@ app.whenReady().then(async () => {
       broadcast('game:state', { on, game: name, keepAudio: loadSettings().gameKeepAudio !== false });
     },
   });
-  game.enabled = loadSettings().gameMode !== false;
-  setTimeout(() => game.start(), 6000);
+  game.enabled = loadSettings().gameMode !== false && !TEST;
+  if (!TEST) setTimeout(() => game.start(), 6000);
   announceUpdate();
   fixShortcuts();
   setTimeout(() => checkUpdates(), 60_000);          // через минуту после запуска

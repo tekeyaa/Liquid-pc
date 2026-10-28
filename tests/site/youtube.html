@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Fake YouTube</title>
+<style>
+  body { margin: 0; background: #0f0f0f; color: #fff; font: 14px sans-serif; }
+  /* превью на «главной»: видео с обрезкой краёв, как у YouTube */
+  #preview { position: absolute; left: 20px; top: 20px; width: 360px; height: 202px; overflow: hidden; border-radius: 12px; }
+  #preview video, #watch video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* плеер «страницы ролика» */
+  #watch { position: relative; width: 854px; height: 400px; margin: 260px 0 0 20px; background: #000; }
+</style></head>
+<body>
+<!-- Сценарий бага 1.7.9: YouTube переносит один и тот же <video> из превью на главной в плеер ролика и меняет видео -->
+<div id="preview"><video id="v" src="a.webm" muted autoplay loop playsinline></video></div>
+<div id="watch"></div>
+<script>
+  window.openVideo = () => {
+    const v = document.getElementById('v');
+    document.getElementById('watch').appendChild(v);
+    v.src = 'b.webm'; v.loop = true; v.play();
+    document.title = 'Fake YouTube — watch';
+  };
+</script>
+</body></html>
