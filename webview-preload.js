@@ -574,10 +574,10 @@ function videoCmd(m) {
 // Проход 1: бикубическое (Catmull-Rom) увеличение до размера на экране. Проход 2: адаптивная резкость RCAS (как в AMD FSR) + HDR-цвет.
 vt.sr = 'off'; vt.srHdr = false; vt.barOn = true; vt.remember = false;
 const SR_VS = `attribute vec2 p; uniform float flip; varying vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
-const SR_UP = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 src;
+const SR_UP = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 src; uniform vec4 crop;
 vec4 cub(float x){ float x2=x*x, x3=x2*x; return vec4(-0.5*x3+x2-0.5*x, 1.5*x3-2.5*x2+1.0, -1.5*x3+2.0*x2+0.5*x, 0.5*x3-0.5*x2); }
 void main(){
-  vec2 px = uv * src - 0.5; vec2 f = fract(px); vec2 b = (floor(px) + 0.5) / src; vec2 d = 1.0 / src;
+  vec2 px = (crop.xy + uv * crop.zw) * src - 0.5; vec2 f = fract(px); vec2 b = (floor(px) + 0.5) / src; vec2 d = 1.0 / src;
   vec4 wx = cub(f.x), wy = cub(f.y); vec3 c = vec3(0.0);
   for (int j = 0; j < 4; j++) { vec3 row = vec3(0.0);
     for (int i = 0; i < 4; i++) row += texture2D(t, b + d * vec2(float(i) - 1.0, float(j) - 1.0)).rgb * wx[i];
@@ -619,7 +619,7 @@ class SuperRes {
     this.pUp = prog(SR_UP); this.pSh = prog(SR_SHARP);
     // адреса атрибутов и параметров шейдеров узнаём один раз, а не на каждом кадре видео
     const at = (p) => ({ p: gl.getAttribLocation(p, 'p'), t: gl.getUniformLocation(p, 't'), src: gl.getUniformLocation(p, 'src'), flip: gl.getUniformLocation(p, 'flip'),
-      dst: gl.getUniformLocation(p, 'dst'), sharp: gl.getUniformLocation(p, 'sharp'), boost: gl.getUniformLocation(p, 'boost'), hdr: gl.getUniformLocation(p, 'hdr') });
+      dst: gl.getUniformLocation(p, 'dst'), crop: gl.getUniformLocation(p, 'crop'), sharp: gl.getUniformLocation(p, 'sharp'), boost: gl.getUniformLocation(p, 'boost'), hdr: gl.getUniformLocation(p, 'hdr') });
     this.lUp = at(this.pUp); this.lSh = at(this.pSh);
     const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
@@ -627,7 +627,7 @@ class SuperRes {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
     this.tSrc = tex(); this.tMid = tex();
     this.fb = gl.createFramebuffer();
-    this.level = 'mid'; this.hdr = false; this.alive = true; this.ow = 0; this.oh = 0;
+    this.level = 'mid'; this.hdr = false; this.alive = true; this.ow = 0; this.oh = 0; this.crop = [0, 0, 1, 1];
     this.frames = 0; this.lastT = -1; this.dirty = true; this.bad = 0; this.retestAt = 0;
     this.c.style.visibility = 'hidden';
     v.insertAdjacentElement('afterend', this.c);
@@ -643,13 +643,25 @@ class SuperRes {
     // учитываем «чёрные полосы» (object-fit: contain)
     const cs = getComputedStyle(v);
     const fit = cs.objectFit;
-    if (fit === 'cover' || fit === 'none' || fit === 'scale-down') { setTimeout(() => this.fail('cover'), 0); return; }
+    if (fit === 'none' || fit === 'scale-down') { setTimeout(() => this.fail('cover'), 0); return; }
     const ew = v.offsetWidth, eh = v.offsetHeight, vw = v.videoWidth || ew, vh = v.videoHeight || eh;
-    const k = Math.min(ew / vw, eh / vh) || 1;
-    const w = fit === 'fill' ? ew : Math.round(vw * k), h = fit === 'fill' ? eh : Math.round(vh * k);
-    const x = v.offsetLeft + (ew - w) / 2, y = v.offsetTop + (eh - h) / 2;
+    let w, h, x, y;
+    this.crop = [0, 0, 1, 1]; // какая часть кадра видна: x, y, ширина, высота (доли)
+    if (fit === 'cover') {
+      // видео растянуто с обрезкой краёв (так теперь показывает YouTube): слой во весь элемент, а в шейдер —
+      // только видимая часть кадра. Раньше в этом случае включался «лёгкий режим» — фильтр прямо на плеере сайта
+      const k = Math.max(ew / vw, eh / vh) || 1;
+      const cw = Math.min(1, ew / (vw * k)), ch = Math.min(1, eh / (vh * k));
+      const pos = String(cs.objectPosition || '50% 50%').split(/\s+/).map((t) => (/%$/.test(t) ? parseFloat(t) / 100 : 0.5));
+      this.crop = [(1 - cw) * (pos[0] ?? 0.5), (1 - ch) * (pos[1] ?? 0.5), cw, ch];
+      w = ew; h = eh; x = v.offsetLeft; y = v.offsetTop;
+    } else {
+      const k = Math.min(ew / vw, eh / vh) || 1;
+      w = fit === 'fill' ? ew : Math.round(vw * k); h = fit === 'fill' ? eh : Math.round(vh * k);
+      x = v.offsetLeft + (ew - w) / 2; y = v.offsetTop + (eh - h) / 2;
+    }
     // ничего не сдвинулось — не трогаем стили и не перерисовываем кадр заново (место проверяется каждые 0,7 с)
-    const sig = `${x},${y},${w},${h},${cs.zIndex},${cs.transform},${window.devicePixelRatio},${v.readyState >= 2 && this.frames > 0}`;
+    const sig = `${x},${y},${w},${h},${this.crop},${cs.zIndex},${cs.transform},${window.devicePixelRatio},${v.readyState >= 2 && this.frames > 0}`;
     if (sig === this.sig) return;
     this.sig = sig;
     Object.assign(c.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
@@ -670,7 +682,7 @@ class SuperRes {
   }
   draw() {
     const gl = this.gl, v = this.v;
-    if (v.readyState < 2 || !v.videoWidth) return;
+    if (v.readyState < 2 || !v.videoWidth || !this.ow) return; // слой ещё не получил размер — рисовать некуда
     gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v); // кросс-доменное видео без CORS здесь бросит SecurityError
     const run = (p, L, fb, tex, w, h, set) => {
@@ -679,7 +691,7 @@ class SuperRes {
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(L.t, 0);
       set(L); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     };
-    run(this.pUp, this.lUp, this.fb, this.tSrc, this.ow, this.oh, (L) => { gl.uniform2f(L.src, v.videoWidth, v.videoHeight); gl.uniform1f(L.flip, 1); });
+    run(this.pUp, this.lUp, this.fb, this.tSrc, this.ow, this.oh, (L) => { gl.uniform2f(L.src, v.videoWidth, v.videoHeight); gl.uniform1f(L.flip, 1); const k = this.crop; gl.uniform4f(L.crop, k[0], k[1], k[2], k[3]); });
     run(this.pSh, this.lSh, null, this.tMid, this.ow, this.oh, (L) => {
       gl.uniform2f(L.dst, this.ow, this.oh);
       gl.uniform1f(L.flip, 0);
@@ -720,7 +732,9 @@ class SuperRes {
       const px = new Uint8Array(4 * 4);
       let bad = 0;
       for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
-        const i = (Math.floor(fy * H) * W + Math.floor(fx * W)) * 4;
+        // точка слоя (fx, fy) показывает точку кадра с учётом обрезки краёв
+        const c = this.crop, sx = c[0] + fx * c[2], sy = c[1] + fy * c[3];
+        const i = (Math.min(H - 1, Math.floor(sy * H)) * W + Math.min(W - 1, Math.floor(sx * W))) * 4;
         const sv = (a[i] + a[i + 1] + a[i + 2]) / 3;
         gl.readPixels(Math.floor(fx * this.ow), Math.floor((1 - fy) * this.oh), 2, 2, gl.RGBA, gl.UNSIGNED_BYTE, px);
         let sg = 0; for (let k = 0; k < 16; k += 4) sg += (px[k] + px[k + 1] + px[k + 2]) / 3;
@@ -807,6 +821,21 @@ function liteApply(v) {
   v.style.filter = f0;
   if (risk && vt.sr !== 'off') { vt.skip.set(v, 'ui'); vt.lite.delete(v); }
   applyFilter(v);
+  if (vt.lite.has(v)) liteWatch(v);
+}
+// Сторож лёгкого режима: фильтр стоит прямо на плеере сайта, и если после этого видео не идёт
+// (не на паузе, но время 4 секунды стоит на месте) — снимаем фильтр с этого видео насовсем
+function liteWatch(v) {
+  if (v.__lqWatch) return;
+  let lastT = v.currentTime, still = 0;
+  v.__lqWatch = setInterval(() => {
+    if (!vt.lite.has(v) || !v.isConnected) { clearInterval(v.__lqWatch); v.__lqWatch = 0; return; }
+    if (v.paused || document.hidden || v.currentTime !== lastT) { lastT = v.currentTime; still = 0; return; }
+    if (++still < 4) return;
+    clearInterval(v.__lqWatch); v.__lqWatch = 0;
+    console.warn(`[liquid] лёгкий режим чёткости снят: видео не шло с фильтром @ ${location.hostname}`);
+    vt.lite.delete(v); vt.skip.set(v, 'stall'); applyFilter(v); barRender();
+  }, 1000);
 }
 function srSync() {
   for (const v of videos()) {
@@ -826,6 +855,17 @@ function srSync() {
   }
   barRender();
 }
+// Новое видео в том же плеере (YouTube переносит один плеер с превью на главной в ролик и меняет в нём видео):
+// забываем всё, что решили для прошлого видео, — как будто страницу перезагрузили. Раньше «лёгкий режим»
+// от превью оставался на ролике, и видео стояло на чёрном экране до перезагрузки страницы.
+document.addEventListener('loadstart', (e) => {
+  const v = e.target;
+  if (!v || v.tagName !== 'VIDEO') return;
+  vt.srMap.get(v)?.destroy();
+  const hadLite = vt.lite.delete(v);
+  if (vt.skip.get(v) !== 'drm') vt.skip.delete(v);
+  if (hadLite) applyFilter(v); // снимаем резкость и HDR-фильтр лёгкого режима с плеера
+}, true);
 document.addEventListener('play', () => setTimeout(srSync, 50), true);
 document.addEventListener('loadeddata', () => setTimeout(srSync, 50), true);
 
@@ -953,6 +993,7 @@ function barRender() {
   const st = q('[data-v="st"]'), r = vt.srMap.get(v);
   const WHY = { cors: 'сайт не даёт обработать своё видео', gpu: 'видеокарта не отдала кадр', stall: 'кадры перестали обновляться', nogl: 'нет WebGL', small: 'видео слишком маленькое' };
   if (vt.sr !== 'off' && vt.skip.get(v) === 'drm') { st.className = 'st'; st.textContent = 'Защищённое видео (DRM) — сервис не разрешает его обрабатывать.'; }
+  else if (vt.sr !== 'off' && vt.skip.get(v) === 'stall') { st.className = 'st'; st.textContent = 'Для этого видео выключено: с улучшением оно не запускалось.'; }
   else if (vt.sr !== 'off' && vt.skip.get(v) === 'ui') { st.className = 'st'; st.textContent = 'Для этого плеера выключено: улучшение закрыло бы его кнопки.'; }
   else if (vt.srBroken) { st.className = 'st bad'; st.textContent = `Не работает: ${WHY[vt.srWhy] || 'ошибка'}. Нажми «Чёткость», чтобы попробовать снова.`; }
   else if (vt.sr !== 'off' && vt.lite.has(v)) { st.className = 'st ok'; st.textContent = `Работает в лёгком режиме: резкость${vt.srHdr ? ' и HDR-цвет' : ''} без апскейла — этот плеер не отдаёт кадры видеокарте.`; }
