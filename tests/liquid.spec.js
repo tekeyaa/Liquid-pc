@@ -122,11 +122,18 @@ test('видео с превью «главной» идёт в плеере р�
   await expect.poll(() => inTab(`document.getElementById('v').currentTime`), { timeout: 15_000 }).toBeGreaterThan(0.5);
   await win.waitForTimeout(1500); // даём улучшению видео включиться на превью
   await inTab('openVideo()');
-  // видео в плеере ролика не стоит: время идёт
-  const t0 = await (async () => { await win.waitForTimeout(1500); return inTab(`document.getElementById('v').currentTime`); })();
-  await win.waitForTimeout(2000);
-  const t1 = await inTab(`document.getElementById('v').currentTime`);
-  expect(t1 - t0, 'видео в плеере ролика стоит на месте').toBeGreaterThan(1);
+  // видео в плеере ролика не стоит: за 2 секунды проигрывается хотя бы секунда
+  // (видео короткое и идёт по кругу, поэтому складываем шаги вперёд, а переход на начало считаем отдельно)
+  await win.waitForTimeout(1500);
+  const played = await inTab(`new Promise((done) => {
+    const v = document.getElementById('v'); let last = v.currentTime, sum = 0, n = 0;
+    const t = setInterval(() => {
+      const c = v.currentTime, d = c - last; last = c;
+      sum += d >= 0 ? d : c; // перескок на начало круга: засчитываем то, что прошло с начала
+      if (++n >= 8) { clearInterval(t); done(sum); }
+    }, 250);
+  })`);
+  expect(played, 'видео в плеере ролика стоит на месте').toBeGreaterThan(1);
   const st = await inTab(`(() => {
     const v = document.getElementById('v'), c = document.querySelector('#watch canvas[data-lq-sr]');
     const gl = !!document.createElement('canvas').getContext('webgl');
