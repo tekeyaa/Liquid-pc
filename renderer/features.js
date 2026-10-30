@@ -35,6 +35,17 @@
     if (history[u] && tab.title) { history[u].t = tab.title; saveHistory(); }
   };
 
+  // поиск по закладкам и истории — для командной строки Ctrl+K (features4.js)
+  window.libSearch = (q, n = 8) => {
+    q = q.trim().toLowerCase(); if (!q) return [];
+    const hit = (u, t) => u.toLowerCase().includes(q) || (t || '').toLowerCase().includes(q);
+    const bm = bookmarks.filter((b) => hit(b.url, b.title)).slice(0, n).map((b) => ({ kind: 'bookmark', url: b.url, title: b.title || b.url }));
+    const seen = new Set(bm.map((b) => b.url));
+    const hs = Object.entries(history).filter(([u, e]) => !seen.has(u) && hit(u, e.t))
+      .sort((a, b) => (b[1].v * 3 + b[1].at / 864e5) - (a[1].v * 3 + a[1].at / 864e5)).slice(0, n)
+      .map(([u, e]) => ({ kind: 'history', url: u, title: e.t || u }));
+    return [...bm, ...hs].slice(0, n);
+  };
   const isBookmarked = (u) => bookmarks.some((b) => b.url === u);
   window.toggleBookmark = () => {
     if (!active || !isWeb(active.url)) return;

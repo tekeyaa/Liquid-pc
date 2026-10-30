@@ -197,6 +197,58 @@ test('списки блокировщика рекламы скачиваютс�
   expect(logText(), 'списки рекламы не собрались').toMatch(/списки обновлены/);
 });
 
+// ---------------- 1.9: вкладки ----------------
+const openUrl = async (u) => { await win.locator('#url').fill(u); await win.locator('#url').press('Enter'); await expect.poll(activeUrl, { timeout: 15_000 }).toContain(u.replace(base, '')); };
+
+test('превью вкладки: снимок страницы делается', async () => {
+  await openUrl(`${base}/article.html`);
+  await expect.poll(() => win.evaluate(() => (active.thumb || '').slice(0, 23)), { timeout: 15_000 }).toBe('data:image/jpeg;base64,');
+});
+
+test('Ctrl+K (и с русской раскладкой): командная строка закрывает вкладки по слову', async () => {
+  await win.locator('#newTab').click();
+  await openUrl(`${base}/article.html`);
+  const n = await tabCount();
+  await press('KeyK', 'л', 75, CTRL);
+  await expect(win.locator('#palette')).toHaveClass(/open/);
+  await win.locator('#palInput').fill('закрой test article');
+  await expect(win.locator('#palList .pal-row').first()).toContainText('Закрыть вкладки');
+  await win.locator('#palInput').press('Enter');
+  await expect.poll(tabCount).toBeLessThan(n);
+});
+
+test('группа вкладок: создаётся, сворачивается, разворачивается', async () => {
+  await openUrl(`${base}/article.html`);
+  await win.evaluate(() => tabMenuExtra(active).find((i) => i && i[0] === 'Новая группа…')[1]());
+  await win.locator('#askInput').fill('Тест');
+  await win.locator('#askInput').press('Enter');
+  await expect(win.locator('#tabs .tgroup')).toHaveText(/Тест/);
+  await win.evaluate(() => createTab(null, { after: active })); // открытая из группы вкладка попадает в группу
+  await expect.poll(() => win.evaluate(() => tabs.filter((t) => t.group && t.group === active.group).length)).toBe(2);
+  await win.locator('#tabs .tgroup').click();
+  await expect(win.locator('#tabs .tab.g-collapsed')).toHaveCount(1); // активная вкладка остаётся видна
+  await win.locator('#tabs .tgroup').click();
+  await expect(win.locator('#tabs .tab.g-collapsed')).toHaveCount(0);
+});
+
+test('пространства: свои вкладки, переключение туда и обратно', async () => {
+  const mainTabs = await win.evaluate(() => visibleTabs().length);
+  await win.evaluate(() => openPalette());
+  await win.locator('#palInput').fill('новое пространство');
+  await win.locator('#palInput').press('Enter');
+  await win.locator('#askInput').fill('Игры');
+  await win.locator('#askInput').press('Enter');
+  await expect(win.locator('#spaceBtn')).toContainText('Игры');
+  await expect.poll(() => win.evaluate(() => visibleTabs().length)).toBe(1); // в новом пространстве — одна новая вкладка
+  await expect(win.locator('#tabs .tab:not(.off-space)')).toHaveCount(1);
+  await win.evaluate(() => setSpace(JSON.parse(localStorage.getItem('liquid.spaces'))[0].id));
+  await expect.poll(() => win.evaluate(() => visibleTabs().length)).toBe(mainTabs);
+  // сессия запоминает пространство каждой вкладки
+  await win.evaluate(() => writeSession());
+  const saved = await win.evaluate(() => JSON.parse(localStorage.getItem('liquid.session')).tabs.map((t) => t.space));
+  expect(new Set(saved).size).toBe(2);
+});
+
 test('в журнале нет ошибок браузера', async () => {
   await win.waitForTimeout(1500); // журнал пишет пачками раз в секунду
   expect(logErrors()).toEqual([]);

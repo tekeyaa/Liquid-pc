@@ -89,6 +89,7 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
   el.querySelector('.x').addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab); });
 
   if (after && tabs.includes(after) && after.el.nextSibling) $('#tabs').insertBefore(el, after.el.nextSibling); else $('#tabs').appendChild(el);
+  window.onTabCreated && window.onTabCreated(tab, { after }); // пространства и группы (features4.js)
   if (lazy) { tab.sleeping = true; el.classList.add('sleeping'); updateTab(tab); }
   else attachWebview(tab, startUrl);
   if (!background || !active) activate(tab);
@@ -270,7 +271,9 @@ function closeTab(tab) {
   setTimeout(() => { tab.el.remove(); tab.wv?.remove(); fitTabs(); }, 300);
   if (active === tab) {
     active = null;
-    if (tabs.length) activate(tabs[Math.min(i, tabs.length - 1)]);
+    // следующая вкладка — из того же пространства (features4.js), иначе соседняя
+    const next = window.nextTabAfterClose ? window.nextTabAfterClose(i, tab) : tabs[Math.min(i, tabs.length - 1)];
+    if (next) activate(next);
     else createTab();
   }
   saveSession();
@@ -343,13 +346,16 @@ function tabMenu(tab, x, y) {
     ['Открыть рядом с текущей', () => { if (tab === active) startSplit(); else startSplitWith(active, tab); }],
     [tab.sleeping ? 'Разбудить' : 'Усыпить (освободить память)', () => { if (tab.sleeping) activate(tab); else if (!sleepTab(tab)) toast('Эту вкладку сейчас нельзя усыпить'); }],
     ['Дублировать', () => createTab(tab.wv ? tab.wv.getURL() : tab.url, { after: tab })],
-    ['Закрыть другие', () => tabs.filter((t) => t !== tab).forEach(closeTab)],
+    ...(window.tabMenuExtra ? window.tabMenuExtra(tab) : []), // группы и пространства (features4.js)
+    null,
+    ['Закрыть другие', () => (window.visibleTabs ? window.visibleTabs() : tabs).filter((t) => t !== tab).forEach(closeTab)],
     ['Закрыть', () => closeTab(tab)],
   ];
-  m.innerHTML = items.map(([t], i) => `<button data-i="${i}">${t}</button>`).join('');
+  const escT = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  m.innerHTML = items.map((it, i) => (it ? `<button data-i="${i}">${escT(it[0])}</button>` : '<hr>')).join('');
   m.onclick = (e) => { const b = e.target.closest('button'); if (!b) return; hideTabMenu(); items[+b.dataset.i][1](); };
   m.style.left = Math.min(x, innerWidth - 240) + 'px';
-  m.style.top = y + 6 + 'px';
+  m.style.top = Math.max(8, Math.min(y + 6, innerHeight - m.offsetHeight - 8)) + 'px';
   m.classList.add('open');
   setTimeout(() => document.addEventListener('mousedown', hideTabMenu, { once: true }), 0);
 }
@@ -372,7 +378,7 @@ function saveSession() {
 }
 function writeSession() {
   const data = {
-    tabs: tabs.map((t) => ({ url: t.wv ? (safeUrl(t.wv) || t.url) : t.url, title: t.title, favicon: t.favicon || '' })),
+    tabs: tabs.map((t) => ({ url: t.wv ? (safeUrl(t.wv) || t.url) : t.url, title: t.title, favicon: t.favicon || '', space: t.space, group: t.group })),
     active: Math.max(0, tabs.indexOf(active)),
   };
   try { localStorage.setItem('liquid.session', JSON.stringify(data)); } catch {}
@@ -390,7 +396,8 @@ function restoreSession() {
   if (ai < 0) ai = list.length - 1;
   list.forEach((t, i) => {
     const internal = isInternal(t.url);
-    createTab(internal ? null : t.url, { background: i !== ai, lazy: i !== ai, title: t.title, favicon: t.favicon });
+    const nt = createTab(internal ? null : t.url, { background: i !== ai, lazy: i !== ai, title: t.title, favicon: t.favicon });
+    window.onTabRestored && window.onTabRestored(nt, t);
   });
   activate(tabs[ai]);
   return true;
@@ -399,7 +406,7 @@ window.addEventListener('beforeunload', () => { clearTimeout(saveT); if (!L.inco
 
 function fitTabs() {
   requestAnimationFrame(() => {
-    const w = ($('#tabsrow').clientWidth - 230) / Math.max(tabs.length, 1);
+    const w = ($('#tabsrow').clientWidth - 230 - (window.tabsChromeWidth ? window.tabsChromeWidth() : 0)) / Math.max((window.visibleTabs ? window.visibleTabs() : tabs).length, 1);
     tabs.forEach((t) => t.el.classList.toggle('narrow', w < 90 && t !== active));
   });
 }
@@ -927,14 +934,16 @@ L.onShortcut(({ key, shift }) => {
     case 'd': window.toggleBookmark && window.toggleBookmark(); break;
     case 'pip': window.togglePip && window.togglePip(); break;
     case 'w': if (active) closeTab(active); break;
-    case 'l': case 'k': $('#url').focus(); break;
+    case 'l': $('#url').focus(); break;
+    case 'k': window.openPalette ? window.openPalette() : $('#url').focus(); break;
     case 'r': active?.wv.reload(); break;
     case 'j': toggleSide(); break;
     case 'f': openFind(); break;
-    case 'tab': {
-      if (tabs.length < 2) break;
-      const i = tabs.indexOf(active);
-      activate(tabs[(i + (shift ? -1 : 1) + tabs.length) % tabs.length]);
+    case 'tab': { // листаем вкладки текущего пространства
+      const list = window.visibleTabs ? window.visibleTabs() : tabs;
+      if (list.length < 2) break;
+      const i = list.indexOf(active);
+      activate(list[(i + (shift ? -1 : 1) + list.length) % list.length]);
       break;
     }
     case 'back': active?.wv.canGoBack() && active.wv.goBack(); break;

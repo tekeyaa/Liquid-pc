@@ -737,3 +737,48 @@ body.game #progress::after { animation-play-state: paused; }
 .net-acts { display: flex; gap: 6px; flex-wrap: wrap; }
 .net-acts .btn { height: 32px; flex: 1 1 auto; }
 .net-acts .btn[hidden] { display: none; }
+
+/* ---------- вкладки: пространства, группы, Ctrl+K, превью (1.9) ---------- */
+.tab.off-space, .tab.g-collapsed { display: none !important; }
+.tab.grouped { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--g) 85%, transparent); }
+.has-glider .tab.active.grouped { box-shadow: inset 0 -2px 0 var(--g); }
+.tgroup { flex: none; align-self: center; display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 9px; font-size: 12px; font-weight: 600;
+  color: #fff; background: color-mix(in srgb, var(--g) 34%, transparent); border: 1px solid color-mix(in srgb, var(--g) 60%, transparent);
+  -webkit-app-region: no-drag; max-width: 130px; position: relative; z-index: 1; transition: background .25s var(--ease), transform .35s var(--spring); animation: oxIn .35s var(--spring); }
+.tgroup span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tgroup b { font-size: 10.5px; min-width: 16px; height: 16px; line-height: 16px; border-radius: 8px; text-align: center; background: rgba(0,0,0,.3); }
+.tgroup:hover { background: color-mix(in srgb, var(--g) 50%, transparent); }
+.tgroup:active { transform: scale(.94); }
+#spaceBtn { flex: none; display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px 0 9px; border-radius: 11px; font-size: 12.5px; font-weight: 600; color: var(--text);
+  -webkit-app-region: no-drag; max-width: 140px; transition: background .25s var(--ease), transform .35s var(--spring); }
+#spaceBtn i { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--s); box-shadow: 0 0 10px var(--s); }
+#spaceBtn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#spaceBtn:active { transform: scale(.94); }
+
+#palette { left: 50%; right: auto; top: 76px; width: min(640px, calc(100vw - 40px)); padding: 8px; transform-origin: top center;
+  transform: translate(-50%, -8px) scale(.97); background: linear-gradient(180deg, rgba(40,38,52,.9), rgba(24,22,32,.94)); }
+#palette.open { transform: translate(-50%, 0); }
+#palInput { width: 100%; height: 46px; padding: 0 14px; border-radius: 14px; border: 1px solid rgba(255,255,255,.12); background: rgba(0,0,0,.25); outline: none; font-size: 15px; user-select: text; }
+#palInput:focus { border-color: color-mix(in srgb, var(--accent-2) 55%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+#palList { margin-top: 6px; max-height: min(460px, calc(100vh - 200px)); overflow-y: auto; }
+.pal-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 11px; cursor: pointer; min-width: 0; }
+.pal-row.sel { background: rgba(255,255,255,.09); }
+.pal-row img, .pal-ic { width: 16px; height: 16px; border-radius: 4px; flex: none; }
+.pal-ic { background: radial-gradient(circle, var(--accent-2) 0 2.5px, transparent 3px); }
+.pal-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+.pal-s { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 0; min-width: 0; }
+.pal-k { font-size: 11px; color: var(--faint); flex: none; }
+.pal-row.sel .pal-k { color: var(--accent-2); }
+.pal-empty { padding: 14px; color: var(--muted); text-align: center; }
+
+#askPop { left: 50%; right: auto; top: 30%; transform-origin: center; transform: translate(-50%, -8px) scale(.96); }
+#askPop.open { transform: translate(-50%, 0); }
+.ask-input { flex: 1; min-width: 0; height: 36px; padding: 0 11px; border-radius: 11px; border: 1px solid rgba(255,255,255,.14); background: rgba(0,0,0,.25); outline: none; user-select: text; }
+
+#tabPreview { position: fixed; z-index: 58; width: 300px; padding: 8px; border-radius: 16px; pointer-events: none; opacity: 0; transform: translate3d(0, -6px, 0) scale(.97); transform-origin: top left;
+  transition: opacity .16s var(--ease), transform .3s var(--spring); background: linear-gradient(180deg, rgba(40,38,52,.92), rgba(24,22,32,.95)); backdrop-filter: blur(20px) saturate(160%); }
+#tabPreview.on { opacity: 1; transform: none; }
+#tabPreview img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; border-radius: 10px; margin-bottom: 8px; background: #000; }
+.tp-t { font-weight: 600; font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tp-s { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+.ctx hr { border: 0; border-top: 1px solid rgba(255,255,255,.08); margin: 5px 6px; }
