@@ -219,7 +219,8 @@ test('Ctrl+K (и с русской раскладкой): командная с�
 
 test('группа вкладок: создаётся, сворачивается, разворачивается', async () => {
   await openUrl(`${base}/article.html`);
-  await win.evaluate(() => tabMenuExtra(active).find((i) => i && i[0] === 'Новая группа…')[1]());
+  // пункт меню открывает окошко для названия и ждёт ввода — не дожидаемся его здесь
+  await win.evaluate(() => { tabMenuExtra(active).find((i) => i && i[0] === 'Новая группа…')[1](); });
   await win.locator('#askInput').fill('Тест');
   await win.locator('#askInput').press('Enter');
   await expect(win.locator('#tabs .tgroup')).toHaveText(/Тест/);
