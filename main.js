@@ -1717,6 +1717,7 @@ app.whenReady().then(async () => {
   await smart.start().catch(() => {});
   syncSmartLists();
   adblock = new AdBlock(app.getPath('userData'));
+  if (TEST && process.env.LIQUID_PERF_NOADBLOCK) adblock.init = async () => false; // замер скорости без блокировщика
   const st0 = loadSettings();
   adblock.enabled = st0.adblock !== false;
   adblock.allow = new Set(st0.adAllow || []);
