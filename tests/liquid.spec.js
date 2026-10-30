@@ -343,6 +343,7 @@ test('смотреть вместе: комната, пауза и перемо�
   friend.leave();
   await win.locator('#wtLeave').click();
   expect(await win.evaluate(() => window.watchState().code)).toBe('');
+  await win.evaluate(() => closePops());
 });
 
 // ---------------- 1.11: Claude ----------------
@@ -356,6 +357,7 @@ test('пересказ видео: расшифровка с таймкодам�
 });
 
 test('Claude (API): сравнение вкладок и кликабельные таймкоды', async () => {
+  await win.evaluate(() => closePops());
   {
     const s = await win.evaluate(async () => { settings = await L.settings.set({ claudeMode: 'api', claudeKey: 'test-key' }); applyClaudeMode(); return settings.claudeMode; });
     expect(s).toBe('api');
