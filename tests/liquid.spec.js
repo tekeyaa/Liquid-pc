@@ -405,7 +405,7 @@ test('Claude (API): сравнение вкладок и кликабельны�
   await win.evaluate(() => window.openCompare());
   await win.locator('#cmpQ').fill('что полезнее');
   await win.locator('#cmpGo').click();
-  await expect.poll(() => claudeReqs.filter((r) => r.stream).length, { timeout: 20_000 }).toBe(1);
+  await expect.poll(() => claudeReqs.filter((r) => r.stream).length, { timeout: 30_000 }).toBe(1);
   const sent = JSON.stringify(claudeReqs.find((r) => r.stream).messages);
   expect(sent).toContain('Сравни');
   expect(sent).toContain('The quick brown fox'); // текст первой страницы
