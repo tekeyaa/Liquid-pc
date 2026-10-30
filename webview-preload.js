@@ -549,6 +549,10 @@ function videoCmd(m) {
   }
   if (m.op === 'overlay') { const v0 = mainVideo(); if (v0) { barShow(v0, true); barOpen(!bar.open); } return; }
   if (m.op === 'pip') { pipToggle(); return; }
+  if (m.op === 'mini') { miniOut(); return; }
+  if (m.op === 'clipbuf') { const v0 = mainVideo(); if (v0) clip.v === v0 ? clipStop(true) : clipStart(v0); return; }
+  if (m.op === 'clip') { clipSave(); return; }
+  if (m.op === 'seekPlay') { const v0 = mainVideo(); if (v0) { if (m.t > 0 && Math.abs(v0.currentTime - m.t) > 1) v0.currentTime = m.t; v0.play().catch(() => {}); } return; }
   if (!v) return;
   try {
     if (m.op === 'reset') {
@@ -908,6 +912,7 @@ const IC = {
   pip: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><rect x="12" y="11.5" width="7" height="5.5" rx="1.2" fill="currentColor" stroke="none"/></svg>',
   sr: '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M18.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/></svg>',
+  mini: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M8 20.5h8"/><rect x="11.5" y="9.5" width="6.5" height="4.5" rx="1" fill="currentColor" stroke="none"/></svg>',
   dot: '<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
 };
 const bar = { host: null, root: null, el: null, dot: null, v: null, hideT: 0, hover: false, open: false };
@@ -920,6 +925,7 @@ function barBuild() {
       <button data-a="slower" title="Медленнее (Shift+колесо)">${IC.minus}</button><span class="val" data-v="speed">1×</span><button data-a="faster" title="Быстрее">${IC.plus}</button>
       <span class="grow"></span>
       <button data-a="pip" title="Картинка в картинке (Alt+P)">${IC.pip}</button>
+      <button data-a="mini" title="Окно поверх игры: маленькое окно над всеми окнами, можно сделать прозрачным">${IC.mini}</button>
       <button data-a="more" title="Яркость, контраст и другое">${IC.more}</button>
     </div>
     <div class="row">
@@ -935,6 +941,7 @@ function barBuild() {
       <label><span>Контраст</span><input type="range" data-r="contrast" min="50" max="180" step="5"><b data-v="contrast"></b></label>
       <label><span>Насыщенность</span><input type="range" data-r="sat" min="0" max="200" step="5"><b data-v="sat"></b></label>
       <div class="chips">
+        <button data-a="watch">Смотреть вместе</button><button data-a="clipbuf">Буфер клипа</button><button data-a="clip">Сохранить клип</button>
         <button data-a="comp">Ровная громкость</button><button data-a="loop">Повтор</button><button data-a="remember">Запомнить скорость</button>
         <button data-a="frame">Кадр в PNG</button><button data-a="reset">Сбросить</button>
       </div>
@@ -967,6 +974,10 @@ function barBuild() {
     else if (a === 'loop') v.loop = !v.loop;
     else if (a === 'remember') { vt.remember = !vt.remember; toHost({ type: 'videoRemember', on: vt.remember, speed: v.playbackRate }); }
     else if (a === 'frame') videoCmd({ op: 'frame' });
+    else if (a === 'mini') { barOpen(false); miniOut(v); }
+    else if (a === 'watch') { barOpen(false); toHost({ type: 'watchOpen' }); }
+    else if (a === 'clipbuf') clip.v === v ? clipStop(true) : clipStart(v);
+    else if (a === 'clip') clipSave();
     else if (a === 'reset') videoCmd({ op: 'reset' });
     barRender();
   });
@@ -1006,6 +1017,9 @@ function barRender() {
   q('[data-a="comp"]').classList.toggle('on', !!vt.graphs.get(v)?.compOn);
   q('[data-a="loop"]').classList.toggle('on', v.loop);
   q('[data-a="remember"]').classList.toggle('on', !!vt.remember);
+  q('[data-a="clipbuf"]').classList.toggle('on', clip.v === v);
+  q('[data-a="clipbuf"]').textContent = clip.v === v ? `Буфер клипа · ${clipSecs()} с` : 'Буфер клипа';
+  q('[data-a="watch"]').classList.toggle('on', wt.on);
 }
 // кружок — в правом верхнем углу видео, панель раскрывается под ним, прижатая к правому краю
 function barPlace() {
@@ -1063,6 +1077,167 @@ async function pipToggle(v) {
   barRender();
 }
 
+// ---------- 9. Окно поверх игры ----------
+// Во вкладке: ставим видео на паузу и просим браузер открыть этот же адрес в маленьком окне с того же места.
+function miniOut(v) {
+  v = v || mainVideo();
+  if (!v) { toHost({ type: 'videoErr', error: 'на странице нет видео' }); return; }
+  const t = v.currentTime;
+  try { v.pause(); } catch {}
+  toHost({ type: 'mini', url: location.href, t, live: !isFinite(v.duration) });
+}
+// В самом маленьком окне: видео на всё окно, сверху — панель с прозрачностью, «сквозь окно», «во вкладку»
+const mini = { on: false, bar: null, root: null, hideT: 0, userPaused: false };
+const MINI_CSS = `html,body{overflow:hidden!important;background:#000!important}
+[data-lq-mini]{position:fixed!important;inset:0!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;
+margin:0!important;z-index:2147483646!important;object-fit:contain!important;background:#000!important;transform:none!important;visibility:visible!important;opacity:1!important}`;
+function miniMode({ t, opacity }) {
+  if (mini.on || IS_FRAME) return;
+  mini.on = true; vt.barOn = false;
+  const st = document.createElement('style'); st.textContent = MINI_CSS;
+  (document.head || document.documentElement).appendChild(st);
+  let seeked = !(t > 1);
+  const grab = () => {
+    const v = mainVideo() || videos()[0];
+    if (!v) return;
+    if (!v.hasAttribute('data-lq-mini')) {
+      document.querySelectorAll('[data-lq-mini]').forEach((x) => x.removeAttribute('data-lq-mini'));
+      v.setAttribute('data-lq-mini', '');
+      // у родителей видео убираем то, из-за чего «на всё окно» не работает (transform и contain)
+      for (let p = v.parentElement; p; p = p.parentElement) for (const k of ['transform', 'contain', 'filter', 'will-change']) p.style.setProperty(k, k === 'will-change' ? 'auto' : 'none', 'important');
+      v.addEventListener('pause', () => { if (!mini.seeking) mini.userPaused = true; });
+      v.addEventListener('play', () => { mini.userPaused = false; });
+    }
+    if (!seeked && v.readyState >= 1 && isFinite(v.duration) && v.duration > t) { seeked = true; mini.seeking = true; v.currentTime = t; setTimeout(() => { mini.seeking = false; }, 500); }
+    if (v.paused && !mini.userPaused) v.play().catch(() => {});
+  };
+  grab(); setInterval(grab, 700); // сайт может заменить <video> (реклама, смена качества)
+  miniBuild(opacity);
+}
+function miniBuild(opacity) {
+  const host = document.createElement('lq-mini-bar');
+  const root = host.attachShadow({ mode: 'closed' });
+  setHTML(root, `<style>
+:host{all:initial}
+.bar{position:fixed;left:0;right:0;top:0;height:38px;z-index:2147483647;display:flex;align-items:center;gap:4px;padding:0 6px;box-sizing:border-box;
+ background:linear-gradient(180deg,rgba(10,10,16,.85),rgba(10,10,16,0));-webkit-app-region:drag;opacity:0;transition:opacity .2s;font:12px "Segoe UI",system-ui,sans-serif;color:#fff}
+.bar.on{opacity:1}
+button{all:unset;-webkit-app-region:no-drag;cursor:pointer;height:26px;min-width:26px;padding:0 8px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,.1);box-sizing:border-box;white-space:nowrap}
+button:hover{background:rgba(255,255,255,.22)} button.on{background:linear-gradient(180deg,#e88a68,#c9633f)}
+.grow{flex:1} .val{min-width:34px;text-align:center;opacity:.8}
+.ct{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);z-index:2147483647;padding:6px 12px;border-radius:10px;background:rgba(10,10,16,.75);font:12px "Segoe UI",system-ui,sans-serif;color:#fff;display:none}
+.ct.on{display:block}
+</style><div class="bar"><button data-a="play" title="Пауза / играть">⏯</button><span class="grow"></span>
+<button data-a="op-" title="Прозрачнее">−</button><span class="val"></span><button data-a="op+" title="Плотнее">+</button>
+<button data-a="click" title="Сквозь окно: клики уходят в игру. Вернуть — Ctrl+Alt+M">Сквозь</button>
+<button data-a="back" title="Вернуть во вкладку">Во вкладку</button><button data-a="close" title="Закрыть (Esc)">✕</button></div>
+<div class="ct">Окно пропускает клики насквозь — Ctrl+Alt+M, чтобы вернуть</div>`);
+  mini.root = root; mini.bar = root.querySelector('.bar');
+  miniBarOpacity(opacity || 1);
+  root.querySelector('.bar').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    const a = b.dataset.a, v = document.querySelector('[data-lq-mini]');
+    if (a === 'play' && v) { v.paused ? v.play().catch(() => {}) : v.pause(); }
+    else if (a === 'op-' || a === 'op+') ipcRenderer.send('mini:cmd', { op: 'opacity', d: a === 'op-' ? -0.1 : 0.1 });
+    else if (a === 'click') ipcRenderer.send('mini:cmd', { op: 'click' });
+    else if (a === 'back') ipcRenderer.send('mini:cmd', { op: 'back', t: v ? v.currentTime : 0 });
+    else if (a === 'close') ipcRenderer.send('mini:cmd', { op: 'close' });
+  });
+  const show = () => { mini.bar.classList.add('on'); clearTimeout(mini.hideT); mini.hideT = setTimeout(() => mini.bar.classList.remove('on'), 2200); };
+  document.addEventListener('mousemove', show, { passive: true, capture: true });
+  document.documentElement.appendChild(host);
+  show();
+}
+function miniBarCt(on) { if (!mini.root) return; mini.root.querySelector('[data-a="click"]').classList.toggle('on', on); mini.root.querySelector('.ct').classList.toggle('on', on); }
+function miniBarOpacity(v) { if (mini.root) mini.root.querySelector('.val').textContent = Math.round(v * 100) + '%'; }
+
+// ---------- 10. Клип последних 30 секунд ----------
+// Пока включён «Буфер клипа», видео записывается двумя сменяющимися записями (новая каждые 30 с, живут по минуте).
+// «Сохранить клип» берёт старшую из них: в ней последние 30–60 секунд. Кодирует видеокарта (H.264), если умеет.
+const clip = { v: null, stream: null, recs: [], timer: 0, mime: '', t0: 0 };
+function clipMime() {
+  for (const m of ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'])
+    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch {}
+  return '';
+}
+function clipSecs() { return clip.recs.length ? Math.min(60, Math.round((performance.now() - clip.recs[0].t0) / 1000)) : 0; }
+function clipSpawn() {
+  try {
+    const rec = { chunks: [], t0: performance.now() };
+    rec.r = new MediaRecorder(clip.stream, { mimeType: clip.mime, videoBitsPerSecond: 6e6 });
+    rec.r.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+    rec.r.start(1000);
+    clip.recs.push(rec);
+    while (clip.recs.length > 2) { const old = clip.recs.shift(); try { old.r.stop(); } catch {} }
+  } catch (e) { report('буфер клипа', e); clipStop(); toHost({ type: 'videoErr', error: /secur|origin/i.test(String(e && e.message)) ? 'этот сайт не разрешает записывать своё видео' : 'буфер клипа не запустился: ' + (e && e.message) }); }
+}
+function clipStart(v) {
+  clipStop();
+  if (v.mediaKeys) { toHost({ type: 'videoErr', error: 'защищённое видео (DRM) записывать нельзя' }); return; }
+  try { clip.stream = v.captureStream(); } catch (e) { toHost({ type: 'videoErr', error: 'этот сайт не разрешает записывать своё видео' }); return; }
+  clip.v = v; clip.mime = clipMime();
+  clipSpawn();
+  if (!clip.v) return;
+  clip.timer = setInterval(() => { clipSpawn(); barRender(); }, 30e3);
+  clip.tick = setInterval(() => { if (bar.open) barRender(); }, 1000);
+  toHost({ type: 'clipState', on: true });
+  barRender();
+}
+function clipStop(say) {
+  clearInterval(clip.timer); clearInterval(clip.tick);
+  for (const r of clip.recs) { try { r.r.stop(); } catch {} }
+  clip.recs = []; clip.v = null; clip.stream = null;
+  if (say) toHost({ type: 'clipState', on: false });
+  barRender();
+}
+function clipSave() {
+  const rec = clip.recs[0];
+  if (!rec) { const v = mainVideo(); if (v) { clipStart(v); toHost({ type: 'videoErr', error: 'буфер клипа был выключен — включил, сохранить можно будет через несколько секунд' }); } return; }
+  const secs = clipSecs(), mime = clip.mime;
+  rec.r.onstop = async () => {
+    try {
+      const buf = await new Blob(rec.chunks, { type: mime }).arrayBuffer();
+      toHost({ type: 'clip', data: buf, mime, secs });
+    } catch (e) { report('клип', e); }
+  };
+  clip.recs.shift();
+  try { rec.r.stop(); } catch (e) { report('клип', e); }
+  clipSpawn(); // буфер продолжает писать дальше
+}
+
+// ---------- 11. Смотреть вместе ----------
+// Браузер сообщает о каждом действии с видео (пауза, игра, перемотка, скорость), а чужие действия применяет.
+// Пока применяем чужое действие, свои события не отправляем — иначе получится бесконечное эхо.
+const wt = { on: false, v: null, mute: 0, bound: new WeakSet() };
+function wtState(reason) {
+  const v = wt.v || mainVideo(); if (!v) return null;
+  return { url: location.href, t: v.currentTime, paused: v.paused, rate: v.playbackRate, live: !isFinite(v.duration), reason };
+}
+function wtBind(v) {
+  if (!v) return;
+  wt.v = v;
+  if (wt.bound.has(v)) return;
+  wt.bound.add(v);
+  for (const ev of ['play', 'pause', 'seeked', 'ratechange']) v.addEventListener(ev, () => {
+    if (!wt.on || v !== wt.v || performance.now() < wt.mute) return;
+    const st = wtState(ev); if (st) toHost({ type: 'wtState', state: st });
+  });
+}
+function wtSet(on) { wt.on = !!on; if (on) wtBind(mainVideo()); }
+function wtApply(s) {
+  const v = mainVideo(); if (!v) return;
+  wtBind(v);
+  wt.mute = performance.now() + 1000;
+  if (s.rate && Math.abs(v.playbackRate - s.rate) > 0.01) v.playbackRate = s.rate;
+  if (!s.live && typeof s.t === 'number') {
+    const target = s.t + (s.paused ? 0 : 0.3); // пока сообщение шло, у отправителя видео ушло вперёд
+    if (Math.abs(v.currentTime - target) > (s.reason === 'beat' ? 2.5 : 0.8)) v.currentTime = target;
+  }
+  if (s.paused && !v.paused) v.pause();
+  else if (!s.paused && v.paused) v.play().catch(() => {});
+}
+document.addEventListener('loadedmetadata', (e) => { if (wt.on && e.target.tagName === 'VIDEO' && !IS_FRAME) wtBind(mainVideo()); }, true);
+
 // ---------- боковые кнопки мыши: назад / вперёд (Electron сам их не обрабатывает) ----------
 for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
   window.addEventListener(ev, (e) => {
@@ -1082,4 +1257,10 @@ function liquidCmd(msg) {
   else if (msg.type === 'info') pageInfo();
   else if (msg.type === 'reader') msg.on === false || (msg.on == null && rd.host) ? readerClose() : readerOpen(msg.prefs);
   else if (msg.type === 'video') videoCmd(msg);
+  else if (msg.type === 'mini') miniMode(msg);
+  else if (msg.type === 'miniCt') miniBarCt(msg.on);
+  else if (msg.type === 'miniOpacity') miniBarOpacity(msg.v);
+  else if (msg.type === 'wt') wtSet(msg.on);
+  else if (msg.type === 'wtApply') wtApply(msg.state || {});
+  else if (msg.type === 'wtPoll') { const st = wtState('beat'); if (st) toHost({ type: 'wtState', state: st }); }
 }

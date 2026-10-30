@@ -77,6 +77,14 @@ contextBridge.exposeInMainWorld('liquid', {
   },
   saveFile: (name, data, kind, copy) => ipcRenderer.invoke('file:save', { name, data, kind, copy }),
   game: { state: () => ipcRenderer.invoke('game:state'), force: (on) => ipcRenderer.send('game:force', on), onState: on('game:state') },
+  mini: { open: (o) => ipcRenderer.invoke('mini:open', o), onBack: on('mini:back') },
+  watch: {
+    join: (code) => ipcRenderer.invoke('watch:join', code),
+    send: (m) => ipcRenderer.invoke('watch:send', m),
+    leave: () => ipcRenderer.send('watch:leave'),
+    onMsg: on('watch:msg'),
+    onStatus: on('watch:status'),
+  },
   net: {
     diagnose: (url) => ipcRenderer.invoke('net:diagnose', url),
     clearSite: (origin) => ipcRenderer.invoke('net:clearSite', origin),

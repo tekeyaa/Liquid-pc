@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, safeStorage, Menu, clipboard, shell, net, dialog, screen, webContents, Notification, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, session, safeStorage, Menu, clipboard, shell, net, dialog, screen, webContents, Notification, nativeImage, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { parseKey, Xray, DPI_CONFIG } = require('./vpn');
@@ -8,6 +8,7 @@ const { SmartVpn, DPI_SITES } = require('./main/smartvpn');
 const { Extensions, POPULAR } = require('./main/extensions');
 const { translateBatch } = require('./main/translate');
 const { GameMode } = require('./main/gamemode');
+const { WatchRoom } = require('./main/watch');
 const { Diag, sysInfo } = require('./main/diag');
 const os = require('os');
 let game = null;
@@ -250,7 +251,7 @@ function createWindow({ priv = false } = {}) {
   w.on('enter-full-screen', () => w.webContents.send('win:state', { full: true }));
   w.on('leave-full-screen', () => w.webContents.send('win:state', { full: false }));
   w.webContents.on('before-input-event', (e, input) => handleShortcut(e, input, w.webContents));
-  if (!priv) { win = w; w.on('closed', () => { if (win === w) win = null; }); }
+  if (!priv) { win = w; w.on('closed', () => { if (win === w) win = null; if (mini && !mini.isDestroyed()) mini.close(); }); } // без главного окна видео поверх тоже закрываем
   return w;
 }
 
@@ -401,6 +402,8 @@ app.on('web-contents-created', (_e, contents) => {
     if (p.mediaType === 'video') {
       t.push({ label: 'Картинка в картинке', click: () => host().send('shortcut', { key: 'pip' }) });
       t.push({ label: 'Настройки видео (скорость, громкость)', click: () => host().send('shortcut', { key: 'video' }) });
+      t.push({ label: 'Окно поверх игры', click: () => host().send('shortcut', { key: 'mini' }) });
+      t.push({ label: 'Сохранить клип (последние 30 с)', click: () => host().send('shortcut', { key: 'clip' }) });
       t.push({ type: 'separator' });
     }
     if (p.mediaType === 'image' && p.srcURL) {
@@ -1387,6 +1390,20 @@ function registerIpc() {
     return n;
   });
 
+  // окно поверх игры
+  ipcMain.handle('mini:open', (_e, o) => openMini(o || {}));
+  ipcMain.on('mini:cmd', (e, { op, d, t } = {}) => {
+    if (!mini || mini.isDestroyed() || e.sender !== mini.webContents) return; // команды только от самого окна
+    if (op === 'opacity') { mini.setOpacity(Math.min(1, Math.max(0.3, mini.getOpacity() + (Number(d) || 0)))); miniSend({ type: 'miniOpacity', v: mini.getOpacity() }); const s = loadSettings(); s.mini = { ...(s.mini || {}), opacity: mini.getOpacity() }; saveSettings(s); }
+    else if (op === 'click') miniClickThrough(!mini.__ct);
+    else if (op === 'close') mini.close();
+    else if (op === 'back') { const from = mini.__from; mini.close(); try { win?.webContents.send('mini:back', { wcId: from, t }); win?.focus(); } catch {} }
+  });
+  // «Смотреть вместе»
+  ipcMain.handle('watch:join', async (_e, code) => { try { return { ok: true, code: await watchRoom().join(code) }; } catch (e) { return { ok: false, error: e.message }; } });
+  ipcMain.handle('watch:send', (_e, m) => (watch ? watch.send(m && typeof m === 'object' ? m : {}) : false));
+  ipcMain.on('watch:leave', () => watch?.leave());
+
   // снимок вкладки для превью при наведении: маленький JPEG, только своих вкладок
   ipcMain.handle('tab:thumb', async (e, wcId) => {
     const wc = webContents.fromId(Number(wcId));
@@ -1427,7 +1444,8 @@ function registerIpc() {
     return img.toDataURL();
   });
   ipcMain.handle('file:save', async (_e, { name, data, kind, copy }) => {
-    const dir = path.join(app.getPath(kind === 'note' ? 'downloads' : 'pictures'), kind === 'note' ? '' : 'Liquid');
+    // заметки — в «Загрузки», клипы видео — в «Видео/Liquid», кадры и скриншоты — в «Изображения/Liquid»
+    const dir = kind === 'note' ? app.getPath('downloads') : path.join(app.getPath(kind === 'clip' ? 'videos' : 'pictures'), 'Liquid');
     fs.mkdirSync(dir, { recursive: true });
     const file = uniquePath(dir, name);
     const buf = typeof data === 'string' && data.startsWith('data:') ? Buffer.from(data.split(',')[1], 'base64') : Buffer.from(data);
@@ -1600,6 +1618,58 @@ function setupSession(sess, priv) {
   if (proxyRules) applyProxy({ sessions: [sess], close: false });
 }
 
+// ---------- окно видео поверх игры ----------
+// Отдельное маленькое окно поверх всех окон (и поверх игры в окне без рамки): в нём тот же сайт, где видео
+// растянуто на всё окно. Можно сделать полупрозрачным и «сквозным» — клики уходят в игру (Ctrl+Alt+M).
+const MINI_KEY = 'Control+Alt+M';
+let mini = null;
+function miniSend(msg) { try { mini?.webContents.send('liquid', msg); } catch {} }
+function miniClickThrough(on) {
+  if (!mini || mini.isDestroyed()) return;
+  mini.__ct = on;
+  mini.setIgnoreMouseEvents(on, { forward: true });
+  miniSend({ type: 'miniCt', on });
+}
+function openMini({ url, t, wcId }) {
+  if (!/^https?:/.test(String(url))) return false;
+  if (mini && !mini.isDestroyed()) mini.close();
+  const st = loadSettings().mini || {};
+  const area = screen.getPrimaryDisplay().workArea;
+  const w = new BrowserWindow({
+    width: st.w || 480, height: st.h || 270, minWidth: 240, minHeight: 135,
+    x: st.x ?? area.x + area.width - (st.w || 480) - 24, y: st.y ?? area.y + area.height - (st.h || 270) - 24,
+    frame: false, alwaysOnTop: true, backgroundColor: '#000000', title: 'Liquid — видео поверх', fullscreenable: false,
+    icon: path.join(__dirname, 'renderer', 'icon.png'),
+    webPreferences: { preload: WEBVIEW_PRELOAD, partition: PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false },
+  });
+  mini = w; w.__mini = true; w.__from = wcId; w.__ct = false;
+  w.setAlwaysOnTop(true, 'screen-saver');
+  try { w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
+  w.setOpacity(Math.min(1, Math.max(0.3, st.opacity || 1)));
+  w.webContents.setWindowOpenHandler(({ url: u }) => { if (win && /^https?:/.test(u)) win.webContents.send('tab:open', { url: u }); return { action: 'deny' }; });
+  w.webContents.on('before-input-event', (e, input) => { if (input.type === 'keyDown' && input.key === 'Escape') { e.preventDefault(); w.close(); } });
+  w.webContents.on('did-finish-load', () => miniSend({ type: 'mini', t: Number(t) || 0, opacity: w.getOpacity() }));
+  let saveT = 0;
+  const keep = () => { clearTimeout(saveT); saveT = setTimeout(() => { if (w.isDestroyed()) return; const b = w.getBounds(); const s = loadSettings(); s.mini = { ...(s.mini || {}), x: b.x, y: b.y, w: b.width, h: b.height, opacity: w.getOpacity() }; saveSettings(s); }, 600); };
+  w.on('move', keep); w.on('resize', keep);
+  w.on('closed', () => { if (mini === w) mini = null; try { globalShortcut.unregister(MINI_KEY); } catch {} });
+  try { globalShortcut.register(MINI_KEY, () => miniClickThrough(!mini?.__ct)); } catch {}
+  w.loadURL(url).catch(() => {});
+  diag.log('info', 'видео поверх', 'Открыто окно поверх', new URL(url).hostname);
+  return true;
+}
+
+// ---------- «Смотреть вместе» ----------
+let watch = null;
+function watchRoom() {
+  if (!watch) watch = new WatchRoom({
+    onMessage: (m) => { try { win?.webContents.send('watch:msg', m); } catch {} },
+    onStatus: (s) => { try { win?.webContents.send('watch:status', s); } catch {} },
+    log: (lvl, msg) => diag.log(lvl, 'вместе', msg),
+  });
+  return watch;
+}
+
 // ---------- старт ----------
 app.whenReady().then(async () => {
   const bootT0 = Date.now();
@@ -1697,7 +1767,7 @@ app.whenReady().then(async () => {
 
 });
 
-app.on('before-quit', () => { if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); });
+app.on('before-quit', () => { if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); watch?.leave(true); try { globalShortcut.unregisterAll(); } catch {} });
 app.on('window-all-closed', () => { if (xray) xray.stop(); app.quit(); });
 
 // Одна копия приложения

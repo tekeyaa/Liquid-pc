@@ -250,6 +250,66 @@ test('пространства: свои вкладки, переключени�
   expect(new Set(saved).size).toBe(2);
 });
 
+// ---------------- 1.10: видео и игры ----------------
+const vt = (js) => inTab(`(() => { const v = document.getElementById('v'); return ${js}; })()`);
+
+test('окно поверх игры: открывается с тем же видео, вкладка на паузе', async () => {
+  await openUrl(`${base}/video.html`);
+  await expect.poll(() => vt('v.currentTime'), { timeout: 15_000 }).toBeGreaterThan(0.3);
+  await win.evaluate(() => window.openMini());
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.__mini).length), { timeout: 15_000 }).toBe(1);
+  // в маленьком окне видео растянуто на всё окно и играет
+  const miniJs = (js) => app.evaluate(({ BrowserWindow }, code) => BrowserWindow.getAllWindows().find((w) => w.__mini).webContents.executeJavaScript(code), js);
+  await expect.poll(() => miniJs(`!!document.querySelector('[data-lq-mini]')`), { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => miniJs(`(() => { const v = document.querySelector('[data-lq-mini]'); return !v.paused && v.getBoundingClientRect().width >= innerWidth - 1; })()`), { timeout: 10_000 }).toBe(true);
+  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.__mini).isAlwaysOnTop())).toBe(true);
+  expect(await vt('v.paused')).toBe(true); // во вкладке видео встало на паузу
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.__mini).close());
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.__mini).length)).toBe(0);
+});
+
+test('клип: буфер пишет, «Сохранить клип» кладёт файл в Видео/Liquid', async () => {
+  test.setTimeout(60_000);
+  await vt('v.play()');
+  const dir = path.join(await app.evaluate(({ app }) => app.getPath('videos')), 'Liquid');
+  const before = new Set(fs.existsSync(dir) ? fs.readdirSync(dir) : []);
+  await win.evaluate(() => window.toggleClipBuffer());
+  await win.waitForTimeout(4000);
+  await win.evaluate(() => window.saveClip());
+  await expect.poll(() => (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => !before.has(f) && /^Клип/.test(f)).length, { timeout: 20_000 }).toBe(1);
+  const f = fs.readdirSync(dir).find((x) => !before.has(x) && /^Клип/.test(x));
+  expect(fs.statSync(path.join(dir, f)).size).toBeGreaterThan(10_000);
+  fs.unlinkSync(path.join(dir, f));
+  await win.evaluate(() => window.toggleClipBuffer()); // выключаем буфер
+});
+
+test('смотреть вместе: комната, пауза и перемотка от друга, чат', async () => {
+  test.setTimeout(90_000);
+  const { WatchRoom } = require(path.join(ROOT, 'main', 'watch.js'));
+  await win.evaluate(() => window.openWatch());
+  await win.locator('#wtName').fill('Тестер');
+  await win.locator('#wtCreate').click();
+  await expect.poll(() => win.evaluate(() => window.watchState().state), { timeout: 40_000 }).toMatch(/online|offline/);
+  test.skip((await win.evaluate(() => window.watchState().state)) !== 'online', 'публичный брокер сейчас недоступен с сервера тестов');
+  const code = await win.evaluate(() => window.watchState().code);
+  const got = [];
+  const friend = new WatchRoom({ onMessage: (m) => got.push(m), onStatus: () => {}, log: () => {} });
+  await friend.join(code);
+  friend.send({ type: 'hello', name: 'Друг' });
+  await expect.poll(() => win.evaluate(() => window.watchState().people), { timeout: 15_000 }).toBe(1);
+  // друг ставит на паузу на 1,5 секунде — у нас видео встаёт туда же
+  friend.send({ type: 'state', url: `${base}/video.html`, t: 1.5, paused: true, rate: 1, reason: 'pause', name: 'Друг' });
+  await expect.poll(() => vt('v.paused && Math.abs(v.currentTime - 1.5) < 0.6'), { timeout: 15_000 }).toBe(true);
+  // мы нажимаем «играть» — друг получает это
+  await vt('v.play()');
+  await expect.poll(() => got.some((m) => m.type === 'state' && m.paused === false), { timeout: 15_000 }).toBe(true);
+  friend.send({ type: 'chat', text: 'привет из теста', name: 'Друг' });
+  await expect(win.locator('#wtChat')).toContainText('привет из теста', { timeout: 15_000 });
+  friend.leave();
+  await win.locator('#wtLeave').click();
+  expect(await win.evaluate(() => window.watchState().code)).toBe('');
+});
+
 test('в журнале нет ошибок браузера', async () => {
   await win.waitForTimeout(1500); // журнал пишет пачками раз в секунду
   expect(logErrors()).toEqual([]);

@@ -434,6 +434,8 @@
     <button data-m="notes"><svg viewBox="0 0 24 24"><path d="M6 3.5h9l3.5 3.5v13.5H6z"/><path d="M9 11h6M9 14.5h6M9 7.5h3"/></svg>Заметки<kbd id="notesCount"></kbd></button>
     <button data-m="split"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M12 4.5v15"/></svg>Два сайта рядом<kbd>Ctrl+\</kbd></button>
     <button data-m="translate"><svg viewBox="0 0 24 24"><path d="M4 5h9M8.5 3v2M6 5c.6 3.5 3 6.3 6 7.5M11 5c-.8 3.6-3.4 6.6-7 8"/><path d="M13 21l4-9 4 9M14.5 17.5h5"/></svg>Перевести страницу</button>
+    <button data-m="watch"><svg viewBox="0 0 24 24"><circle cx="8.5" cy="9" r="3"/><circle cx="16.5" cy="9" r="3"/><path d="M3 19c.8-3 3-4.5 5.5-4.5S13.2 16 14 19M13 15.2c1-.5 2.2-.7 3.5-.7 2.5 0 4.7 1.5 5.5 4.5"/></svg>Смотреть вместе</button>
+    <button data-m="mini"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M8 20.5h8"/><rect x="11.5" y="9.5" width="6.5" height="4.5" rx="1" fill="currentColor" stroke="none"/></svg>Окно поверх игры</button>
     <button data-m="pip"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><rect x="12" y="11.5" width="7" height="5.5" rx="1.2" fill="currentColor" stroke="none"/></svg>Картинка в картинке<kbd>Alt+P</kbd></button>
     <button data-m="game"><svg viewBox="0 0 24 24"><path d="M7 8h10a4 4 0 0 1 4 4v1.5a3 3 0 0 1-5.4 1.8L14.5 14h-5l-1.1 1.3A3 3 0 0 1 3 13.5V12a4 4 0 0 1 4-4z"/><path d="M8 10.5v3M6.5 12h3"/></svg><span id="gameMenuLbl">Игровой режим</span></button>
     <hr />
@@ -478,6 +480,28 @@
       <span id="trAlwaysLbl">Всегда переводить этот сайт</span>
       <input type="checkbox" id="trAlways" class="switch" />
     </label>
+  </div>
+
+  <!-- Смотреть вместе -->
+  <div id="watchPop" class="pop glass">
+    <div class="big">Смотреть вместе</div>
+    <div class="muted sm" style="margin:4px 0 12px">Пауза, перемотка и выбор видео — у всех одновременно. Каждый смотрит со своего сайта, между вами ходят только команды и чат (зашифрованы кодом комнаты).</div>
+    <div id="wtJoin">
+      <label class="field"><span>Как тебя показывать</span><input id="wtName" maxlength="24" placeholder="Имя" /></label>
+      <button class="btn primary wide" id="wtCreate">Создать комнату для этой вкладки</button>
+      <div class="wt-or">или войти по коду друга</div>
+      <div style="display:flex;gap:6px"><input id="wtCodeIn" class="ask-input" placeholder="ABCD-1234" maxlength="9" spellcheck="false" /><button class="btn ghost sm" id="wtGo">Войти</button></div>
+      <div class="err show" id="wtErr" style="min-height:0"></div>
+    </div>
+    <div id="wtRoom" hidden>
+      <div class="wt-code-row"><div><div class="muted sm">Код комнаты</div><div id="wtCode" class="wt-code"></div></div><button class="btn ghost sm" id="wtCopy">Скопировать</button></div>
+      <div id="wtStatus" class="wt-status"></div>
+      <div id="wtPeople" class="muted sm"></div>
+      <div id="wtTab" class="muted sm" style="margin-top:2px"></div>
+      <div id="wtChat" class="wt-chat"></div>
+      <div style="display:flex;gap:6px"><input id="wtInput" class="ask-input" placeholder="Сообщение…" maxlength="500" /><button class="btn primary sm" id="wtSend">↵</button></div>
+      <button class="btn ghost wide" id="wtLeave" style="margin-top:10px">Выйти из комнаты</button>
+    </div>
   </div>
 
   <!-- Командная строка (Ctrl+K) -->
@@ -560,6 +584,7 @@
   <script src="diag.js"></script>
   <script src="features3.js"></script>
   <script src="features4.js"></script>
+  <script src="features5.js"></script>
   <script src="motion.js"></script>
 </body>
 </html>
