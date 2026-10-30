@@ -11,7 +11,30 @@ const ROOT = path.join(__dirname, '..');
 const SITE = path.join(__dirname, 'site');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.webm': 'video/webm' };
 
-let app, win, server, base, dataDir;
+let app, win, server, base, dataDir, mqttBroker, brokerUrl;
+
+// Свой MQTT-брокер поверх WebSocket для теста «Смотреть вместе»: публичные брокеры с серверов GitHub
+// работают через раз, а проверяем мы логику Liquid, а не их доступность. Только CONNECT/SUBSCRIBE/PUBLISH QoS 0.
+function startBroker() {
+  const { WebSocketServer } = require('ws');
+  const subs = new Map();
+  mqttBroker = new WebSocketServer({ port: 0, host: '127.0.0.1', handleProtocols: (p) => (p.has('mqtt') ? 'mqtt' : false) });
+  const rd = (b, o) => { const l = b.readUInt16BE(o); return b.subarray(o + 2, o + 2 + l).toString(); };
+  mqttBroker.on('connection', (ws) => {
+    subs.set(ws, new Set());
+    ws.on('message', (data) => {
+      const b = Buffer.from(data), type = b[0] >> 4;
+      let len = 0, mul = 1, i = 1, x; do { x = b[i++]; len += (x & 127) * mul; mul *= 128; } while (x & 128);
+      const body = b.subarray(i, i + len);
+      if (type === 1) ws.send(Buffer.from([0x20, 2, 0, 0]));
+      else if (type === 8) { subs.get(ws).add(rd(body, 2)); ws.send(Buffer.from([0x90, 3, body[0], body[1], 0])); }
+      else if (type === 3) { const t = rd(body, 0); for (const [c, s] of subs) if (s.has(t)) c.send(b.subarray(0, i + len)); }
+      else if (type === 12) ws.send(Buffer.from([0xd0, 0]));
+    });
+    ws.on('close', () => subs.delete(ws));
+  });
+  return new Promise((ok) => mqttBroker.on('listening', () => { brokerUrl = `ws://127.0.0.1:${mqttBroker.address().port}/mqtt`; ok(); }));
+}
 const hits = { hang: 0 };
 const claudeReqs = []; // что браузер отправлял подставному Claude
 
@@ -103,12 +126,13 @@ function logErrors() {
 
 test.beforeAll(async () => {
   await startServer();
+  await startBroker();
   // папка данных браузера — внутри test-results: при падении её журнал попадает в отчёт
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
   dataDir = fs.mkdtempSync(path.join(ROOT, 'test-results', 'userdata-'));
   app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base },
+    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_WATCH_BROKERS: brokerUrl },
   });
   win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
@@ -116,7 +140,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await app?.close().catch(() => {});
-  server?.closeAllConnections?.(); server?.close();
+  server?.closeAllConnections?.(); server?.close(); mqttBroker?.close();
 });
 
 test('браузер запускается и открывает вкладку', async () => {
@@ -320,12 +344,13 @@ test('клип: буфер пишет, «Сохранить клип» клад�
 
 test('смотреть вместе: комната, пауза и перемотка от друга, чат', async () => {
   test.setTimeout(150_000);
-  const { WatchRoom } = require(path.join(ROOT, 'main', 'watch.js'));
+  const W = require(path.join(ROOT, 'main', 'watch.js'));
+  W.BROKERS.splice(0, W.BROKERS.length, brokerUrl); // друг — на том же тестовом брокере
+  const { WatchRoom } = W;
   await win.evaluate(() => window.openWatch());
   await win.locator('#wtName').fill('Тестер');
   await win.locator('#wtCreate').click();
-  await expect.poll(() => win.evaluate(() => window.watchState().state), { timeout: 40_000 }).toMatch(/online|offline/);
-  test.skip((await win.evaluate(() => window.watchState().state)) !== 'online', 'публичный брокер сейчас недоступен с сервера тестов');
+  await expect.poll(() => win.evaluate(() => window.watchState().state), { timeout: 20_000 }).toBe('online');
   const code = await win.evaluate(() => window.watchState().code);
   const got = [];
   const friend = new WatchRoom({ onMessage: (m) => got.push(m), onStatus: () => {}, log: () => {} });

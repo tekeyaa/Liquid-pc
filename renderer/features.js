@@ -654,7 +654,7 @@
   // ================= Старт =================
   window.featuresInit = () => {
     $('#sleepAfter').value = String(settings.sleepAfter ?? 20);
-    $('#memSaver').checked = settings.memSaver === true;
+    $('#memSaver').checked = settings.memSaver !== false;
     $('#restore').checked = settings.restore !== false;
     $('#adblockOn').checked = settings.adblock !== false;
     $('#dlAsk').checked = !!settings.dlAsk;

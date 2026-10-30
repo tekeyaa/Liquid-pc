@@ -1,5 +1,5 @@
 // Замеры скорости Liquid (не проверка — только цифры). Результат — в test-results/perf.json, его печатает шаг в GitHub.
-const { test, expect, _electron: electron } = require('@playwright/test');
+const { test, expect, _electron: electron, chromium } = require('@playwright/test');
 const http = require('http'); const fs = require('fs'); const path = require('path');
 const ROOT = path.join(__dirname, '..'), SITE = path.join(__dirname, 'site');
 const PX = Buffer.from('R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==', 'base64');
@@ -22,7 +22,24 @@ test.beforeAll(async () => {
 test.afterAll(async () => { await app?.close().catch(() => {}); server?.closeAllConnections?.(); server?.close(); });
 const inTab = async (js) => { const id = await win.evaluate(() => active.wv.getWebContentsId()); return app.evaluate(({ webContents }, [i, c]) => webContents.fromId(i).executeJavaScript(c), [id, js]); };
 const url = () => win.evaluate(() => active.wv.getURL());
+// эталон: та же страница в обычном Chromium на той же машине
+test('эталон: Chromium', async () => {
+  test.skip(!process.env.LIQUID_PERF_CHROMIUM, 'эталон только по запросу');
+  const b = await chromium.launch();
+  const pg = await b.newPage();
+  const loads = [];
+  for (let k = 0; k < 6; k++) {
+    await pg.goto(`${base}/heavy.html?k=${k}`, { waitUntil: 'load' });
+    loads.push(await pg.evaluate(() => { const n = performance.getEntriesByType('navigation')[0]; return Math.round(n.loadEventEnd - n.startTime); }));
+  }
+  await b.close();
+  const s = loads.slice(1).sort((x, y) => x - y);
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
+  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'Chromium (эталон)', loadMedianMs: s[Math.floor(s.length / 2)], loads }) + '\n');
+});
+
 test('замеры', async () => {
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM, 'только эталон');
   test.setTimeout(240_000);
   const out = { loads: [], backs: [] };
   for (let k = 0; k < 6; k++) {

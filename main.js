@@ -8,7 +8,7 @@ const { SmartVpn, DPI_SITES } = require('./main/smartvpn');
 const { Extensions, POPULAR } = require('./main/extensions');
 const { translateBatch } = require('./main/translate');
 const { GameMode } = require('./main/gamemode');
-const { WatchRoom } = require('./main/watch');
+const { WatchRoom, BROKERS: WATCH_BROKERS } = require('./main/watch');
 const { Diag, sysInfo } = require('./main/diag');
 const os = require('os');
 let game = null;
@@ -91,8 +91,7 @@ try { bootSettings = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
-// список включаемых функций Chromium задаётся одним вызовом: второй вызов затёр бы первый
-app.commandLine.appendSwitch('enable-features', ['CanvasOopRasterization', ...(bootSettings.memSaver === true ? [] : ['BackForwardCache'])].join(','));
+app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
 // ---------- журнал ошибок ----------
 const diag = new Diag(app.getPath('userData'));
 let gpuLine = '';
@@ -133,10 +132,9 @@ app.on('child-process-gone', (_e, d) => {
 const firstInstance = app.requestSingleInstanceLock();
 if (firstInstance) diag.log('info', 'main', `Запуск Liquid ${app.getVersion()} (Electron ${process.versions.electron})`);
 
-// «Назад» и «Вперёд» мгновенно, как в Chrome: прошлая страница остаётся в памяти и не грузится заново.
-// Раньше «экономия памяти» (включённая сразу) это отключала. Теперь отключает, только если её включить вручную.
-// (включение — в общем списке функций выше)
-if (bootSettings.memSaver === true) app.commandLine.appendSwitch('disable-features', 'BackForwardCache');
+// Экономия памяти: без кэша страниц «назад/вперёд». (Замеры 1.12: во вкладках-webview Chromium этот кэш
+// и так не использует, так что на скорость «Назад» это не влияет.)
+if (bootSettings.memSaver !== false) app.commandLine.appendSwitch('disable-features', 'BackForwardCache');
 if (bootSettings.fps === '60') {
   // Ограничение кадров до 60 — меньше нагрузка на видеокарту и батарею
   app.commandLine.appendSwitch('limit-fps', '60');
@@ -189,7 +187,7 @@ function publicSettings() {
     hasClaudeKey: !!s.claudeKey, model: s.model || 'claude-sonnet-5-5',
     search: s.search || 'google', vpnAuto: !!s.vpnAuto, guard: s.guard !== false, fps: s.fps === '60' ? '60' : 'auto', claudeMode: s.claudeMode || (s.claudeKey ? 'api' : 'web'),
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
-    memSaver: s.memSaver === true, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
+    memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
@@ -1698,6 +1696,7 @@ function openMini({ url, t, wcId }) {
 
 // ---------- «Смотреть вместе» ----------
 let watch = null;
+if (TEST && process.env.LIQUID_WATCH_BROKERS) WATCH_BROKERS.splice(0, WATCH_BROKERS.length, ...process.env.LIQUID_WATCH_BROKERS.split(',')); // свой брокер в автотестах
 function watchRoom() {
   if (!watch) watch = new WatchRoom({
     onMessage: (m) => { try { win?.webContents.send('watch:msg', m); } catch {} },
