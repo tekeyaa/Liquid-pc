@@ -333,8 +333,10 @@ test('смотреть вместе: комната, пауза и перемо�
   friend.send({ type: 'hello', name: 'Друг' });
   await expect.poll(() => win.evaluate(() => window.watchState().people), { timeout: 15_000 }).toBe(1);
   // друг ставит на паузу на 1,5 секунде — у нас видео встаёт туда же
-  friend.send({ type: 'state', url: `${base}/video.html`, t: 1.5, paused: true, rate: 1, reason: 'pause', name: 'Друг' });
-  await expect.poll(() => vt('v.paused && Math.abs(v.currentTime - 1.5) < 0.6'), { timeout: 15_000 }).toBe(true);
+  // (как настоящий Liquid, друг напоминает своё состояние — публичный брокер может потерять одно сообщение)
+  const pause = () => friend.send({ type: 'state', url: `${base}/video.html`, t: 1.5, paused: true, rate: 1, reason: 'pause', name: 'Друг' });
+  pause(); const again = setInterval(pause, 3000);
+  await expect.poll(() => vt('v.paused && Math.abs(v.currentTime - 1.5) < 0.6'), { timeout: 20_000 }).toBe(true).finally(() => clearInterval(again));
   // мы нажимаем «играть» — друг получает это
   await vt('v.play()');
   await expect.poll(() => got.some((m) => m.type === 'state' && m.paused === false), { timeout: 15_000 }).toBe(true);

@@ -74,7 +74,9 @@
     if (m.type === 'wtState') {
       if (!W.code || tab !== W.tab) return;
       const st = m.state || {};
-      if (st.reason === 'beat' && st.paused) return; // на паузе сердцебиение не нужно
+      // сообщения через публичный брокер иногда теряются: раз в 5 с (на паузе — раз в 10 с) напоминаем, где видео,
+      // чтобы потерянная «пауза» или «перемотка» у остальных догнала сама
+      if (st.reason === 'beat' && st.paused && (W.pausedBeat = (W.pausedBeat || 0) + 1) % 2) return;
       send({ type: 'state', ...st });
       return;
     }
