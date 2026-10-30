@@ -1330,7 +1330,9 @@ function registerIpc() {
     if (now - (pre.get(o.origin) || 0) < 10e3) return;
     pre.set(o.origin, now);
     if (pre.size > 300) pre.clear();
-    try { (e.sender.session || ses).preconnect({ url: o.origin, numSockets: 1 }); } catch {}
+    // вкладки и окно браузера ходят в сеть через основную сессию, а инкогнито — через свою
+    const s = e.sender.getType() === 'webview' ? e.sender.session : (incognito.get(BrowserWindow.fromWebContents(e.sender)) || ses);
+    try { s.preconnect({ url: o.origin, numSockets: 1 }); } catch {}
   });
   // данные одного сайта: куки, хранилище, фоновые скрипты, кэш скриптов — как будто открываешь его впервые
   ipcMain.handle('net:clearSite', async (_e, origin) => {

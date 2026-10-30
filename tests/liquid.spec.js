@@ -245,8 +245,7 @@ test('зависшая пустая страница перезагружает�
   await expect.poll(() => hits.hang, { timeout: 30_000 }).toBe(2);
   await expect.poll(() => /грузится и пустая.*127\.0\.0\.1/.test(logText()), { timeout: 5_000 }).toBe(true);
   // уходим с зависшей страницы, чтобы она не мешала дальше
-  await win.locator('#url').fill(`${base}/article.html`);
-  await win.locator('#url').press('Enter');
+  await win.evaluate((x) => navigate(x), `${base}/article.html`);
   await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/article.html');
 });
 
@@ -257,7 +256,8 @@ test('списки блокировщика рекламы скачиваютс�
 });
 
 // ---------------- 1.9: вкладки ----------------
-const openUrl = async (u) => { await win.locator('#url').fill(u); await win.locator('#url').press('Enter'); await expect.poll(activeUrl, { timeout: 15_000 }).toContain(u.replace(base, '')); };
+// открыть адрес в текущей вкладке (печать в адресной строке проверяет отдельный тест выше)
+const openUrl = async (u) => { await win.evaluate((x) => navigate(x), u); await expect.poll(activeUrl, { timeout: 15_000 }).toContain(u.replace(base, '')); };
 
 test('превью вкладки: снимок страницы делается', async () => {
   await openUrl(`${base}/article.html`);
