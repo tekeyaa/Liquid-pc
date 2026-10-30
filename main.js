@@ -764,13 +764,32 @@ async function vpnUnblock(url) {
 }
 
 // ---------- Claude ----------
+// адрес API; в автотестах — подставной сервер (только в тестовом режиме)
+const CLAUDE_API = (TEST && process.env.LIQUID_CLAUDE_API) || 'https://api.anthropic.com';
+// Один шаг «Claude действует на странице»: запрос с инструментами, без потока (features6.js ведёт цикл и выполняет действия)
+async function claudeCall({ model, system, messages, tools }) {
+  const key = dec(loadSettings().claudeKey);
+  if (!key) return { error: 'Нужен API-ключ Claude: Настройки → Claude → «Как подключаться» → API-ключ.' };
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 120e3);
+  try {
+    const res = await ses.fetch(CLAUDE_API + '/v1/messages', {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: String(model || 'claude-sonnet-5-5'), max_tokens: 4096, system: String(system || ''), messages: Array.isArray(messages) ? messages : [], tools: Array.isArray(tools) ? tools : [] }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return { error: res.status === 401 ? 'Неверный API-ключ.' : `Ошибка ${res.status}: ${j.error?.message || ''}${res.status === 403 && !vpnState.on ? ' — похоже, API недоступен из твоего региона, включи VPN.' : ''}` };
+    return j;
+  } catch (e) { return { error: e.name === 'AbortError' ? 'Claude не ответил за 2 минуты' : e.message }; }
+  finally { clearTimeout(t); }
+}
 async function claudeStream(sender, { id, model, system, messages }) {
   const key = dec(loadSettings().claudeKey);
   if (!key) { sender.send('claude:error', { id, error: 'Добавь API-ключ Claude в настройках (шестерёнка справа сверху).' }); return; }
   const ctrl = new AbortController();
   claudeJobs.set(id, ctrl);
   try {
-    const res = await ses.fetch('https://api.anthropic.com/v1/messages', {
+    const res = await ses.fetch(CLAUDE_API + '/v1/messages', {
       method: 'POST',
       signal: ctrl.signal,
       headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
@@ -1049,7 +1068,7 @@ async function guardCheck(info) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 20000);
   try {
-    const res = await ses.fetch('https://api.anthropic.com/v1/messages', {
+    const res = await ses.fetch(CLAUDE_API + '/v1/messages', {
       method: 'POST', signal: ctrl.signal,
       headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
@@ -1502,6 +1521,7 @@ function registerIpc() {
   });
 
   ipcMain.on('claude:send', (e, payload) => claudeStream(e.sender, payload));
+  ipcMain.handle('claude:call', (_e, body) => claudeCall(body || {}));
   ipcMain.on('claude:abort', (_e, id) => claudeJobs.get(id)?.abort());
   ipcMain.handle('claude:check', (_e, info) => guardCheck(info));
   ipcMain.on('guard:popup-result', (_e, { id, r }) => { const f = guardWait.get(id); if (f) { guardWait.delete(id); f(r); } });

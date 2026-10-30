@@ -13,12 +13,17 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.webm': 'video/webm' };
 
 let app, win, server, base, dataDir;
 const hits = { hang: 0 };
+const claudeReqs = []; // что браузер отправлял подставному Claude
 
 // маленький сайт для тестов: страницы и видео из tests/site (с поддержкой Range — видео без неё не перематывается)
 function startServer() {
   return new Promise((ok) => {
     server = http.createServer((req, res) => {
       const p = new URL(req.url, 'http://x').pathname;
+      if (p === '/timedtext') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ events: [
+        { tStartMs: 0, segs: [{ utf8: 'Привет, это вступление' }] }, { tStartMs: 12000, segs: [{ utf8: 'про вкладки' }] },
+        { tStartMs: 35000, segs: [{ utf8: 'теперь про видео' }] }, { tStartMs: 95000, segs: [{ utf8: 'и выводы' }] }] })); return; }
+      if (p === '/v1/messages') return fakeClaude(req, res);
       // страница, которая начинает грузиться и зависает пустой (как сайт, которому мешает провайдер)
       if (p === '/hang') { hits.hang++; res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.write('<!doctype html><html><head><title>hang</title></head><body>'); return; }
       // «замедление провайдера»: первые 16 КБ отдаются, дальше данные перестают идти
@@ -37,6 +42,36 @@ function startServer() {
       }
     });
     server.listen(0, '127.0.0.1', () => { base = `http://127.0.0.1:${server.address().port}`; ok(); });
+  });
+}
+
+// Подставной Claude API. Потоковый ответ — для чата (сравнение вкладок), обычный — для «действий на странице»:
+// по шагам вводит «ноутбук» в поле, жмёт «Найти», пытается «Оплатить заказ» и заканчивает.
+function fakeClaude(req, res) {
+  let body = '';
+  req.on('data', (c) => (body += c));
+  req.on('end', () => {
+    const j = JSON.parse(body || '{}');
+    claudeReqs.push(j);
+    if (j.stream) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const ev = (o) => res.write('data: ' + JSON.stringify(o) + '\n\n');
+      ev({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'Сравнение готово. Смотри [1:05].' } });
+      ev({ type: 'message_stop' });
+      res.end();
+      return;
+    }
+    const step = j.messages.filter((m) => m.role === 'assistant').length;
+    const lm = j.messages[j.messages.length - 1];
+    const last = typeof lm.content === 'string' ? lm.content : lm.content.map((c) => c.content || c.text || '').join('\n');
+    const ref = (re) => { const m = re.exec(last); return m ? +m[1] : 0; };
+    const use = (name, input) => ({ type: 'tool_use', id: 't' + step, name, input });
+    const content = step === 0 ? [{ type: 'text', text: 'Ищу.' }, use('type', { ref: ref(/#(\d+) input[^\n]*Что найти/), text: 'ноутбук' })]
+      : step === 1 ? [use('click', { ref: ref(/#(\d+) button[^\n]*Найти/) })]
+      : step === 2 ? [use('click', { ref: ref(/#(\d+) button[^\n]*Оплатить/) })]
+      : [use('finish', { summary: 'Нашёл, оплату не делал' })];
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ content, stop_reason: 'tool_use' }));
   });
 }
 
@@ -73,7 +108,7 @@ test.beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(ROOT, 'test-results', 'userdata-'));
   app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir },
+    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base },
   });
   win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
@@ -308,6 +343,51 @@ test('смотреть вместе: комната, пауза и перемо�
   friend.leave();
   await win.locator('#wtLeave').click();
   expect(await win.evaluate(() => window.watchState().code)).toBe('');
+});
+
+// ---------------- 1.11: Claude ----------------
+test('пересказ видео: расшифровка с таймкодами из плеера', async () => {
+  await openUrl(`${base}/fakeyt.html`);
+  const r = await win.evaluate(() => window.videoPrompt(active));
+  expect(r.prompt).toContain('Как устроен браузер');
+  expect(r.prompt).toContain('[0:00] Привет, это вступление про вкладки'); // реплики склеены в блоки по ~30 с
+  expect(r.prompt).toContain('[0:35] теперь про видео');
+  expect(r.prompt).toContain('[1:35] и выводы');
+});
+
+test('Claude (API): сравнение вкладок и кликабельные таймкоды', async () => {
+  {
+    const s = await win.evaluate(async () => { settings = await L.settings.set({ claudeMode: 'api', claudeKey: 'test-key' }); applyClaudeMode(); return settings.claudeMode; });
+    expect(s).toBe('api');
+  }
+  await openUrl(`${base}/article.html`);
+  await win.locator('#newTab').click();
+  await openUrl(`${base}/form.html`);
+  await win.evaluate(() => window.openCompare());
+  await win.locator('#cmpQ').fill('что полезнее');
+  await win.locator('#cmpGo').click();
+  await expect.poll(() => claudeReqs.filter((r) => r.stream).length, { timeout: 20_000 }).toBe(1);
+  const sent = JSON.stringify(claudeReqs.find((r) => r.stream).messages);
+  expect(sent).toContain('Сравни');
+  expect(sent).toContain('The quick brown fox'); // текст первой страницы
+  expect(sent).toContain('Магазин');             // и второй
+  await expect(win.locator('#msgs .msg.ai a.tc')).toHaveText('[1:05]', { timeout: 15_000 });
+});
+
+test('Claude (API) действует на странице и спрашивает перед «Оплатить»', async () => {
+  test.setTimeout(60_000);
+  await openUrl(`${base}/form.html`);
+  await win.evaluate(() => { window.runAgent('найди ноутбук'); });
+  // на третьем шаге Claude хочет нажать «Оплатить заказ» — должен появиться вопрос
+  await expect(win.locator('#actPop')).toHaveClass(/open/, { timeout: 30_000 });
+  await expect(win.locator('#actText')).toContainText('Оплатить');
+  await win.locator('#actNo').click();
+  await expect.poll(() => win.evaluate(() => window.agentState().busy), { timeout: 20_000 }).toBe(false);
+  expect(await inTab(`document.getElementById('q').value`)).toBe('ноутбук');
+  expect(await inTab(`document.getElementById('out').textContent`)).toBe('Найдено: ноутбук');
+  expect(await inTab(`!!document.getElementById('paid')`)).toBe(false); // оплата не нажата
+  await expect(win.locator('#msgs .agent-log').last()).toContainText('Не разрешено');
+  await expect(win.locator('#msgs .agent-log').last()).toContainText('Нашёл, оплату не делал');
 });
 
 test('в журнале нет ошибок браузера', async () => {

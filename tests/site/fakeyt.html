@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Fake YouTube video</title></head>
+<body><div id="movie_player"></div>
+<script>
+  // как у YouTube: ответ плеера с описанием ролика и ссылкой на субтитры
+  window.ytInitialPlayerResponse = {
+    videoDetails: { title: 'Как устроен браузер', author: 'Liquid', lengthSeconds: '125', shortDescription: 'Тестовое описание ролика' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: '/timedtext?v=1', languageCode: 'ru', kind: '' }] } },
+  };
+</script></body></html>
