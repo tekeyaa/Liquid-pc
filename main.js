@@ -1387,6 +1387,17 @@ function registerIpc() {
     return n;
   });
 
+  // снимок вкладки для превью при наведении: маленький JPEG, только своих вкладок
+  ipcMain.handle('tab:thumb', async (e, wcId) => {
+    const wc = webContents.fromId(Number(wcId));
+    if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== e.sender) return '';
+    try {
+      const img = await wc.capturePage();
+      if (img.isEmpty()) return '';
+      return 'data:image/jpeg;base64,' + img.resize({ width: 360, quality: 'good' }).toJPEG(72).toString('base64');
+    } catch { return ''; }
+  });
+
   // скриншоты: вся страница через DevTools-протокол, кусками до 4000px, склейка — в интерфейсе
   ipcMain.handle('shot:full', async (_e, wcId) => {
     const wc = webContents.fromId(wcId);

@@ -480,6 +480,21 @@
     </label>
   </div>
 
+  <!-- Командная строка (Ctrl+K) -->
+  <div id="palette" class="pop glass">
+    <input id="palInput" spellcheck="false" placeholder="Вкладки, действия, история… например «закрой ютуб» или «vpn»" />
+    <div id="palList"></div>
+  </div>
+
+  <!-- Ввод названия (группа, пространство) -->
+  <div id="askPop" class="pop glass small">
+    <div class="big" id="askTitle">Название</div>
+    <div style="display:flex;gap:6px;margin-top:12px"><input id="askInput" class="ask-input" maxlength="24" spellcheck="false" /><button class="btn primary sm" id="askOk">Готово</button></div>
+  </div>
+
+  <!-- Превью вкладки при наведении -->
+  <div id="tabPreview" class="glass"></div>
+
   <!-- Почему не открылось -->
   <div id="netPop" class="pop glass">
     <div class="big">Почему не открылось?</div>
@@ -544,6 +559,7 @@
   <script src="features2.js"></script>
   <script src="diag.js"></script>
   <script src="features3.js"></script>
+  <script src="features4.js"></script>
   <script src="motion.js"></script>
 </body>
 </html>
