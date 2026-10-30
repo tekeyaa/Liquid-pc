@@ -86,6 +86,7 @@ contextBridge.exposeInMainWorld('liquid', {
     onMsg: on('watch:msg'),
     onStatus: on('watch:status'),
   },
+  preconnect: (url) => ipcRenderer.send('net:preconnect', url),
   net: {
     diagnose: (url) => ipcRenderer.invoke('net:diagnose', url),
     clearSite: (origin) => ipcRenderer.invoke('net:clearSite', origin),

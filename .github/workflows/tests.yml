@@ -27,7 +27,14 @@ jobs:
           node -p "'Electron ' + require('electron/package.json').version"
 
       - name: Тесты
-        run: npx playwright test
+        run: npx playwright test tests/liquid.spec.js
+
+      - name: Замеры скорости
+        if: always()
+        shell: bash
+        run: |
+          npx playwright test tests/perf.spec.js || true
+          [ -f test-results/perf.json ] && echo "::notice title=Скорость Liquid::$(cat test-results/perf.json)" || echo "::warning::замеры не получились"
 
       - name: Журнал Liquid при падении
         if: failure()

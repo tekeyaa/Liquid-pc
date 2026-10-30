@@ -318,7 +318,9 @@
     tab.el.addEventListener('mousedown', hidePreview);
   }
   async function snap(tab) {
+    if (tab && Date.now() - (tab.thumbAt || 0) < 60e3) return;
     if (!tab || tab !== active || !tab.wv || !tab.wcId || document.hidden || document.body.classList.contains('game') || !/^https?:/.test(tab.url)) return;
+    tab.thumbAt = Date.now();
     try { const d = await L.tabs.thumb(tab.wcId); if (d) tab.thumb = d; } catch {}
   }
   const prevCreated = window.onWebviewCreated;
@@ -326,7 +328,7 @@
     prevCreated && prevCreated(tab, wv);
     wv.addEventListener('did-stop-loading', () => setTimeout(() => snap(tab), 1200));
   };
-  setInterval(() => snap(active), 30e3);
+  // снимок — после загрузки страницы и не чаще раза в минуту на вкладку (это копия кадра с видеокарты и сжатие)
   // вкладки, созданные до этого файла (не должно быть, но на всякий случай)
   for (const t of tabs) { if (!t.space) t.space = cur; hookPreview(t); }
   render();

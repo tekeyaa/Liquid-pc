@@ -1239,6 +1239,21 @@ function wtApply(s) {
 }
 document.addEventListener('loadedmetadata', (e) => { if (wt.on && e.target.tagName === 'VIDEO' && !IS_FRAME) wtBind(mainVideo()); }, true);
 
+// ---------- 12. Предварительное соединение со ссылкой под мышью (как в Chrome) ----------
+// Мышь задержалась на ссылке 80 мс или кнопка нажата — просим браузер заранее открыть соединение с сайтом.
+let preT = 0, preHref = '';
+function preconnect(a) {
+  if (!a || !a.href || a.href === preHref || !/^https?:/.test(a.href)) return;
+  try { if (new URL(a.href).origin === location.origin) return; } catch { return; } // свой сайт и так на связи
+  preHref = a.href; ipcRenderer.send('net:preconnect', a.href);
+}
+document.addEventListener('pointerover', (e) => {
+  const a = e.target.closest && e.target.closest('a[href]');
+  clearTimeout(preT);
+  if (a) preT = setTimeout(() => preconnect(a), 80);
+}, { passive: true, capture: true });
+document.addEventListener('pointerdown', (e) => preconnect(e.target.closest && e.target.closest('a[href]')), { passive: true, capture: true });
+
 // ---------- боковые кнопки мыши: назад / вперёд (Electron сам их не обрабатывает) ----------
 for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
   window.addEventListener(ev, (e) => {

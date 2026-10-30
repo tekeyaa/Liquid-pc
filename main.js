@@ -65,9 +65,13 @@ function topUrlOf(d, exact) {
   try { return d.frame?.top?.url || ''; } catch { return ''; }
 }
 
+// Подмена на Firefox нужна только при входе в Google: страницы входа и их файлы живут на этих доменах.
+// Раньше обработчик стоял на ВСЕХ запросах всех сайтов, и каждый запрос ждал основной процесс браузера.
+// Остальным сайтам правильный User-Agent и так ставит setUserAgent.
+const AUTH_FILTER = { urls: ['*://*.google.com/*', '*://*.gstatic.com/*', '*://*.googleapis.com/*', '*://accounts.youtube.com/*', '*://*.googleusercontent.com/*'] };
 function hardenSession(sess) {
   sess.setUserAgent(UA);
-  sess.webRequest.onBeforeSendHeaders((d, cb) => {
+  sess.webRequest.onBeforeSendHeaders(AUTH_FILTER, (d, cb) => {
     const h = d.requestHeaders;
     // для запросов к Google — всегда точный адрес из фрейма, как раньше: от этого зависит вход в аккаунт
     const topUrl = topUrlOf(d, GOOGLEISH.test(d.url));
@@ -87,7 +91,8 @@ try { bootSettings = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
-app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
+// список включаемых функций Chromium задаётся одним вызовом: второй вызов затёр бы первый
+app.commandLine.appendSwitch('enable-features', ['CanvasOopRasterization', ...(bootSettings.memSaver === true ? [] : ['BackForwardCache'])].join(','));
 // ---------- журнал ошибок ----------
 const diag = new Diag(app.getPath('userData'));
 let gpuLine = '';
@@ -128,11 +133,10 @@ app.on('child-process-gone', (_e, d) => {
 const firstInstance = app.requestSingleInstanceLock();
 if (firstInstance) diag.log('info', 'main', `Запуск Liquid ${app.getVersion()} (Electron ${process.versions.electron})`);
 
-// Экономия памяти: без кэша страниц «назад/вперёд» в ОЗУ. «Запасной» процесс оставляем —
-// с ним новая вкладка и переход на другой сайт начинаются без ожидания запуска процесса.
-if (bootSettings.memSaver !== false) {
-  app.commandLine.appendSwitch('disable-features', 'BackForwardCache');
-}
+// «Назад» и «Вперёд» мгновенно, как в Chrome: прошлая страница остаётся в памяти и не грузится заново.
+// Раньше «экономия памяти» (включённая сразу) это отключала. Теперь отключает, только если её включить вручную.
+// (включение — в общем списке функций выше)
+if (bootSettings.memSaver === true) app.commandLine.appendSwitch('disable-features', 'BackForwardCache');
 if (bootSettings.fps === '60') {
   // Ограничение кадров до 60 — меньше нагрузка на видеокарту и батарею
   app.commandLine.appendSwitch('limit-fps', '60');
@@ -185,7 +189,7 @@ function publicSettings() {
     hasClaudeKey: !!s.claudeKey, model: s.model || 'claude-sonnet-5-5',
     search: s.search || 'google', vpnAuto: !!s.vpnAuto, guard: s.guard !== false, fps: s.fps === '60' ? '60' : 'auto', claudeMode: s.claudeMode || (s.claudeKey ? 'api' : 'web'),
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
-    memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
+    memSaver: s.memSaver === true, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
@@ -313,6 +317,7 @@ app.on('web-contents-created', (_e, contents) => {
     const ln = (ev && ev.lineNumber) || line;
     if (level !== 'error' && level !== 'warning') return;
     const ours = contents.getType() !== 'webview' || /webview-preload/i.test(source) || String(message).startsWith('[liquid]');
+    if (!ours) return; // предупреждения самих сайтов (их сотни) журналу не нужны — раньше на каждое тратился основной процесс
     // ошибки самих сайтов — шум, их пишем только как отладочные
     diag.log(ours ? (level === 'error' ? 'error' : 'warn') : 'debug', kind(), `${message}`, `${source.split(/[\\/]/).pop()}:${ln}`);
   });
@@ -707,7 +712,7 @@ async function netDiagnose(url) {
     loadProbe(probeSession(), u.href),
     loadProbe(ses, u.href),
   ]);
-  add(online ? 'ok' : 'bad', 'Интернет', online ? 'Есть' : 'Не открываются даже ya.ru и google.com — проблема с интернетом, а не с сайтом.');
+  add(online || direct.ok ? 'ok' : 'bad', 'Интернет', online || direct.ok ? 'Есть' : 'Не открываются даже ya.ru и google.com — проблема с интернетом, а не с сайтом.');
   // DNS провайдера против безопасного DNS
   const sysIps = Array.isArray(sys) ? sys.filter((a) => !a.includes(':')) : [];
   const literal = /^[\d.]+$|^\[|^localhost$/.test(host); // адрес цифрами или свой компьютер — DNS тут ни при чём
@@ -727,7 +732,7 @@ async function netDiagnose(url) {
   add('info', 'Расширения', extOn.length ? 'Включены: ' + extOn.join(', ') : 'Нет');
   // вывод
   let verdict, action = '';
-  if (!online) verdict = 'Нет интернета или он работает с перебоями.';
+  if (!online && !direct.ok && !inLiquid.ok) verdict = 'Нет интернета или он работает с перебоями.';
   else if (throttled(direct) && !routed) { verdict = 'Провайдер замедляет этот сайт: соединение обрывается после ~16 КБ. Сайт не заблокирован, но без VPN полностью не загрузится.'; action = 'vpn'; }
   else if (!direct.ok && !inLiquid.ok && direct.error && /RESET|CLOSED|TIMED_OUT|нет ответа/i.test(direct.error) && !routed) { verdict = `Соединение с сайтом обрывается (${direct.error}) — так выглядит блокировка или замедление у провайдера. Поможет VPN или обход замедления.`; action = 'vpn'; }
   else if (direct.ok && !inLiquid.ok) { verdict = 'Напрямую сайт открывается, а через Liquid — нет: мешает что-то в браузере (прокси, сохранённые данные сайта). Попробуй «Очистить данные сайта».'; action = 'clear'; }
@@ -1317,6 +1322,18 @@ function registerIpc() {
   ipcMain.handle('vpn:startup', () => Promise.race([vpnStartup || Promise.resolve(), new Promise((r) => setTimeout(r, 20000))]).then(() => vpnState));
   ipcMain.handle('vpn:unblock', (_e, url) => vpnUnblock(url));
   ipcMain.handle('net:diagnose', (_e, url) => netDiagnose(String(url || '')));
+  // Как Chrome: навёл мышь на ссылку или выбрал подсказку в адресной строке — заранее открываем соединение
+  // с сайтом (DNS, TCP, TLS), и после клика страница начинает грузиться на 100–300 мс раньше
+  const pre = new Map();
+  ipcMain.on('net:preconnect', (e, url) => {
+    let o; try { o = new URL(String(url)); } catch { return; }
+    if (!/^https?:$/.test(o.protocol)) return;
+    const now = Date.now();
+    if (now - (pre.get(o.origin) || 0) < 10e3) return;
+    pre.set(o.origin, now);
+    if (pre.size > 300) pre.clear();
+    try { (e.sender.session || ses).preconnect({ url: o.origin, numSockets: 1 }); } catch {}
+  });
   // данные одного сайта: куки, хранилище, фоновые скрипты, кэш скриптов — как будто открываешь его впервые
   ipcMain.handle('net:clearSite', async (_e, origin) => {
     let o; try { o = new URL(String(origin)).origin; } catch { return false; }
