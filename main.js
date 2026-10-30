@@ -8,7 +8,7 @@ const { SmartVpn, DPI_SITES } = require('./main/smartvpn');
 const { Extensions, POPULAR } = require('./main/extensions');
 const { translateBatch } = require('./main/translate');
 const { GameMode } = require('./main/gamemode');
-const { WatchRoom } = require('./main/watch');
+const { WatchRoom, BROKERS: WATCH_BROKERS } = require('./main/watch');
 const { Diag, sysInfo } = require('./main/diag');
 const os = require('os');
 let game = null;
@@ -65,9 +65,13 @@ function topUrlOf(d, exact) {
   try { return d.frame?.top?.url || ''; } catch { return ''; }
 }
 
+// Подмена на Firefox нужна только при входе в Google: страницы входа и их файлы живут на этих доменах.
+// Раньше обработчик стоял на ВСЕХ запросах всех сайтов, и каждый запрос ждал основной процесс браузера.
+// Остальным сайтам правильный User-Agent и так ставит setUserAgent.
+const AUTH_FILTER = { urls: ['*://*.google.com/*', '*://*.gstatic.com/*', '*://*.googleapis.com/*', '*://accounts.youtube.com/*', '*://*.googleusercontent.com/*'] };
 function hardenSession(sess) {
   sess.setUserAgent(UA);
-  sess.webRequest.onBeforeSendHeaders((d, cb) => {
+  sess.webRequest.onBeforeSendHeaders(AUTH_FILTER, (d, cb) => {
     const h = d.requestHeaders;
     // для запросов к Google — всегда точный адрес из фрейма, как раньше: от этого зависит вход в аккаунт
     const topUrl = topUrlOf(d, GOOGLEISH.test(d.url));
@@ -128,11 +132,9 @@ app.on('child-process-gone', (_e, d) => {
 const firstInstance = app.requestSingleInstanceLock();
 if (firstInstance) diag.log('info', 'main', `Запуск Liquid ${app.getVersion()} (Electron ${process.versions.electron})`);
 
-// Экономия памяти: без кэша страниц «назад/вперёд» в ОЗУ. «Запасной» процесс оставляем —
-// с ним новая вкладка и переход на другой сайт начинаются без ожидания запуска процесса.
-if (bootSettings.memSaver !== false) {
-  app.commandLine.appendSwitch('disable-features', 'BackForwardCache');
-}
+// Экономия памяти: без кэша страниц «назад/вперёд». (Замеры 1.12: во вкладках-webview Chromium этот кэш
+// и так не использует, так что на скорость «Назад» это не влияет.)
+if (bootSettings.memSaver !== false) app.commandLine.appendSwitch('disable-features', 'BackForwardCache');
 if (bootSettings.fps === '60') {
   // Ограничение кадров до 60 — меньше нагрузка на видеокарту и батарею
   app.commandLine.appendSwitch('limit-fps', '60');
@@ -313,6 +315,7 @@ app.on('web-contents-created', (_e, contents) => {
     const ln = (ev && ev.lineNumber) || line;
     if (level !== 'error' && level !== 'warning') return;
     const ours = contents.getType() !== 'webview' || /webview-preload/i.test(source) || String(message).startsWith('[liquid]');
+    if (!ours) return; // предупреждения самих сайтов (их сотни) журналу не нужны — раньше на каждое тратился основной процесс
     // ошибки самих сайтов — шум, их пишем только как отладочные
     diag.log(ours ? (level === 'error' ? 'error' : 'warn') : 'debug', kind(), `${message}`, `${source.split(/[\\/]/).pop()}:${ln}`);
   });
@@ -707,7 +710,7 @@ async function netDiagnose(url) {
     loadProbe(probeSession(), u.href),
     loadProbe(ses, u.href),
   ]);
-  add(online ? 'ok' : 'bad', 'Интернет', online ? 'Есть' : 'Не открываются даже ya.ru и google.com — проблема с интернетом, а не с сайтом.');
+  add(online || direct.ok ? 'ok' : 'bad', 'Интернет', online || direct.ok ? 'Есть' : 'Не открываются даже ya.ru и google.com — проблема с интернетом, а не с сайтом.');
   // DNS провайдера против безопасного DNS
   const sysIps = Array.isArray(sys) ? sys.filter((a) => !a.includes(':')) : [];
   const literal = /^[\d.]+$|^\[|^localhost$/.test(host); // адрес цифрами или свой компьютер — DNS тут ни при чём
@@ -727,7 +730,7 @@ async function netDiagnose(url) {
   add('info', 'Расширения', extOn.length ? 'Включены: ' + extOn.join(', ') : 'Нет');
   // вывод
   let verdict, action = '';
-  if (!online) verdict = 'Нет интернета или он работает с перебоями.';
+  if (!online && !direct.ok && !inLiquid.ok) verdict = 'Нет интернета или он работает с перебоями.';
   else if (throttled(direct) && !routed) { verdict = 'Провайдер замедляет этот сайт: соединение обрывается после ~16 КБ. Сайт не заблокирован, но без VPN полностью не загрузится.'; action = 'vpn'; }
   else if (!direct.ok && !inLiquid.ok && direct.error && /RESET|CLOSED|TIMED_OUT|нет ответа/i.test(direct.error) && !routed) { verdict = `Соединение с сайтом обрывается (${direct.error}) — так выглядит блокировка или замедление у провайдера. Поможет VPN или обход замедления.`; action = 'vpn'; }
   else if (direct.ok && !inLiquid.ok) { verdict = 'Напрямую сайт открывается, а через Liquid — нет: мешает что-то в браузере (прокси, сохранённые данные сайта). Попробуй «Очистить данные сайта».'; action = 'clear'; }
@@ -1317,6 +1320,18 @@ function registerIpc() {
   ipcMain.handle('vpn:startup', () => Promise.race([vpnStartup || Promise.resolve(), new Promise((r) => setTimeout(r, 20000))]).then(() => vpnState));
   ipcMain.handle('vpn:unblock', (_e, url) => vpnUnblock(url));
   ipcMain.handle('net:diagnose', (_e, url) => netDiagnose(String(url || '')));
+  // Как Chrome: навёл мышь на ссылку или выбрал подсказку в адресной строке — заранее открываем соединение
+  // с сайтом (DNS, TCP, TLS), и после клика страница начинает грузиться на 100–300 мс раньше
+  const pre = new Map();
+  ipcMain.on('net:preconnect', (e, url) => {
+    let o; try { o = new URL(String(url)); } catch { return; }
+    if (!/^https?:$/.test(o.protocol)) return;
+    const now = Date.now();
+    if (now - (pre.get(o.origin) || 0) < 10e3) return;
+    pre.set(o.origin, now);
+    if (pre.size > 300) pre.clear();
+    try { (e.sender.session || ses).preconnect({ url: o.origin, numSockets: 1 }); } catch {}
+  });
   // данные одного сайта: куки, хранилище, фоновые скрипты, кэш скриптов — как будто открываешь его впервые
   ipcMain.handle('net:clearSite', async (_e, origin) => {
     let o; try { o = new URL(String(origin)).origin; } catch { return false; }
@@ -1681,6 +1696,7 @@ function openMini({ url, t, wcId }) {
 
 // ---------- «Смотреть вместе» ----------
 let watch = null;
+if (TEST && process.env.LIQUID_WATCH_BROKERS) WATCH_BROKERS.splice(0, WATCH_BROKERS.length, ...process.env.LIQUID_WATCH_BROKERS.split(',')); // свой брокер в автотестах
 function watchRoom() {
   if (!watch) watch = new WatchRoom({
     onMessage: (m) => { try { win?.webContents.send('watch:msg', m); } catch {} },
@@ -1700,6 +1716,7 @@ app.whenReady().then(async () => {
   await smart.start().catch(() => {});
   syncSmartLists();
   adblock = new AdBlock(app.getPath('userData'));
+  if (TEST && process.env.LIQUID_PERF_NOADBLOCK) adblock.init = async () => false; // замер скорости без блокировщика
   const st0 = loadSettings();
   adblock.enabled = st0.adblock !== false;
   adblock.allow = new Set(st0.adAllow || []);

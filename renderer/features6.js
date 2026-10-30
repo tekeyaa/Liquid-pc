@@ -5,7 +5,7 @@
   const tabUrl = (t) => { try { return t.wv.getURL() || t.url; } catch { return t?.url || ''; } };
   const isWebTab = (t) => t && /^https?:/.test(tabUrl(t));
   const mmss = (s) => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${x}` : `${m}:${x}`; };
-  const run = (tab, js) => Promise.race([tab.wv.executeJavaScript(js), new Promise((_, no) => setTimeout(() => no(new Error('страница не ответила')), 15000))]);
+  const run = (tab, js, ms = 15000) => Promise.race([tab.wv.executeJavaScript(js), new Promise((_, no) => setTimeout(() => no(new Error('страница не ответила')), ms))]);
 
   // ================= Пересказ видео YouTube с таймкодами =================
   // Расшифровку берём там же, где её берёт сам YouTube: у плеера на странице (субтитры автора или автоматические)
@@ -92,12 +92,9 @@
     const q = $('#cmpQ').value.trim();
     closePops();
     toast('Собираю страницы…');
-    const parts = [];
-    for (const [i, t] of chosen.entries()) {
-      let d = null;
-      if (t.wv) { try { d = await run(t, PAGE_JS(9000)); } catch {} }
-      parts.push(`### Вкладка ${i + 1}: ${d?.title || t.title || ''}\n${tabUrl(t)}\n${d ? d.text : '(вкладка спит — есть только название и адрес)'}`);
-    }
+    // все вкладки — одновременно и не дольше 5 секунд: страница, которая ещё грузится, не держит остальные
+    const got = await Promise.all(chosen.map((t) => (t.wv ? run(t, PAGE_JS(9000), 5000).catch(() => null) : Promise.resolve(null))));
+    const parts = chosen.map((t, i) => { const d = got[i]; return `### Вкладка ${i + 1}: ${d?.title || t.title || ''}\n${tabUrl(t)}\n${d ? d.text : '(вкладка спит или не ответила — есть только название и адрес)'}`; });
     window.claudeSend(`Сравни эти ${chosen.length} страницы${q ? `. Что важно мне: ${q}` : ''}.\n\n` +
       `Ответ: сначала таблица сравнения по главным параметрам (строки — параметры, столбцы — страницы), потом короткий вывод: что лучше и для кого. ` +
       `Пиши по-русски. Если данных для сравнения не хватает — так и скажи.\n\n${parts.join('\n\n')}`);

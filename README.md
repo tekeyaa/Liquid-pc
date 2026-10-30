@@ -23,7 +23,8 @@
 - `vpn.js` — разбор ключей и запуск xray.
 - `installer/` — исходники Liquid-Setup.exe на Go.
 - `tests/` — автотесты: запускают настоящий Liquid и проверяют основное (`.github/workflows/tests.yml`, на Windows).
-  У себя: `npm install --no-save @playwright/test` и `npx playwright test`.
+  У себя: `npm install --no-save @playwright/test ws` и `npx playwright test tests/liquid.spec.js`.
+  `tests/perf.spec.js` — замер скорости Liquid против обычного Chromium (в рабочих ветках GitHub пишет цифры в пометки запуска).
 - `.github/workflows/release.yml` — при каждом изменении в `main` сначала гоняет автотесты, потом собирает установщик и выкладывает релиз
   с номером из `package.json` и описанием из `CHANGELOG.md`.
 

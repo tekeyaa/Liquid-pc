@@ -106,6 +106,9 @@
   function renderSuggest() {
     const box = $('#suggest');
     if (!sug.items.length) { box.classList.remove('open'); return; }
+    // первая подсказка-сайт — заранее открываем с ним соединение, как Chrome
+    const site = sug.items.find((it) => !it.search && /^https?:/.test(it.url || ''));
+    if (site) L.preconnect(site.url);
     box.innerHTML = sug.items.map((it, i) => it.search
       ? `<div class="sg ${i === sug.sel ? 'sel' : ''}" data-i="${i}">${SEARCH_IC}<span class="sg-t">${hl(it.title, $('#url').value)}</span>${it.main ? '<span class="sg-u">— поиск</span>' : ''}</div>`
       : `<div class="sg ${i === sug.sel ? 'sel' : ''}" data-i="${i}"><img src="${esc(favUrl(it.url))}"><span class="sg-t">${esc(it.title || hostOf(it.url))}</span><span class="sg-u">${esc(it.url.replace(/^https?:\/\//, ''))}</span>${it.kind ? `<span class="sg-k">${it.kind}</span>` : ''}</div>`).join('');
