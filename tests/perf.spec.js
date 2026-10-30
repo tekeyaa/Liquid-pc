@@ -13,6 +13,7 @@ test.beforeAll(async () => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); res.end(fs.readFileSync(f));
   });
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok)); base = `http://127.0.0.1:${server.address().port}`;
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
   const dataDir = fs.mkdtempSync(path.join(ROOT, 'test-results', 'perfdata-'));
   app = await electron.launch({ args: [ROOT], env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir } });
   win = await app.firstWindow(); await win.waitForLoadState('domcontentloaded');
@@ -38,6 +39,6 @@ test('замеры', async () => {
   }
   const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
   const r = { version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
-  fs.writeFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r));
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true }); fs.writeFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r));
   console.log('PERF', JSON.stringify(r));
 });
