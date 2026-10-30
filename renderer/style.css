@@ -782,3 +782,17 @@ body.game #progress::after { animation-play-state: paused; }
 .tp-t { font-weight: 600; font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tp-s { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
 .ctx hr { border: 0; border-top: 1px solid rgba(255,255,255,.08); margin: 5px 6px; }
+
+/* ---------- смотреть вместе (1.10) ---------- */
+#watchPop { width: 380px; }
+.wt-or { text-align: center; color: var(--faint); font-size: 12px; margin: 12px 0 8px; }
+.wt-code-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.wt-code { font: 700 24px/1.1 "Cascadia Code", Consolas, monospace; letter-spacing: 2px; user-select: text; }
+.wt-status { font-size: 12px; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.wt-status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #fbbf24; }
+.wt-status.online::before { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.wt-status.offline::before { background: var(--bad); }
+.wt-chat { height: 180px; overflow-y: auto; margin: 10px 0 8px; padding: 8px 10px; border-radius: 12px; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.08); font-size: 12.5px; user-select: text; }
+.wt-msg { margin: 3px 0; line-height: 1.4; } .wt-msg b { color: var(--accent-2); font-weight: 600; }
+.wt-sys { margin: 3px 0; color: var(--faint); font-size: 11.5px; }
+.tab.watching .fav { box-shadow: 0 0 0 2px var(--ok); border-radius: 50%; }

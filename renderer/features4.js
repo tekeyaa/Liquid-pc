@@ -243,6 +243,7 @@
     ['Новое пространство…', 'пространство', () => newSpace()],
     ...spaces.filter((s) => s.id !== cur).map((s) => [`Пространство «${s.name}»`, 'перейти', () => setSpace(s.id)]),
     ...(active ? [['Новая группа из этой вкладки…', 'группа', () => newGroup(active)]] : []),
+    ...(window.paletteExtra ? window.paletteExtra() : []), // видео и игры (features5.js)
   ];
   const pal = { items: [], sel: 0 };
   const norm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е');
