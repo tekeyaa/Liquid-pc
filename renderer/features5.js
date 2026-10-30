@@ -55,7 +55,11 @@
     send({ type: 'hello' });
     clearInterval(W.beat);
     // раз в 5 секунд — где сейчас видео (у остальных расхождение больше 2,5 с поправится само)
-    W.beat = setInterval(() => { if (W.tab?.wv) try { W.tab.wv.send('liquid', { type: 'wtPoll' }); } catch {} pruneP(); }, 5000);
+    W.beat = setInterval(() => {
+      if (W.tab?.wv) try { W.tab.wv.send('liquid', { type: 'wtPoll' }); } catch {}
+      if ((W.ticks = (W.ticks || 0) + 1) % 3 === 0) send({ type: 'ping' }); // «я здесь» раз в 15 с — список участников не зависит от одного сообщения
+      pruneP();
+    }, 5000);
     render();
   }
   function leave() {

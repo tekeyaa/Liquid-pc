@@ -319,7 +319,7 @@ test('клип: буфер пишет, «Сохранить клип» клад�
 });
 
 test('смотреть вместе: комната, пауза и перемотка от друга, чат', async () => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   const { WatchRoom } = require(path.join(ROOT, 'main', 'watch.js'));
   await win.evaluate(() => window.openWatch());
   await win.locator('#wtName').fill('Тестер');
@@ -330,8 +330,11 @@ test('смотреть вместе: комната, пауза и перемо�
   const got = [];
   const friend = new WatchRoom({ onMessage: (m) => got.push(m), onStatus: () => {}, log: () => {} });
   await friend.join(code);
-  friend.send({ type: 'hello', name: 'Друг' });
-  await expect.poll(() => win.evaluate(() => window.watchState().people), { timeout: 15_000 }).toBe(1);
+  // как настоящий Liquid: дождаться пары брокеров и повторять «я здесь», пока нас не увидят
+  await expect.poll(() => friend.online().length, { timeout: 10_000 }).toBeGreaterThanOrEqual(2).catch(() => {}); // хватит и одного общего
+  const hi = () => friend.send({ type: 'hello', name: 'Друг' });
+  hi(); const hiAgain = setInterval(hi, 3000);
+  await expect.poll(() => win.evaluate(() => window.watchState().people), { timeout: 40_000 }).toBe(1).finally(() => clearInterval(hiAgain));
   // друг ставит на паузу на 1,5 секунде — у нас видео встаёт туда же
   // (как настоящий Liquid, друг напоминает своё состояние — публичный брокер может потерять одно сообщение)
   const pause = () => friend.send({ type: 'state', url: `${base}/video.html`, t: 1.5, paused: true, rate: 1, reason: 'pause', name: 'Друг' });
@@ -339,9 +342,11 @@ test('смотреть вместе: комната, пауза и перемо�
   await expect.poll(() => vt('v.paused && Math.abs(v.currentTime - 1.5) < 0.6'), { timeout: 20_000 }).toBe(true).finally(() => clearInterval(again));
   // мы нажимаем «играть» — друг получает это
   await vt('v.play()');
-  await expect.poll(() => got.some((m) => m.type === 'state' && m.paused === false), { timeout: 15_000 }).toBe(true);
-  friend.send({ type: 'chat', text: 'привет из теста', name: 'Друг' });
-  await expect(win.locator('#wtChat')).toContainText('привет из теста', { timeout: 15_000 });
+  // если само «играть» потерялось, его догонит напоминание раз в 5 секунд
+  await expect.poll(() => got.some((m) => m.type === 'state' && m.paused === false), { timeout: 30_000 }).toBe(true);
+  const chat = () => friend.send({ type: 'chat', text: 'привет из теста', name: 'Друг' });
+  chat(); const chatAgain = setInterval(chat, 4000);
+  await expect(win.locator('#wtChat')).toContainText('привет из теста', { timeout: 30_000 }).finally(() => clearInterval(chatAgain));
   friend.leave();
   await win.locator('#wtLeave').click();
   expect(await win.evaluate(() => window.watchState().code)).toBe('');
