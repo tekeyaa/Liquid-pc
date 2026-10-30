@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Heavy page</title>
+<style>img{width:16px;height:16px} body{font:14px sans-serif}</style>
+<script>addEventListener('pageshow', (e) => { window.__bf = e.persisted; });</script>
+</head><body><h1>Heavy page</h1><div id="imgs"></div>
+<script>
+  // 300 картинок и 30 скриптов с сервера тестов — как у тяжёлого сайта
+  let h = ''; for (let i = 0; i < 300; i++) h += `<img src="/px?i=${i}&r=${Math.random()}">`;
+  document.getElementById('imgs').innerHTML = h;
+  for (let i = 0; i < 30; i++) { const s = document.createElement('script'); s.src = `/js?i=${i}&r=${Math.random()}`; document.head.appendChild(s); }
+</script>
+<p>The quick brown fox jumps over the lazy dog. This paragraph is long enough to count as readable text for the reader mode of the browser.</p>
+</body></html>
