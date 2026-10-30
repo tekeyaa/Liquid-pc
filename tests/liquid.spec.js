@@ -362,9 +362,14 @@ test('Claude (API): сравнение вкладок и кликабельны�
     const s = await win.evaluate(async () => { settings = await L.settings.set({ claudeMode: 'api', claudeKey: 'test-key' }); applyClaudeMode(); return settings.claudeMode; });
     expect(s).toBe('api');
   }
-  await openUrl(`${base}/article.html`);
-  await win.locator('#newTab').click();
-  await openUrl(`${base}/form.html`);
+  // диагностика: отвечают ли окно и основной процесс (в прошлый раз Enter в адресной строке завис)
+  const alive = await Promise.race([win.evaluate(() => 'ui ok'), new Promise((r) => setTimeout(() => r('ui НЕ отвечает'), 5000))]);
+  const mainAlive = await Promise.race([app.evaluate(() => 'main ok'), new Promise((r) => setTimeout(() => r('main НЕ отвечает'), 5000))]);
+  expect(`${alive}, ${mainAlive}`).toBe('ui ok, main ok');
+  await win.evaluate((u) => navigate(u), `${base}/article.html`);
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/article.html');
+  await win.evaluate((u) => createTab(u), `${base}/form.html`);
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/form.html');
   await win.evaluate(() => window.openCompare());
   await win.locator('#cmpQ').fill('что полезнее');
   await win.locator('#cmpGo').click();
