@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Магазин</title></head>
+<body>
+<h1>Магазин</h1>
+<input id="q" placeholder="Что найти" />
+<button id="find" onclick="document.getElementById('out').textContent = 'Найдено: ' + document.getElementById('q').value">Найти</button>
+<div id="out"></div>
+<button id="pay" onclick="document.body.insertAdjacentHTML('beforeend', '<div id=paid>ОПЛАЧЕНО</div>')">Оплатить заказ</button>
+</body></html>

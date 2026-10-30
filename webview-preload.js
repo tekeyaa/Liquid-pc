@@ -941,7 +941,7 @@ function barBuild() {
       <label><span>Контраст</span><input type="range" data-r="contrast" min="50" max="180" step="5"><b data-v="contrast"></b></label>
       <label><span>Насыщенность</span><input type="range" data-r="sat" min="0" max="200" step="5"><b data-v="sat"></b></label>
       <div class="chips">
-        <button data-a="watch">Смотреть вместе</button><button data-a="clipbuf">Буфер клипа</button><button data-a="clip">Сохранить клип</button>
+        ${/(^|\.)youtube\.com$/.test(location.hostname) ? '<button data-a="summary">Пересказать (Claude)</button>' : ''}<button data-a="watch">Смотреть вместе</button><button data-a="clipbuf">Буфер клипа</button><button data-a="clip">Сохранить клип</button>
         <button data-a="comp">Ровная громкость</button><button data-a="loop">Повтор</button><button data-a="remember">Запомнить скорость</button>
         <button data-a="frame">Кадр в PNG</button><button data-a="reset">Сбросить</button>
       </div>
@@ -976,6 +976,7 @@ function barBuild() {
     else if (a === 'frame') videoCmd({ op: 'frame' });
     else if (a === 'mini') { barOpen(false); miniOut(v); }
     else if (a === 'watch') { barOpen(false); toHost({ type: 'watchOpen' }); }
+    else if (a === 'summary') { barOpen(false); toHost({ type: 'summarize' }); }
     else if (a === 'clipbuf') clip.v === v ? clipStop(true) : clipStart(v);
     else if (a === 'clip') clipSave();
     else if (a === 'reset') videoCmd({ op: 'reset' });

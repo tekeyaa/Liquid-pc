@@ -781,6 +781,33 @@ async function sendPageToClaudeWeb(extra) {
     toast('Текст страницы скопирован — вставь в чат через Ctrl+V');
   }
 }
+// Отправить готовый запрос Claude (пересказ ролика, сравнение вкладок, таблица — features6.js).
+// Режим claude.ai: вставляем текст в чат сайта и отправляем Enter. Режим API: обычный чат в панели.
+window.claudeSend = async (text, { auto = true } = {}) => {
+  if (!webMode()) { toggleSide(true); ask(text); return; }
+  toggleSide(true);
+  const wv = ensureClaudeWeb();
+  // claude.ai мог только начать загружаться — ждём поле ввода до 20 секунд
+  let ok = false;
+  for (let i = 0; i < 40 && !ok; i++) {
+    try { ok = await wv.executeJavaScript(`!!document.querySelector('div[contenteditable="true"], textarea')`); } catch {}
+    if (!ok) await new Promise((r) => setTimeout(r, 500));
+  }
+  L.copy(text);
+  if (!ok) { toast('claude.ai ещё не открылся (нужен вход и VPN). Запрос скопирован — вставь его через Ctrl+V', true); return; }
+  try {
+    await wv.executeJavaScript(`(() => { const el = document.querySelector('div[contenteditable="true"], textarea'); el.focus(); return true; })()`);
+    wv.focus();
+    wv.paste();
+    if (auto) {
+      await new Promise((r) => setTimeout(r, 700));
+      wv.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' }); wv.sendInputEvent({ type: 'char', keyCode: '\r' }); wv.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+    } else toast('Запрос вставлен — проверь и отправь');
+  } catch { toast('Запрос скопирован — вставь его в чат через Ctrl+V'); }
+};
+window.claudeIsWeb = () => webMode();
+window.claudeAsk = (t) => ask(t);
+
 function applyClaudeMode() {
   document.body.classList.toggle('cweb', webMode());
   $('#setPop').classList.toggle('api', !webMode());
@@ -857,7 +884,7 @@ async function ask(text) {
   const paint = () => {
     raf = 0;
     const stick = $('#msgs').scrollHeight - $('#msgs').scrollTop - $('#msgs').clientHeight < 60;
-    bubble.innerHTML = window.renderMarkdown(acc);
+    bubble.innerHTML = window.linkTimecodes ? window.linkTimecodes(window.renderMarkdown(acc)) : window.renderMarkdown(acc);
     if (stick) $('#msgs').scrollTop = $('#msgs').scrollHeight;
   };
 
@@ -898,6 +925,8 @@ document.querySelector('.quick').addEventListener('click', (e) => {
 $('#msgs').addEventListener('click', (e) => {
   const a = e.target.closest('a[data-href]');
   if (a) { createTab(a.dataset.href); return; }
+  const tc = e.target.closest('a[data-seek]');
+  if (tc) { window.seekVideoTab && window.seekVideoTab(+tc.dataset.seek); return; }
   const c = e.target.closest('.copy');
   if (c) {
     navigator.clipboard.writeText(c.nextElementSibling.textContent);

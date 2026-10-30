@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('liquid', {
     onState: on('vpn:state'),
   },
   claude: {
+    call: (body) => ipcRenderer.invoke('claude:call', body),
     send: (payload) => ipcRenderer.send('claude:send', payload),
     abort: (id) => ipcRenderer.send('claude:abort', id),
     check: (info) => ipcRenderer.invoke('claude:check', info),
