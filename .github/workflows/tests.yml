@@ -27,7 +27,7 @@ jobs:
           node -p "'Electron ' + require('electron/package.json').version"
 
       - name: Тесты
-        run: echo 'база: только замеры'
+        run: echo "база — только замеры"
 
       - name: Замеры скорости
         if: always()
