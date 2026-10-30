@@ -4,7 +4,7 @@ const fs = require('fs');
 const { parseKey, Xray, DPI_CONFIG } = require('./vpn');
 const { spawn } = require('child_process');
 const { AdBlock } = require('./main/adblock');
-const { SmartVpn } = require('./main/smartvpn');
+const { SmartVpn, DPI_SITES } = require('./main/smartvpn');
 const { Extensions, POPULAR } = require('./main/extensions');
 const { translateBatch } = require('./main/translate');
 const { GameMode } = require('./main/gamemode');
@@ -90,6 +90,8 @@ app.commandLine.appendSwitch('enable-features', 'CanvasOopRasterization');
 // ---------- журнал ошибок ----------
 const diag = new Diag(app.getPath('userData'));
 let gpuLine = '';
+// сообщения блокировщика о скачивании списков — в журнал как обычные записи
+{ const orig = console.info.bind(console); console.info = (...a) => { orig(...a); if (typeof a[0] === 'string' && a[0].startsWith('[adblock]')) diag.log('info', 'блокировщик', a.join(' ').slice(10)); }; }
 for (const lvl of ['warn', 'error']) {
   const orig = console[lvl].bind(console);
   console[lvl] = (...a) => { orig(...a); diag.log(lvl, 'main', a.map((x) => (x && x.stack) || (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); };
@@ -179,9 +181,28 @@ function publicSettings() {
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false,
-    antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi,
+    antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
+}
+
+// ---------- безопасный DNS (DNS по HTTPS) ----------
+// Адреса сайтов спрашиваем у DNS по зашифрованному каналу: провайдер не видит и не подменяет ответы.
+// Режим «automatic»: не ответил безопасный DNS — браузер тихо берёт обычный, поэтому сайты не пропадут.
+const DNS = {
+  auto: ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query', 'https://dns.adguard-dns.com/dns-query'],
+  cloudflare: ['https://cloudflare-dns.com/dns-query'],
+  google: ['https://dns.google/dns-query'],
+  adguard: ['https://dns.adguard-dns.com/dns-query'],
+  yandex: ['https://common.dot.dns.yandex.net/dns-query'],
+};
+const dnsMode = (s) => (DNS[s.dns] || s.dns === 'off' ? s.dns : 'auto');
+function applyDns() {
+  const m = dnsMode(loadSettings());
+  try {
+    if (m === 'off') app.configureHostResolver({ secureDnsMode: 'off' });
+    else app.configureHostResolver({ secureDnsMode: 'automatic', secureDnsServers: DNS[m] });
+  } catch (e) { diag.log('warn', 'dns', 'Безопасный DNS не включился: ' + e.message); }
 }
 
 // ---------- окно ----------
@@ -628,6 +649,85 @@ async function directWorks() {
   return r.some(Boolean);
 }
 
+// ---------- «Почему не открылось?» ----------
+// Загрузка страницы с подсчётом байт: когда пришёл первый байт, сколько всего и не встала ли она посреди ответа.
+// Провайдерское «замедление» узнаётся по обрыву после ~16 КБ: дальше данные просто перестают идти.
+async function loadProbe(sess, url, { total = 15000, idle = 6000, cap = 1.5e6 } = {}) {
+  const ctrl = new AbortController(); const t0 = Date.now(); const tAll = setTimeout(() => ctrl.abort(), total);
+  const out = { ok: false, status: 0, bytes: 0, ttfb: 0, ms: 0, stalled: false, error: '' };
+  try {
+    const r = await sess.fetch(url, { signal: ctrl.signal, cache: 'no-store', redirect: 'follow', headers: { 'user-agent': UA, accept: 'text/html,*/*' } });
+    out.status = r.status; out.ttfb = Date.now() - t0;
+    const reader = r.body.getReader();
+    for (;;) {
+      let to; const step = await Promise.race([reader.read(), new Promise((res) => { to = setTimeout(() => res({ idle: true }), idle); })]);
+      clearTimeout(to);
+      if (step.idle) { out.stalled = true; ctrl.abort(); break; }
+      if (step.done) break;
+      out.bytes += step.value.length;
+      if (out.bytes >= cap) { ctrl.abort(); break; }
+    }
+    out.ok = !out.stalled && r.status < 500;
+  } catch (e) { out.error = String(e.message || e).replace(/^net::/, ''); if (/abort/i.test(out.error) && !out.status) out.error = 'нет ответа ' + Math.round(total / 1000) + ' с'; }
+  finally { clearTimeout(tAll); out.ms = Date.now() - t0; }
+  return out;
+}
+const BOGUS_IP = /^(0\.|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/;
+async function dohA(host) {
+  for (const u of [`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=A`, `https://dns.google/resolve?name=${encodeURIComponent(host)}&type=A`]) {
+    const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 5000);
+    try { const j = await (await probeSession().fetch(u, { headers: { accept: 'application/dns-json' }, signal: ctrl.signal, cache: 'no-store' })).json(); return (j.Answer || []).filter((a) => a.type === 1).map((a) => a.data); }
+    catch {} finally { clearTimeout(t); }
+  }
+  return null;
+}
+const kb = (n) => (n < 1024 ? n + ' Б' : Math.round(n / 1024) + ' КБ');
+async function netDiagnose(url) {
+  let u; try { u = new URL(url); } catch { return { verdict: 'Это не адрес сайта.', checks: [] }; }
+  if (!/^https?:$/.test(u.protocol)) return { verdict: 'Проверяются только сайты (http и https).', checks: [] };
+  const host = u.hostname, checks = [];
+  const add = (status, title, text) => checks.push({ status, title, text });
+  const mode = loadSettings().vpnMode || 'smart';
+  const routed = vpnState.on && (mode === 'all' || smart.matches(host));
+  const viaDpi = !routed && !!smart.dpi && DPI_SITES.some((d) => host === d || host.endsWith('.' + d));
+  // всё независимое — одновременно
+  const [online, sys, doh, direct, inLiquid] = await Promise.all([
+    directWorks(),
+    (async () => { try { const r = await ses.resolveHost(host, { secureDnsPolicy: 'disable' }); return (r.endpoints || []).map((e) => e.address); } catch (e) { return { error: e.message }; } })(),
+    dohA(host),
+    loadProbe(probeSession(), u.href),
+    loadProbe(ses, u.href),
+  ]);
+  add(online ? 'ok' : 'bad', 'Интернет', online ? 'Есть' : 'Не открываются даже ya.ru и google.com — проблема с интернетом, а не с сайтом.');
+  // DNS провайдера против безопасного DNS
+  const sysIps = Array.isArray(sys) ? sys.filter((a) => !a.includes(':')) : [];
+  const literal = /^[\d.]+$|^\[|^localhost$/.test(host); // адрес цифрами или свой компьютер — DNS тут ни при чём
+  if (literal) add('info', 'DNS', 'Адрес сайта задан напрямую, DNS не нужен.');
+  else if (!Array.isArray(sys)) add(doh && doh.length ? 'bad' : 'warn', 'DNS провайдера', `Не нашёл адрес сайта (${String(sys.error || '').replace(/^net::/, '')})${doh && doh.length ? ', а безопасный DNS нашёл — включи безопасный DNS в настройках.' : '.'}`);
+  else if (sysIps.some((a) => BOGUS_IP.test(a))) add('bad', 'DNS провайдера', `Подменяет адрес сайта на ${sysIps.join(', ')} — включи безопасный DNS в настройках.`);
+  else add('ok', 'DNS', `Адрес находится${doh ? '' : ' (безопасный DNS сейчас не ответил)'}.`);
+  add('info', 'Маршрут', routed ? 'Сайт идёт через VPN Liquid.' : viaDpi ? 'Сайт идёт через обход замедления.' : 'Сайт идёт напрямую, без VPN.');
+  const desc = (p) => p.ok ? `открылся: ${kb(p.bytes)} за ${(p.ms / 1000).toFixed(1)} с` : p.stalled ? `завис после ${kb(p.bytes)} — данные перестали идти` : p.error ? `ошибка: ${p.error}` : `ответ ${p.status}`;
+  const throttled = (p) => p.stalled && p.bytes > 4096 && p.bytes < 64 * 1024;
+  add(direct.ok ? 'ok' : 'bad', 'Напрямую, без расширений и данных сайта', desc(direct));
+  add(inLiquid.ok ? 'ok' : 'bad', 'Через Liquid (прокси, вход в аккаунт)', desc(inLiquid));
+  // фоновые скрипты сайта (service worker) — частая причина «белой страницы до перезагрузки»
+  let sw = 0; try { sw = Object.values(ses.serviceWorkers.getAllRunning()).filter((w) => String(w.scope).startsWith(u.origin)).length; } catch {}
+  if (sw) add('info', 'Фоновый скрипт сайта', 'Работает. Если страница грузится пустой, помогает «Очистить данные сайта».');
+  const extOn = (exts?.list || []).filter((e) => e.enabled !== false).map((e) => e.name);
+  add('info', 'Расширения', extOn.length ? 'Включены: ' + extOn.join(', ') : 'Нет');
+  // вывод
+  let verdict, action = '';
+  if (!online) verdict = 'Нет интернета или он работает с перебоями.';
+  else if (throttled(direct) && !routed) { verdict = 'Провайдер замедляет этот сайт: соединение обрывается после ~16 КБ. Сайт не заблокирован, но без VPN полностью не загрузится.'; action = 'vpn'; }
+  else if (!direct.ok && !inLiquid.ok && direct.error && /RESET|CLOSED|TIMED_OUT|нет ответа/i.test(direct.error) && !routed) { verdict = `Соединение с сайтом обрывается (${direct.error}) — так выглядит блокировка или замедление у провайдера. Поможет VPN или обход замедления.`; action = 'vpn'; }
+  else if (direct.ok && !inLiquid.ok) { verdict = 'Напрямую сайт открывается, а через Liquid — нет: мешает что-то в браузере (прокси, сохранённые данные сайта). Попробуй «Очистить данные сайта».'; action = 'clear'; }
+  else if (direct.ok && inLiquid.ok) { verdict = 'Сайт отвечает нормально. Если вкладка всё равно пустая, дело в самой странице: её данных или расширениях. Попробуй «Очистить данные сайта», потом — выключить расширения.'; action = 'clear'; }
+  else verdict = 'Сайт сейчас не отвечает никому — скорее всего, проблема на его стороне.';
+  diag.log('info', 'диагностика', `${host}: ${verdict}`, checks.map((c) => `${c.title}: ${c.text}`).join(' · '));
+  return { host, origin: u.origin, verdict, action, checks };
+}
+
 // Сайт не открылся «как при блокировке» → запоминаем его и пускаем через VPN
 async function vpnUnblock(url) {
   let host = '';
@@ -1003,7 +1103,9 @@ function registerIpc() {
     }
     if (patch.forgetVpn) { s.vpnKey = ''; s.vpnName = ''; }
     if ('antiDpi' in patch) s.antiDpi = !!patch.antiDpi;
+    if ('dns' in patch) s.dns = DNS[patch.dns] || patch.dns === 'off' ? patch.dns : 'auto';
     saveSettings(s);
+    if ('dns' in patch) { applyDns(); for (const x of allSessions()) x.closeAllConnections().catch(() => {}); }
     if ('antiDpi' in patch) { dpiRestarts = 0; return (s.antiDpi ? startDpi() : stopDpi()).then(() => publicSettings()); }
     if ('vpnMode' in patch || 'vpnSites' in patch || patch.forgetLearned || patch.learnedRemove) { syncSmartLists(); if (vpnState.on) applyProxy({ close: 'vpnMode' in patch }).then(sendVpn); }
     return publicSettings();
@@ -1186,6 +1288,15 @@ function registerIpc() {
   ipcMain.handle('boot:ready', () => bootReady.then(() => true));
   ipcMain.handle('vpn:startup', () => Promise.race([vpnStartup || Promise.resolve(), new Promise((r) => setTimeout(r, 20000))]).then(() => vpnState));
   ipcMain.handle('vpn:unblock', (_e, url) => vpnUnblock(url));
+  ipcMain.handle('net:diagnose', (_e, url) => netDiagnose(String(url || '')));
+  // данные одного сайта: куки, хранилище, фоновые скрипты, кэш скриптов — как будто открываешь его впервые
+  ipcMain.handle('net:clearSite', async (_e, origin) => {
+    let o; try { o = new URL(String(origin)).origin; } catch { return false; }
+    await ses.clearStorageData({ origin: o }).catch(() => {});
+    await ses.clearCodeCaches({ urls: [o] }).catch(() => {});
+    diag.log('info', 'диагностика', 'Данные сайта очищены', o);
+    return true;
+  });
 
   // окна
   ipcMain.on('win:incognito', () => createWindow({ priv: true }));
@@ -1476,6 +1587,7 @@ function setupSession(sess, priv) {
 app.whenReady().then(async () => {
   const bootT0 = Date.now();
   Menu.setApplicationMenu(null);
+  applyDns();
   ses = session.fromPartition(PARTITION);
   hardenSession(session.defaultSession);
   await smart.start().catch(() => {});
@@ -1485,6 +1597,14 @@ app.whenReady().then(async () => {
   adblock.enabled = st0.adblock !== false;
   adblock.allow = new Set(st0.adAllow || []);
   adblock.topUrlOf = (d) => topUrlOf(d);
+  // запасной путь для списков рекламы: через VPN Liquid, если он включён
+  let listsSes = null, listsProxy = '';
+  adblock.extraFetch = async (u, o) => {
+    if (!proxyRules) throw new Error('VPN выключен');
+    if (!listsSes) listsSes = session.fromPartition('liquid-lists', { cache: false });
+    if (listsProxy !== proxyRules) { await listsSes.setProxy({ proxyRules, proxyBypassRules: '<local>' }); listsProxy = proxyRules; }
+    return listsSes.fetch(u, o);
+  };
   // счётчик рекламы: раньше сообщение в окно уходило на КАЖДЫЙ заблокированный запрос (на тяжёлой странице — сотни),
   // теперь — не чаще 4 раз в секунду на вкладку; обнуление при переходе — сразу
   const adPending = new Map(); let adT = 0;

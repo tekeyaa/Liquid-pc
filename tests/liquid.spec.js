@@ -12,11 +12,17 @@ const SITE = path.join(__dirname, 'site');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.webm': 'video/webm' };
 
 let app, win, server, base, dataDir;
+const hits = { hang: 0 };
 
 // маленький сайт для тестов: страницы и видео из tests/site (с поддержкой Range — видео без неё не перематывается)
 function startServer() {
   return new Promise((ok) => {
     server = http.createServer((req, res) => {
+      const p = new URL(req.url, 'http://x').pathname;
+      // страница, которая начинает грузиться и зависает пустой (как сайт, которому мешает провайдер)
+      if (p === '/hang') { hits.hang++; res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.write('<!doctype html><html><head><title>hang</title></head><body>'); return; }
+      // «замедление провайдера»: первые 16 КБ отдаются, дальше данные перестают идти
+      if (p === '/throttle') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.write('<!doctype html><p>' + 'x'.repeat(16 * 1024)); return; }
       const file = path.join(SITE, decodeURIComponent(new URL(req.url, 'http://x').pathname));
       if (!file.startsWith(SITE) || !fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
       const size = fs.statSync(file).size, type = TYPES[path.extname(file)] || 'application/octet-stream';
@@ -75,7 +81,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await app?.close().catch(() => {});
-  server?.close();
+  server?.closeAllConnections?.(); server?.close();
 });
 
 test('браузер запускается и открывает вкладку', async () => {
@@ -147,6 +153,48 @@ test('видео с превью «главной» идёт в плеере р�
     expect(st.layerVisible).toBe(true);
     expect(st.layerW).toBeGreaterThan(800);
   }
+});
+
+// ---------------- 1.8: надёжность ----------------
+const logText = () => { try { const d = path.join(dataDir, 'logs'); return fs.readdirSync(d).map((f) => fs.readFileSync(path.join(d, f), 'utf8')).join('\n'); } catch { return ''; } };
+
+test('безопасный DNS включается и выключается в настройках', async () => {
+  expect(await win.evaluate(() => settings.dns)).toBe('auto');
+  await win.evaluate(() => { const s = document.getElementById('dns'); s.value = 'off'; s.dispatchEvent(new Event('change')); });
+  await expect.poll(() => win.evaluate(() => settings.dns)).toBe('off');
+  await win.evaluate(() => { const s = document.getElementById('dns'); s.value = 'auto'; s.dispatchEvent(new Event('change')); });
+  await expect.poll(() => win.evaluate(() => settings.dns)).toBe('auto');
+});
+
+test('«Почему не открылось?»: рабочий сайт — «отвечает нормально»', async () => {
+  const r = await win.evaluate((u) => L.net.diagnose(u), `${base}/article.html`);
+  expect(r.verdict).toContain('отвечает нормально');
+  expect(r.checks.find((c) => c.title.startsWith('Напрямую')).status).toBe('ok');
+});
+
+test('«Почему не открылось?»: узнаёт обрыв после 16 КБ', async () => {
+  const r = await win.evaluate((u) => L.net.diagnose(u), `${base}/throttle`);
+  expect(r.verdict).toContain('16 КБ');
+});
+
+test('зависшая пустая страница перезагружается сама и пишется в журнал', async () => {
+  test.setTimeout(80_000);
+  await win.locator('#url').fill(`${base}/hang`);
+  await win.locator('#url').press('Enter');
+  await expect.poll(() => hits.hang, { timeout: 10_000 }).toBe(1);
+  // через 15 секунд браузер должен сам перезагрузить её (второй запрос) и записать это
+  await expect.poll(() => hits.hang, { timeout: 30_000 }).toBe(2);
+  await expect.poll(() => /грузится и пустая.*127\.0\.0\.1/.test(logText()), { timeout: 5_000 }).toBe(true);
+  // уходим с зависшей страницы, чтобы она не мешала дальше
+  await win.locator('#url').fill(`${base}/article.html`);
+  await win.locator('#url').press('Enter');
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/article.html');
+});
+
+test('списки блокировщика рекламы скачиваются и собираются', async () => {
+  test.setTimeout(120_000);
+  await expect.poll(() => /списки обновлены|adblock lists/.test(logText()), { timeout: 100_000, intervals: [2000] }).toBe(true);
+  expect(logText(), 'списки рекламы не собрались').toMatch(/списки обновлены/);
 });
 
 test('в журнале нет ошибок браузера', async () => {

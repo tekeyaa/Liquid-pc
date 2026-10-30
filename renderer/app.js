@@ -169,6 +169,7 @@ function attachWebview(tab, url) {
   });
   $('#views').appendChild(wv);
   layoutViews();
+  window.onWebviewCreated && window.onWebviewCreated(tab, wv); // дополнения (features3.js) вешают свои обработчики
   return wv;
 }
 
@@ -965,6 +966,7 @@ window.addEventListener('DOMContentLoaded', async function init() {
   renderVpn(await L.vpn.state());
   window.featuresInit && window.featuresInit();
   window.features2Init && window.features2Init();
+  window.features3Init && window.features3Init();
   // «Включать VPN при запуске»: ждём прокси, чтобы вкладки не успели открыться напрямую
   if (settings.vpnAuto) { try { renderVpn(await L.vpn.startup()); } catch {} }
   if (!restoreSession()) createTab();
