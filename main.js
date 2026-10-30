@@ -94,7 +94,13 @@ let gpuLine = '';
 { const orig = console.info.bind(console); console.info = (...a) => { orig(...a); if (typeof a[0] === 'string' && a[0].startsWith('[adblock]')) diag.log('info', 'блокировщик', a.join(' ').slice(10)); }; }
 for (const lvl of ['warn', 'error']) {
   const orig = console[lvl].bind(console);
-  console[lvl] = (...a) => { orig(...a); diag.log(lvl, 'main', a.map((x) => (x && x.stack) || (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); };
+  console[lvl] = (...a) => {
+    orig(...a);
+    const text = a.map((x) => (x && x.stack) || (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+    // Electron сам пишет «Error occurred in handler for GUEST_VIEW_MANAGER_CALL … (-3)», когда загрузку вкладки прервали
+    // переходом на другую страницу, — это обычное дело, а не ошибка
+    diag.log(/GUEST_VIEW_MANAGER_CALL[\s\S]*\(-3\)/.test(text) ? 'debug' : lvl, 'main', text);
+  };
 }
 process.on('uncaughtException', (e) => {
   diag.log('crash', 'main', e);
