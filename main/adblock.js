@@ -42,25 +42,57 @@ class AdBlock {
     } catch { this.blocker = null; }
     const stale = !fs.existsSync(this.cacheFile) || Date.now() - fs.statSync(this.cacheFile).mtimeMs > 864e5;
     // 2) свежие списки (первый запуск — ждём, дальше — фоном)
+    // Каждый список качаем отдельно: прямо, потом через зеркало, потом другими путями (VPN). Не скачался —
+    // берём его прошлую копию с диска. Раньше один оборванный провайдером список (ERR_CONNECTION_RESET)
+    // срывал всё обновление, и блокировщик неделями работал на старых правилах.
     const refresh = async () => {
       try {
         // реклама Яндекса, ЖЖ, VK и других русских сайтов есть только в русских списках
         const RU = ['https://filters.adtidy.org/extension/ublock/filters/1.txt', 'https://easylist-downloads.adblockplus.org/advblock.txt'];
         const base = lib.adsAndTrackingLists || lib.fullLists;
-        const fresh = base
-          ? await ElectronBlocker.fromLists(fetchFn, [...base, ...RU], { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true })
-          : await ElectronBlocker.fromPrebuiltAdsAndTracking(fetchFn);
+        let fresh;
+        if (base) {
+          const got = await Promise.all([...base, ...RU].map((u) => this.fetchList(u, fetchFn)));
+          const missing = got.filter((g) => !g.text).map((g) => g.url);
+          if (missing.length) throw new Error('не скачались и нет копии: ' + missing.join(', '));
+          fresh = ElectronBlocker.parse(got.map((g) => g.text).join('\n'), { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true });
+          const net = got.filter((g) => g.from !== 'кэш').length;
+          console.info(`[adblock] списки обновлены: ${net} из ${got.length} из сети${got.some((g) => g.from === 'зеркало') ? ' (часть через зеркало)' : ''}${net < got.length ? ', остальные из сохранённой копии' : ''}`);
+          this.lastNet = net === got.length;
+        } else fresh = await ElectronBlocker.fromPrebuiltAdsAndTracking(fetchFn);
         withExceptions(lib, fresh);
         fs.writeFileSync(this.cacheFile, Buffer.from(fresh.serialize()));
         const was = this.blocker;
         this.blocker = fresh;
         if (was) for (const s of this.sessions) { try { was.disableBlockingInSession(s); } catch {} this.attach(s); }
         else for (const s of this.sessions) this.attach(s);
-      } catch (e) { console.warn('adblock lists', e.message); }
+      } catch (e) { console.warn('adblock lists', e.message); this.lastNet = false; }
+      // не всё пришло из сети — пробуем ещё раз через полчаса (не больше 6 раз за запуск)
+      if (!this.lastNet && (this.retries = (this.retries || 0) + 1) <= 6) setTimeout(refresh, 30 * 60e3);
     };
     if (!this.blocker) await refresh(); else if (stale) refresh();
     if (this.blocker) for (const s of this.sessions) this.attach(s);
     return !!this.blocker;
+  }
+
+  // один список: прямо → зеркало (jsDelivr для GitHub) → запасные пути (VPN) → копия с диска
+  async fetchList(url, fetchFn) {
+    const dir = path.join(path.dirname(this.cacheFile), 'adblock-lists');
+    const file = path.join(dir, url.replace(/^https?:\/\//, '').replace(/[^a-z0-9.-]+/gi, '_').slice(-150));
+    const mirror = (u) => { const m = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/.exec(u); return m ? `https://cdn.jsdelivr.net/gh/${m[1]}/${m[2]}@${m[3]}/${m[4]}` : null; };
+    const tries = [['сеть', url, fetchFn], ['зеркало', mirror(url), fetchFn], ...(this.extraFetch ? [['VPN', url, this.extraFetch]] : [])].filter((t) => t[1]);
+    for (const [from, u, f] of tries) {
+      const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 45e3);
+      try {
+        const r = await f(u, { signal: ctrl.signal, cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const text = await r.text();
+        if (text.length < 200 || /^\s*</.test(text)) throw new Error('пустой ответ'); // страница-заглушка провайдера вместо списка
+        try { fs.mkdirSync(dir, { recursive: true }); fs.promises.writeFile(file, text).catch(() => {}); } catch {}
+        return { url, text, from };
+      } catch (e) { console.info(`[adblock] ${from}: ${url} — ${e.message}`); } finally { clearTimeout(t); }
+    }
+    try { return { url, text: await fs.promises.readFile(file, 'utf8'), from: 'кэш' }; } catch { return { url, text: '', from: '' }; }
   }
 
   hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }

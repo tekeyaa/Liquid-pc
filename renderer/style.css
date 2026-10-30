@@ -723,3 +723,17 @@ body.game #progress::after { animation-play-state: paused; }
 
 /* ---------- уведомления ---------- */
 #toast { transition: opacity .25s var(--ease), transform .55s var(--spring); }
+
+/* ---------- «Почему не открылось?» (1.8) ---------- */
+#netPop { width: 420px; max-height: calc(100vh - 124px); overflow-y: auto; }
+.net-verdict { padding: 11px 13px; border-radius: 14px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); line-height: 1.45; margin-bottom: 10px; }
+.net-verdict.wait { color: var(--muted); }
+.net-verdict.wait::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--accent-2); animation: spin .8s linear infinite; }
+.net-checks { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.net-check { display: grid; grid-template-columns: 16px 1fr; gap: 8px; padding: 6px 4px; font-size: 12.5px; animation: itemIn .35s var(--spring) both; }
+.net-check i { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; background: var(--faint); }
+.net-check.ok i { background: var(--ok); } .net-check.bad i { background: var(--bad); } .net-check.warn i { background: #fbbf24; }
+.net-check b { font-weight: 600; display: block; } .net-check span { color: var(--muted); }
+.net-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.net-acts .btn { height: 32px; flex: 1 1 auto; }
+.net-acts .btn[hidden] { display: none; }

@@ -226,6 +226,19 @@
               <option value="bing">Bing</option>
             </select>
           </label>
+          <h4>Сеть</h4>
+          <label class="field">
+            <span>Безопасный DNS — провайдер не видит и не подменяет адреса сайтов</span>
+            <select id="dns">
+              <option value="auto">Автоматически (Cloudflare, Google, AdGuard)</option>
+              <option value="cloudflare">Cloudflare</option>
+              <option value="google">Google</option>
+              <option value="adguard">AdGuard (ещё и режет рекламу)</option>
+              <option value="yandex">Яндекс</option>
+              <option value="off">Выключен — DNS провайдера</option>
+            </select>
+          </label>
+          <label class="switch-row"><span>Перезагружать страницу, если она зависла пустой</span><input type="checkbox" id="stallRetry" class="switch" /></label>
           <h4>Вкладки и файлы</h4>
           <label class="switch-row"><span>Открывать вкладки прошлого сеанса</span><input type="checkbox" id="restore" class="switch" /></label>
           <label class="switch-row"><span>Спрашивать, куда сохранять файлы</span><input type="checkbox" id="dlAsk" class="switch" /></label>
@@ -424,6 +437,7 @@
     <button data-m="pip"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><rect x="12" y="11.5" width="7" height="5.5" rx="1.2" fill="currentColor" stroke="none"/></svg>Картинка в картинке<kbd>Alt+P</kbd></button>
     <button data-m="game"><svg viewBox="0 0 24 24"><path d="M7 8h10a4 4 0 0 1 4 4v1.5a3 3 0 0 1-5.4 1.8L14.5 14h-5l-1.1 1.3A3 3 0 0 1 3 13.5V12a4 4 0 0 1 4-4z"/><path d="M8 10.5v3M6.5 12h3"/></svg><span id="gameMenuLbl">Игровой режим</span></button>
     <hr />
+    <button data-m="netdiag"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3M11 8v3.5M11 14h.01"/></svg>Почему не открылось?</button>
     <button data-m="debug"><svg viewBox="0 0 24 24"><path d="M9 7.5V6a3 3 0 0 1 6 0v1.5M7 10a5 5 0 0 1 10 0v4a5 5 0 0 1-10 0zM12 10v9"/></svg>Журнал ошибок<kbd id="menuErrCount"></kbd></button>
     <button data-m="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M4.2 7.5l2.1 1.2M17.7 15.3l2.1 1.2M4.2 16.5l2.1-1.2M17.7 8.7l2.1-1.2"/></svg>Настройки</button>
   </div>
@@ -464,6 +478,19 @@
       <span id="trAlwaysLbl">Всегда переводить этот сайт</span>
       <input type="checkbox" id="trAlways" class="switch" />
     </label>
+  </div>
+
+  <!-- Почему не открылось -->
+  <div id="netPop" class="pop glass">
+    <div class="big">Почему не открылось?</div>
+    <div class="muted sm" id="netHost" style="margin:4px 0 12px"></div>
+    <div id="netVerdict" class="net-verdict"></div>
+    <div id="netChecks" class="net-checks"></div>
+    <div class="net-acts">
+      <button class="btn ghost sm" id="netRetry">Проверить ещё раз</button>
+      <button class="btn ghost sm" id="netClear">Очистить данные сайта</button>
+      <button class="btn primary sm" id="netReload">Перезагрузить</button>
+    </div>
   </div>
 
   <!-- Реклама -->
@@ -516,6 +543,7 @@
   <script src="features.js"></script>
   <script src="features2.js"></script>
   <script src="diag.js"></script>
+  <script src="features3.js"></script>
   <script src="motion.js"></script>
 </body>
 </html>

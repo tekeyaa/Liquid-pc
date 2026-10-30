@@ -26,6 +26,9 @@ window.addEventListener('unhandledrejection', (e) => L.diag.log('error', 'инт
 
 
 // ---------- утилиты ----------
+// loadURL отклоняется, если загрузку прервали (ушли на другую страницу, перезагрузили) — это не ошибка;
+// настоящие ошибки загрузки и так приходят событием did-fail-load и показываются страницей «Не открылось»
+const quiet = (p) => { if (p && p.catch) p.catch(() => {}); return p; };
 let toastT;
 function toast(text, error, action) {
   if (error) L.diag.log('warn', 'сообщение', text); // всё, что браузер показал как ошибку, тоже пишем
@@ -147,12 +150,12 @@ function attachWebview(tab, url) {
       const r = await L.vpnUnblock(e.validatedURL);
       if (r.ok) {
         toast(`${r.host} похоже заблокирован — открываю через VPN`);
-        wv.loadURL(e.validatedURL);
+        quiet(wv.loadURL(e.validatedURL));
         return;
       }
     }
     const hint = settings._vpnOn ? '' : 'vpn';
-    wv.loadURL(`${ERRPAGE}#${encodeURIComponent(JSON.stringify({ url: e.validatedURL, code: e.errorCode, desc: e.errorDescription, hint }))}`);
+    quiet(wv.loadURL(`${ERRPAGE}#${encodeURIComponent(JSON.stringify({ url: e.validatedURL, code: e.errorCode, desc: e.errorDescription, hint }))}`));
   });
   // событие «crashed» в новых Electron убрано — падение вкладки приходит только так
   wv.addEventListener('render-process-gone', (e) => {
@@ -169,6 +172,7 @@ function attachWebview(tab, url) {
   });
   $('#views').appendChild(wv);
   layoutViews();
+  window.onWebviewCreated && window.onWebviewCreated(tab, wv); // дополнения (features3.js) вешают свои обработчики
   return wv;
 }
 
@@ -428,7 +432,7 @@ function navigate(input) {
   const url = toUrl(input);
   if (!active) return createTab(url);
   if (!active.wv) attachWebview(active, url);
-  else active.wv.loadURL(url === NEWTAB ? newtabUrl() : url);
+  else quiet(active.wv.loadURL(url === NEWTAB ? newtabUrl() : url));
   active.wv.focus();
 }
 
@@ -650,7 +654,7 @@ $('#shield').onclick = () => {
 $('#dangerLeave').onclick = () => {
   $('#danger').classList.remove('open');
   if (!active) return;
-  if (active.wv.canGoBack()) active.wv.goBack(); else active.wv.loadURL(newtabUrl());
+  if (active.wv.canGoBack()) active.wv.goBack(); else quiet(active.wv.loadURL(newtabUrl()));
 };
 $('#dangerStay').onclick = () => $('#danger').classList.remove('open');
 $('#guard').onchange = async (e) => { settings = await L.settings.set({ guard: e.target.checked }); };
@@ -965,6 +969,7 @@ window.addEventListener('DOMContentLoaded', async function init() {
   renderVpn(await L.vpn.state());
   window.featuresInit && window.featuresInit();
   window.features2Init && window.features2Init();
+  window.features3Init && window.features3Init();
   // «Включать VPN при запуске»: ждём прокси, чтобы вкладки не успели открыться напрямую
   if (settings.vpnAuto) { try { renderVpn(await L.vpn.startup()); } catch {} }
   if (!restoreSession()) createTab();
