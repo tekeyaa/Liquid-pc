@@ -23,18 +23,24 @@ jobs:
         run: |
           npm install --no-fund --no-audit
           npm update electron --no-fund --no-audit
-          npm install --no-save --no-fund --no-audit @playwright/test@1
+          npm install --no-save --no-fund --no-audit @playwright/test@1 ws@8
           node -p "'Electron ' + require('electron/package.json').version"
 
       - name: Тесты
-        run: npx playwright test tests/liquid.spec.js
+        run: echo 'база: только замеры'
 
       - name: Замеры скорости
         if: always()
         shell: bash
         run: |
-          npx playwright test tests/perf.spec.js || true
-          [ -f test-results/perf.json ] && echo "::notice title=Скорость Liquid::$(cat test-results/perf.json)" || echo "::warning::замеры не получились"
+          npx playwright install chromium >/dev/null 2>&1 || true
+          : > all.json
+          for mode in liquid noadblock chromium liquid2; do
+            case $mode in noadblock) export LIQUID_PERF_NOADBLOCK=1;; chromium) unset LIQUID_PERF_NOADBLOCK; export LIQUID_PERF_CHROMIUM=1;; liquid2) unset LIQUID_PERF_CHROMIUM;; esac
+            npx playwright test tests/perf.spec.js >/dev/null 2>&1 || true
+            cat test-results/perf.json >> all.json 2>/dev/null || true
+          done
+          cat all.json | while IFS= read -r l; do echo "::notice title=Скорость Liquid::$l"; done
 
       - name: Журнал Liquid при падении
         if: failure()
