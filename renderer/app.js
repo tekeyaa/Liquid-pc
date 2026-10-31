@@ -210,7 +210,11 @@ function attachWebview(tab, url) {
   if (!reused) $('#views').appendChild(wv); // заготовка уже на месте: перенос webview в DOM перезапустил бы его
   layoutViews();
   window.onWebviewCreated && window.onWebviewCreated(tab, wv); // дополнения (features3.js) вешают свои обработчики
-  if (reused) quiet(wv.loadURL(url)); // обработчики уже висят — теперь можно грузить
+  if (reused) {
+    // пустая заготовка не должна остаться в истории: «Назад» с первой страницы вкладки вёл бы на белый лист
+    wv.addEventListener('did-navigate', () => { try { wv.clearHistory(); } catch {} }, { once: true });
+    quiet(wv.loadURL(url)); // обработчики уже висят — теперь можно грузить
+  }
   else makeSpare();
   return wv;
 }
