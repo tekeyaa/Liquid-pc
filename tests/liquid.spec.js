@@ -424,7 +424,11 @@ test('Claude (API): сравнение вкладок и кликабельны�
   await win.evaluate(() => window.openCompare());
   await win.locator('#cmpQ').fill('что полезнее');
   await win.locator('#cmpGo').click();
-  await expect.poll(() => claudeReqs.filter((r) => r.stream).length, { timeout: 30_000 }).toBe(1);
+  await expect.poll(() => claudeReqs.filter((r) => r.stream).length, { timeout: 30_000 }).toBe(1).catch(async (e) => {
+    // диагностика: почему запрос не ушёл (Claude занят, сообщение, режим)
+    const d = await win.evaluate(() => ({ busy: chat.busyId, toast: document.getElementById('toast')?.textContent, mode: settings.claudeMode, web: window.claudeIsWeb(), msgs: document.querySelectorAll('#msgs .msg').length, reqs: 0 })).catch((x) => String(x));
+    throw new Error(e.message + '\nсостояние: ' + JSON.stringify(d) + ' запросов: ' + JSON.stringify(claudeReqs.map((r) => !!r.stream)));
+  });
   const sent = JSON.stringify(claudeReqs.find((r) => r.stream).messages);
   expect(sent).toContain('Сравни');
   expect(sent).toContain('The quick brown fox'); // текст первой страницы

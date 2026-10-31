@@ -972,7 +972,7 @@ async function ask(text) {
   text = text.trim();
   if (!text) return;
   if (webMode()) { sendPageToClaudeWeb(text); return; }
-  if (chat.busyId) return;
+  if (chat.busyId) { toggleSide(true); toast('Claude ещё отвечает на прошлый вопрос — дождись ответа или нажми «Стоп»'); return; } // раньше запрос молча пропадал
   toggleSide(true);
   addMsg('user', text);
   chat.messages.push({ role: 'user', content: text });
