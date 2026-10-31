@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('liquid', {
     max: () => ipcRenderer.send('win:max'),
     close: () => ipcRenderer.send('win:close'),
     onState: on('win:state'),
+    open: (url, x, y) => ipcRenderer.send('win:new', { url, x, y }),
+    onPromote: on('win:promote'),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
@@ -51,6 +53,8 @@ contextBridge.exposeInMainWorld('liquid', {
   relaunch: () => ipcRenderer.send('app:relaunch'),
   part: new URLSearchParams(location.search).get('part') || 'persist:liquid',
   incognito: new URLSearchParams(location.search).get('incognito') === '1',
+  extra: new URLSearchParams(location.search).get('extra') === '1',
+  openUrl: new URLSearchParams(location.search).get('open') || '',
   newIncognito: () => ipcRenderer.send('win:incognito'),
   vpnUnblock: (url) => ipcRenderer.invoke('vpn:unblock', url),
   adblock: { onCount: on('adblock:count') },

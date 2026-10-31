@@ -450,6 +450,67 @@ test('Claude (API) действует на странице и спрашива�
   await expect(win.locator('#msgs .agent-log').last()).toContainText('Нашёл, оплату не делал');
 });
 
+// ---------- 1.13: окна и меню ----------
+test('вкладки перетаскиваются: меняются местами и вытягиваются в отдельное окно', async () => {
+  test.setTimeout(60_000);
+  await win.evaluate(() => closePops());
+  await win.evaluate((u) => navigate(u), `${base}/article.html`);
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/article.html');
+  await win.evaluate((u) => createTab(u), `${base}/form.html`);
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/form.html');
+  const order = () => win.evaluate(() => tabs.filter((t) => t.el.offsetParent).map((t) => t.url));
+  // перетаскиваем последнюю вкладку (form) влево на место предыдущей
+  const box = async (i) => (await win.locator('#tabs .tab:not(.closing)').nth(i).boundingBox());
+  const n = await win.locator('#tabs .tab:not(.closing)').count();
+  const last = await box(n - 1), prev = await box(n - 2);
+  await win.mouse.move(last.x + last.width / 2, last.y + last.height / 2);
+  await win.mouse.down();
+  await win.mouse.move(prev.x + 8, prev.y + prev.height / 2, { steps: 12 });
+  await win.mouse.up();
+  const o = await order();
+  expect(o[o.length - 2]).toContain('/form.html');
+  expect(o[o.length - 1]).toContain('/article.html');
+  // теперь тянем вкладку с формой вниз на страницу и отпускаем — появляется второе окно с ней
+  const before = await win.evaluate(() => tabs.length);
+  const t = await box(n - 2);
+  const newWin = app.waitForEvent('window');
+  await win.mouse.move(t.x + t.width / 2, t.y + t.height / 2);
+  await win.mouse.down();
+  await win.mouse.move(t.x + t.width / 2 + 40, t.y + 320, { steps: 15 });
+  await win.mouse.up();
+  const w2 = await newWin;
+  await w2.waitForLoadState('domcontentloaded');
+  await expect.poll(() => w2.evaluate(() => (active && active.wv ? active.wv.getURL() : '')).catch(() => ''), { timeout: 15_000 }).toContain('/form.html');
+  await expect.poll(() => win.evaluate(() => tabs.length)).toBe(before - 1);
+  expect(await w2.evaluate(() => window.isExtraWin())).toBe(true);
+  // дополнительное окно не трогает сохранённые вкладки главного
+  const saved = await win.evaluate(() => localStorage.getItem('liquid.session'));
+  await w2.evaluate((u) => createTab(u), `${base}/article.html#w2`);
+  await w2.waitForTimeout(800);
+  expect(await win.evaluate(() => localStorage.getItem('liquid.session'))).toBe(saved);
+  // последнюю вкладку дополнительного окна закрыли — окно закрывается
+  const closed = w2.waitForEvent('close');
+  await w2.evaluate(() => { [...tabs].forEach((t) => closeTab(t)); });
+  await closed;
+  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible()).length)).toBeGreaterThanOrEqual(1);
+});
+
+test('меню: плитки и прокрутка в маленьком окне', async () => {
+  await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows().find((x) => x.__liquid && !x.__extra); w.unmaximize(); w.setSize(900, 520); });
+  await expect.poll(() => win.evaluate(() => innerHeight)).toBeLessThan(560);
+  await win.locator('#menuBtn').click();
+  await expect(win.locator('#menuPop')).toHaveClass(/open/);
+  const m = await win.evaluate(() => { const p = document.getElementById('menuPop'); const r = p.getBoundingClientRect(); return { sh: p.scrollHeight, ch: p.clientHeight, bottom: r.bottom, ih: innerHeight, tiles: p.querySelectorAll('button.tile').length, oy: getComputedStyle(p).overflowY }; });
+  expect(m.tiles).toBeGreaterThanOrEqual(15);
+  expect(m.bottom).toBeLessThanOrEqual(m.ih);           // меню не уходит за низ окна
+  expect(m.oy).toBe('auto');
+  expect(m.sh).toBeGreaterThan(m.ch);                   // не влезло — значит листается
+  await win.evaluate(() => { const p = document.getElementById('menuPop'); p.scrollTop = p.scrollHeight; });
+  await expect(win.locator('#menuPop [data-m="settings"]')).toBeInViewport();
+  await win.evaluate(() => closePops());
+  await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows().find((x) => x.__liquid && !x.__extra); w.setSize(1400, 900); });
+});
+
 test('заминки основного процесса (для сведения)', async () => {
   const lines = logText().split('\n').filter((l) => /заминка|списки обновлены|блокировщик\]/.test(l));
   fs.writeFileSync(path.join(ROOT, 'test-results', 'stalls.txt'), lines.join('\n'));

@@ -222,7 +222,7 @@
   window.addEventListener('focus', () => { if (gameOn && active?.frozen) { active.frozen = false; active.el.classList.remove('frozen'); if (active.wcId) L.tabs.freeze([active.wcId], false); } });
   L.game.onState(gameApply);
   function syncGameUi() {
-    $('#gameMenuLbl').textContent = gameOn ? 'Выключить игровой режим' : 'Игровой режим';
+    $('#gameMenuLbl').textContent = gameOn ? 'Выкл. игру' : 'Игровой'; $('#gameMenuLbl').parentElement.classList.toggle('on', gameOn);
     $('#gameBtn').classList.toggle('on', gameOn);
     $('#gameBtn').title = gameOn ? 'Игровой режим включён — нажми, чтобы выключить' : 'Игровой режим: заморозить вкладки и отдать ресурсы игре';
   }

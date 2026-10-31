@@ -11,7 +11,7 @@
   // ================= Пространства и группы =================
   // Пространство — свой набор вкладок («Игры», «Учёба»): переключил — и полоса вкладок целиком другая.
   // Группа — несколько вкладок внутри пространства под цветной меткой; метку можно свернуть.
-  const PRIV = !!L.incognito;
+  const PRIV = !!L.incognito || !!L.extra; // в дополнительных окнах — свои пространства и группы, общие не трогаем
   let spaces = PRIV ? null : lsGet('liquid.spaces', null);
   if (!Array.isArray(spaces) || !spaces.length) spaces = [{ id: 'main', name: 'Основное', color: COLORS[0] }];
   let cur = PRIV ? spaces[0].id : lsGet('liquid.space', spaces[0].id);

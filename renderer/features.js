@@ -15,12 +15,19 @@
   let history = L.incognito ? {} : lsGet('liquid.history', {});
   let bookmarks = lsGet('liquid.bookmarks', []);
   let histT = 0;
+  // окон может быть несколько, история у них общая: перед записью добавляем то, что записали другие окна
+  const mergeHistory = () => { const other = lsGet('liquid.history', {}); for (const k in other) if (!history[k] || other[k].at > history[k].at) history[k] = other[k]; };
   const saveHistory = () => { if (L.incognito) return; clearTimeout(histT); histT = setTimeout(() => {
+    mergeHistory();
     const keys = Object.keys(history);
     if (keys.length > 4000) keys.sort((a, b) => history[a].at - history[b].at).slice(0, keys.length - 4000).forEach((k) => delete history[k]);
     lsSet('liquid.history', history);
   }, 800); };
   const saveBookmarks = () => lsSet('liquid.bookmarks', bookmarks);
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'liquid.history' && !L.incognito) mergeHistory();
+    if (e.key === 'liquid.bookmarks') { bookmarks = lsGet('liquid.bookmarks', []); try { syncOmniExtras(active); } catch {} }
+  });
 
   window.historyAdd = (tab, url) => {
     if (L.incognito || !isWeb(url)) return;
@@ -404,6 +411,7 @@
     const m = b.dataset.m;
     ({
       newtab: () => createTab(),
+      newwin: () => L.win.open(''),
       incognito: () => L.newIncognito(),
       reopen: () => reopenClosed(),
       bookmarks: () => window.openLibrary('bookmarks'),

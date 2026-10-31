@@ -228,9 +228,13 @@ function allSessions() { return [ses, ...incognito.values()].filter(Boolean); }
 function broadcast(ch, data) { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.__liquid) w.webContents.send(ch, data); }
 function hostOf(wc) { return wc?.hostWebContents || wc; }
 
-function createWindow({ priv = false } = {}) {
+// extra — дополнительное окно (вытянутая вкладка, «Новое окно»): та же сессия, но свои вкладки, сессию не сохраняет.
+// open — адрес первой вкладки; x/y — где появиться (под курсором, когда вкладку вытянули мышью)
+function createWindow({ priv = false, extra = false, open = '', x, y, from = null } = {}) {
+  const size = from && !from.isDestroyed() && !from.isMaximized() ? from.getSize() : [1400, 900];
+  const pos = Number.isFinite(x) && Number.isFinite(y) ? { x: Math.round(x - 120), y: Math.round(y - 18) } : {};
   const w = new BrowserWindow({
-    width: 1400, height: 900, minWidth: 760, minHeight: 500,
+    width: size[0], height: size[1], minWidth: 760, minHeight: 500, ...pos,
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     backgroundColor: priv ? '#0b0812' : '#0a0a12',
@@ -245,6 +249,7 @@ function createWindow({ priv = false } = {}) {
     },
   });
   w.__liquid = true;
+  w.__extra = extra && !priv;
   let part = 'persist:liquid';
   if (priv) {
     // Инкогнито: сессия только в памяти — после закрытия окна куки, кэш и история исчезают
@@ -254,7 +259,7 @@ function createWindow({ priv = false } = {}) {
     setupSession(s, true);
     w.on('closed', () => { const s2 = incognito.get(w); incognito.delete(w); try { s2.clearStorageData(); s2.clearCache(); } catch {} });
   }
-  w.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { part, ...(priv ? { incognito: '1' } : {}) } });
+  w.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { part, ...(priv ? { incognito: '1' } : {}), ...(w.__extra ? { extra: '1' } : {}), ...(open ? { open } : {}) } });
   w.on('maximize', () => w.webContents.send('win:state', { max: true }));
   // боковые кнопки мыши в Windows приходят ещё и командой окна — так они работают и над видео в фреймах
   w.on('app-command', (_e, cmd) => { if (cmd === 'browser-backward' || cmd === 'browser-forward') w.webContents.send('shortcut', { key: cmd === 'browser-backward' ? 'navBack' : 'navForward' }); });
@@ -262,7 +267,14 @@ function createWindow({ priv = false } = {}) {
   w.on('enter-full-screen', () => w.webContents.send('win:state', { full: true }));
   w.on('leave-full-screen', () => w.webContents.send('win:state', { full: false }));
   w.webContents.on('before-input-event', (e, input) => handleShortcut(e, input, w.webContents));
-  if (!priv) { win = w; w.on('closed', () => { if (win === w) win = null; if (mini && !mini.isDestroyed()) mini.close(); }); } // без главного окна видео поверх тоже закрываем
+  if (!priv && !w.__extra) win = w;
+  w.on('closed', () => {
+    if (win !== w) return;
+    // главное окно закрыли, а дополнительные открыты — главным становится одно из них (оно и сохранит вкладки)
+    win = BrowserWindow.getAllWindows().find((o) => !o.isDestroyed() && o.__extra) || null;
+    if (win) { win.__extra = false; win.webContents.send('win:promote'); }
+    else if (mini && !mini.isDestroyed()) mini.close(); // без окон браузера видео поверх тоже закрываем
+  });
   return w;
 }
 
@@ -298,6 +310,7 @@ function handleShortcut(e, input, target) {
   if (hit === 's' && !input.shift) return; // Ctrl+S оставляем сайтам
   if (hit === 's') { e.preventDefault(); target.send('shortcut', { key: 'shot' }); return; }
   if (hit === 'n' && input.shift) { e.preventDefault(); createWindow({ priv: true }); return; }
+  if (hit === 'n') { e.preventDefault(); createWindow({ extra: true, from: BrowserWindow.fromWebContents(target) || BrowserWindow.fromWebContents(hostOf(target)) }); return; } // Ctrl+N — новое окно, как в Chrome
   if (hit === 'f') { target.send('shortcut', { key: 'f' }); e.preventDefault(); return; }
   e.preventDefault();
   target.send('shortcut', { key: hit, shift: input.shift });
@@ -1354,6 +1367,11 @@ function registerIpc() {
 
   // окна
   ipcMain.on('win:incognito', () => createWindow({ priv: true }));
+  // вкладку вытянули за пределы окна (или «В отдельное окно» / «Новое окно» в меню)
+  ipcMain.on('win:new', (e, { url, x, y } = {}) => {
+    const open = typeof url === 'string' && /^(https?|file|about):/i.test(url) ? url.slice(0, 8000) : '';
+    createWindow({ extra: true, open, x, y, from: bw(e) });
+  });
 
   // перевод страниц (вызывается из preload сайтов)
   ipcMain.handle('translate:batch', (e, texts) => {

@@ -88,6 +88,7 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
     if (e.button === 1) { e.preventDefault(); closeTab(tab); return; }
     if (e.button === 0 && !e.target.closest('.x')) activate(tab);
   });
+  el.addEventListener('pointerdown', (e) => { if (e.button === 0 && !e.target.closest('.x')) tabDrag(tab, e); });
   el.addEventListener('contextmenu', (e) => { e.preventDefault(); tabMenu(tab, e.clientX, e.clientY); });
   el.querySelector('.x').addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab); });
 
@@ -305,10 +306,11 @@ function layoutViews() {
   }
 }
 
-function closeTab(tab) {
+function closeTab(tab, opts) {
   const i = tabs.indexOf(tab);
   if (i < 0) return;
-  if (!L.incognito && !isInternal(tab.url)) { closedTabs.push({ url: tab.wv ? tab.wv.getURL() : tab.url, title: tab.title, i }); if (closedTabs.length > 25) closedTabs.shift(); }
+  const moved = !!(opts && opts.moved); // вкладку унесли в другое окно — в «закрытые» не кладём
+  if (!moved && !L.incognito && !isInternal(tab.url)) { closedTabs.push({ url: tab.wv ? tab.wv.getURL() : tab.url, title: tab.title, i }); if (closedTabs.length > 25) closedTabs.shift(); }
   if (split && (tab === split.left || tab === split.right)) endSplit(true, tab);
   tabs.splice(i, 1);
   tab.el.classList.add('closing');
@@ -319,10 +321,68 @@ function closeTab(tab) {
     // следующая вкладка — из того же пространства (features4.js), иначе соседняя
     const next = window.nextTabAfterClose ? window.nextTabAfterClose(i, tab) : tabs[Math.min(i, tabs.length - 1)];
     if (next) activate(next);
+    else if (extraWin) { L.win.close(); return; } // в дополнительном окне закрыли последнюю вкладку — закрываем окно, как Chrome
     else createTab();
   }
   saveSession();
 }
+
+// ---------- перетаскивание вкладок: порядок и вынос в отдельное окно ----------
+// Потянул вкладку вдоль полосы — она меняется местами с соседями (в пределах своей группы).
+// Вытянул вниз на страницу или за край окна и отпустил — вкладка открывается в новом окне под курсором.
+function tearOutAt(ev) {
+  const row = $('#tabsrow').getBoundingClientRect();
+  return ev.clientY > row.bottom + 56 || ev.clientY < -8 || ev.clientX < -8 || ev.clientX > innerWidth + 8;
+}
+function moveTabNear(tab, target, before) {
+  if (tab === target) return;
+  target.el.parentNode.insertBefore(tab.el, before ? target.el : target.el.nextSibling);
+  tabs.splice(tabs.indexOf(tab), 1);
+  tabs.splice(tabs.indexOf(target) + (before ? 0 : 1), 0, tab);
+}
+function tabDrag(tab, e) {
+  const el = tab.el, sx = e.clientX, sy = e.clientY, pid = e.pointerId;
+  let moving = false, moved = false;
+  try { el.setPointerCapture(pid); } catch {} // мышь продолжаем слышать и за пределами окна
+  const move = (ev) => {
+    if (!moving) {
+      if (Math.abs(ev.clientX - sx) < 6 && Math.abs(ev.clientY - sy) < 6) return;
+      moving = true; el.classList.add('dragging'); document.body.classList.add('tab-dragging');
+    }
+    const out = tearOutAt(ev) && !L.incognito;
+    el.classList.toggle('tear', out);
+    document.body.classList.toggle('tab-tearing', out);
+    if (out) return;
+    // сосед под курсором: та же группа и пространство, середину перешли — меняемся местами
+    for (const t of tabs) {
+      if (t === tab || t.el.offsetParent === null || t.group !== tab.group || t.space !== tab.space) continue;
+      const r = t.el.getBoundingClientRect();
+      if (ev.clientX < r.left || ev.clientX > r.right) continue;
+      const before = ev.clientX < r.left + r.width / 2;
+      const ti = tabs.indexOf(t), mi = tabs.indexOf(tab);
+      if ((before && mi > ti) || (!before && mi < ti)) { moveTabNear(tab, t, before); moved = true; fitTabs(); }
+      break;
+    }
+  };
+  const up = (ev) => {
+    el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
+    try { el.releasePointerCapture(pid); } catch {}
+    el.classList.remove('dragging', 'tear'); document.body.classList.remove('tab-dragging', 'tab-tearing');
+    if (!moving) return;
+    if (ev.type === 'pointerup' && tearOutAt(ev)) { tearOffTab(tab, ev.screenX, ev.screenY); return; }
+    if (moved) saveSession();
+  };
+  el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+}
+// открыть вкладку в новом окне (x, y — экранные координаты курсора; без них окно встанет само)
+function tearOffTab(tab, x, y) {
+  if (L.incognito) { toast('Вкладку из инкогнито нельзя унести в обычное окно'); return; }
+  if (tabs.length < 2) { toast('Это единственная вкладка в окне'); return; }
+  const url = tab.wv ? (safeUrl(tab.wv) || tab.url) : tab.url;
+  L.win.open(isInternal(url) ? '' : url, x, y);
+  closeTab(tab, { moved: true });
+}
+window.tearOffTab = tearOffTab;
 
 function reopenClosed() {
   const c = closedTabs.pop();
@@ -391,6 +451,7 @@ function tabMenu(tab, x, y) {
     ['Открыть рядом с текущей', () => { if (tab === active) startSplit(); else startSplitWith(active, tab); }],
     [tab.sleeping ? 'Разбудить' : 'Усыпить (освободить память)', () => { if (tab.sleeping) activate(tab); else if (!sleepTab(tab)) toast('Эту вкладку сейчас нельзя усыпить'); }],
     ['Дублировать', () => createTab(tab.wv ? tab.wv.getURL() : tab.url, { after: tab })],
+    ...(L.incognito ? [] : [['В отдельное окно', () => tearOffTab(tab)]]),
     ...(window.tabMenuExtra ? window.tabMenuExtra(tab) : []), // группы и пространства (features4.js)
     null,
     ['Закрыть другие', () => (window.visibleTabs ? window.visibleTabs() : tabs).filter((t) => t !== tab).forEach(closeTab)],
@@ -416,8 +477,14 @@ function startSplitWith(left, right) {
 
 // ---------- восстановление сессии ----------
 let saveT = 0;
+// дополнительное окно (вытянутая вкладка, Ctrl+N) свои вкладки не сохраняет — иначе затёрло бы вкладки главного.
+// Если главное закрыли, это окно становится главным и начинает сохранять
+let extraWin = !!L.extra;
+window.isExtraWin = () => extraWin;
+L.win.onPromote(() => { extraWin = false; document.body.classList.remove('extra-win'); saveSession(); });
+if (extraWin) document.body.classList.add('extra-win');
 function saveSession() {
-  if (L.incognito) return;
+  if (L.incognito || extraWin) return;
   clearTimeout(saveT);
   saveT = setTimeout(writeSession, 400);
 }
@@ -447,7 +514,7 @@ function restoreSession() {
   activate(tabs[ai]);
   return true;
 }
-window.addEventListener('beforeunload', () => { clearTimeout(saveT); if (!L.incognito) writeSession(); });
+window.addEventListener('beforeunload', () => { clearTimeout(saveT); if (!L.incognito && !extraWin) writeSession(); });
 
 function fitTabs() {
   requestAnimationFrame(() => {
@@ -1056,5 +1123,6 @@ window.addEventListener('DOMContentLoaded', async function init() {
   window.features3Init && window.features3Init();
   // «Включать VPN при запуске»: ждём прокси, чтобы вкладки не успели открыться напрямую
   if (settings.vpnAuto) { try { renderVpn(await L.vpn.startup()); } catch {} }
-  if (!restoreSession()) createTab();
+  if (L.openUrl) createTab(L.openUrl); // окно для вытянутой вкладки
+  else if (extraWin || !restoreSession()) createTab();
 });

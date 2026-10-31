@@ -388,6 +388,17 @@ body.incognito #bg { background: radial-gradient(60vw 60vw at 8% -10%, rgba(91,6
 .pop.menu button svg { color: var(--muted); }
 .pop.menu kbd { margin-left: auto; font: inherit; font-size: 11px; color: var(--faint); }
 .pop.menu hr { border: 0; border-top: 1px solid rgba(255,255,255,.08); margin: 5px 6px; }
+/* Компактное меню: частые действия — плитками по 4 в ряд, остальное — строками. В низком окне меню листается */
+.pop.menu { width: 316px; max-height: calc(100vh - 116px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; }
+.pop.menu > button { padding: 7px 11px; }
+.pop.menu .mgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; }
+.pop.menu .mgrid.g3 { grid-template-columns: repeat(3, 1fr); }
+.pop.menu button.tile { position: relative; flex-direction: column; justify-content: center; gap: 5px; padding: 9px 2px 7px; text-align: center; min-width: 0; }
+.pop.menu button.tile span { font-size: 11px; line-height: 1.15; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .15s; }
+.pop.menu button.tile:hover span, .pop.menu button.tile.on span { color: var(--text); }
+.pop.menu button.tile.on svg { color: var(--accent, #9b8cff); }
+.pop.menu button.tile kbd:not(:empty) { position: absolute; top: 4px; right: 12px; margin: 0; min-width: 16px; padding: 0 4px; border-radius: 8px; background: #e5484d; color: #fff; font-size: 10px; line-height: 16px; }
+.pop.menu button.tile kbd:empty { display: none; }
 .pop.small { width: 300px; }
 #trPop, #adPop { top: 104px; }
 
@@ -813,3 +824,10 @@ body.game #progress::after { animation-play-state: paused; }
 .agent-log div { margin: 2px 0; }
 .agent-stop { margin-top: 8px; padding: 5px 12px; border-radius: 9px; background: rgba(255,255,255,.1); font-size: 12px; }
 .agent-stop:hover { background: rgba(255,107,107,.3); }
+
+/* Перетаскивание вкладок: вкладка приподнята, страница под курсором не перехватывает мышь */
+body.tab-dragging, body.tab-dragging * { cursor: grabbing !important; }
+body.tab-dragging #views webview { pointer-events: none; }
+#tabs .tab.dragging { z-index: 3; box-shadow: 0 6px 18px rgba(0,0,0,.35); transform: translateY(-1px) scale(1.03); transition: transform .2s var(--spring), opacity .2s; }
+#tabs .tab.dragging.tear { opacity: .55; transform: translateY(6px) scale(.94); }
+body.tab-tearing #views { outline: 2px dashed rgba(255,255,255,.22); outline-offset: -8px; border-radius: 14px; }
