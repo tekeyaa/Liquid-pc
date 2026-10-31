@@ -831,3 +831,4 @@ body.tab-dragging #views webview { pointer-events: none; }
 #tabs .tab.dragging { z-index: 3; box-shadow: 0 6px 18px rgba(0,0,0,.35); transform: translateY(-1px) scale(1.03); transition: transform .2s var(--spring), opacity .2s; }
 #tabs .tab.dragging.tear { opacity: .55; transform: translateY(6px) scale(.94); }
 body.tab-tearing #views { outline: 2px dashed rgba(255,255,255,.22); outline-offset: -8px; border-radius: 14px; }
+#tabs .tab, #tabs .tab img { -webkit-user-drag: none; user-select: none; }

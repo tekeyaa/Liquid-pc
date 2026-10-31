@@ -89,6 +89,7 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
     if (e.button === 0 && !e.target.closest('.x')) activate(tab);
   });
   el.addEventListener('pointerdown', (e) => { if (e.button === 0 && !e.target.closest('.x')) tabDrag(tab, e); });
+  el.addEventListener('dragstart', (e) => e.preventDefault()); // значок — картинка: без этого браузер начинал свой перенос картинки и обрывал наш
   el.addEventListener('contextmenu', (e) => { e.preventDefault(); tabMenu(tab, e.clientX, e.clientY); });
   el.querySelector('.x').addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab); });
 
