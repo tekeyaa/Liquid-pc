@@ -467,7 +467,8 @@ test('вкладки перетаскиваются: меняются места
   const box = async (i) => (await win.locator('#tabs .tab:not(.closing)').nth(i).boundingBox());
   const n = await win.locator('#tabs .tab:not(.closing)').count();
   const last = await box(n - 1), prev = await box(n - 2);
-  await win.mouse.move(last.x + last.width / 2, last.y + last.height / 2);
+  // берём вкладку за значок слева: в середине узкой вкладки может оказаться крестик
+  await win.mouse.move(last.x + 14, last.y + last.height / 2);
   await win.mouse.down();
   await win.mouse.move(prev.x + 8, prev.y + prev.height / 2, { steps: 12 });
   await win.mouse.up();
@@ -476,10 +477,12 @@ test('вкладки перетаскиваются: меняются места
   expect(o[o.length - 1]).toContain('/article.html');
   // теперь тянем вкладку с формой вниз на страницу и отпускаем — появляется второе окно с ней
   const before = await win.evaluate(() => tabs.length);
-  const t = await box(n - 2);
-  await win.mouse.move(t.x + t.width / 2, t.y + t.height / 2);
+  await win.waitForTimeout(600); // вкладки доехали на новые места
+  const t = await win.locator('#tabs .tab:not(.closing)').filter({ has: win.locator('.title', { hasText: 'Магазин' }) }).first().boundingBox()
+    || await box(n - 2);
+  await win.mouse.move(t.x + 14, t.y + t.height / 2);
   await win.mouse.down();
-  await win.mouse.move(t.x + t.width / 2 + 40, t.y + 320, { steps: 15 });
+  await win.mouse.move(t.x + 54, t.y + 320, { steps: 15 });
   await win.mouse.up();
   // новое окно — то, у которого в адресе extra=1 (событие window могло прийти и от другого окна)
   let w2 = null;
