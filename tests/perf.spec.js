@@ -38,6 +38,30 @@ test('эталон: Chromium', async () => {
   fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'Chromium (эталон)', loadMedianMs: s[Math.floor(s.length / 2)], loads }) + '\n');
 });
 
+// новая вкладка с сайтом: от нажатия до загрузки — с заготовленной вкладкой и без неё
+test('новые вкладки', async () => {
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK, 'один раз');
+  test.setTimeout(240_000);
+  const open = (u) => win.evaluate((x) => new Promise((done) => {
+    const t0 = performance.now(), t = createTab(x);
+    t.wv.addEventListener('did-finish-load', () => { const ms = Math.round(performance.now() - t0); closeTab(t); done(ms); }, { once: true });
+  }), u);
+  const res = {};
+  for (const mode of ['с заготовкой', 'без заготовки']) {
+    if (mode === 'без заготовки') await win.evaluate(() => { localStorage.setItem('liquid.noSpare', '1'); });
+    const ms = [];
+    for (let k = 0; k < 7; k++) {
+      if (mode === 'с заготовкой') await expect.poll(() => win.evaluate(() => window.spareReady()), { timeout: 15_000 }).toBe(true);
+      else await win.waitForTimeout(1500);
+      ms.push(await open(`${base}/article.html?n=${k}`));
+    }
+    const s = ms.slice(1).sort((a, b) => a - b);
+    res[mode] = { median: s[Math.floor(s.length / 2)], all: ms };
+  }
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
+  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'новая вкладка', ...res }) + '\n');
+});
+
 test('замеры', async () => {
   test.skip(!!process.env.LIQUID_PERF_CHROMIUM, 'только эталон');
   test.setTimeout(240_000);

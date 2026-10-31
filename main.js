@@ -196,20 +196,23 @@ function publicSettings() {
 }
 
 // ---------- безопасный DNS (DNS по HTTPS) ----------
-// Адреса сайтов спрашиваем у DNS по зашифрованному каналу: провайдер не видит и не подменяет ответы.
-// Режим «automatic»: не ответил безопасный DNS — браузер тихо берёт обычный, поэтому сайты не пропадут.
+// По умолчанию — как в Chrome: DNS провайдера, зашифрованный, только если провайдер это умеет.
+// В 1.8.0 по умолчанию стояли Cloudflare и Google, но с конца августа 2026 провайдеры в России глушат их DoH:
+// соединение висит до таймаута, и браузер перед КАЖДЫМ новым сайтом сначала ждал этот таймаут — страницы
+// открывались медленно при хорошем интернете. Сторонние серверы остались выбором в настройках.
 const DNS = {
-  auto: ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query', 'https://dns.adguard-dns.com/dns-query'],
+  auto: null,
   cloudflare: ['https://cloudflare-dns.com/dns-query'],
   google: ['https://dns.google/dns-query'],
   adguard: ['https://dns.adguard-dns.com/dns-query'],
   yandex: ['https://common.dot.dns.yandex.net/dns-query'],
 };
-const dnsMode = (s) => (DNS[s.dns] || s.dns === 'off' ? s.dns : 'auto');
+const dnsMode = (s) => (s.dns in DNS || s.dns === 'off' ? s.dns : 'auto');
 function applyDns() {
   const m = dnsMode(loadSettings());
   try {
     if (m === 'off') app.configureHostResolver({ secureDnsMode: 'off' });
+    else if (!DNS[m]) app.configureHostResolver({ secureDnsMode: 'automatic' }); // как в Chrome
     else app.configureHostResolver({ secureDnsMode: 'automatic', secureDnsServers: DNS[m] });
   } catch (e) { diag.log('warn', 'dns', 'Безопасный DNS не включился: ' + e.message); }
 }
@@ -1134,7 +1137,7 @@ function registerIpc() {
     }
     if (patch.forgetVpn) { s.vpnKey = ''; s.vpnName = ''; }
     if ('antiDpi' in patch) s.antiDpi = !!patch.antiDpi;
-    if ('dns' in patch) s.dns = DNS[patch.dns] || patch.dns === 'off' ? patch.dns : 'auto';
+    if ('dns' in patch) s.dns = patch.dns in DNS || patch.dns === 'off' ? patch.dns : 'auto';
     saveSettings(s);
     if ('dns' in patch) { applyDns(); for (const x of allSessions()) x.closeAllConnections().catch(() => {}); }
     if ('antiDpi' in patch) { dpiRestarts = 0; return (s.antiDpi ? startDpi() : stopDpi()).then(() => publicSettings()); }

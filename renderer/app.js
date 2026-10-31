@@ -98,13 +98,49 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
   return tab;
 }
 
+// Заготовленная вкладка: процесс страницы запускается заранее, в фоне. Новой вкладке не нужно ждать
+// запуска процесса (на Windows это 100–300 мс) — она берёт готовую и сразу начинает грузить сайт.
+// (Запасной процесс самого Chromium вкладкам Liquid не подходит: у них своя сессия.)
+let spareWv = null, spareT = 0;
+function makeSpare() {
+  clearTimeout(spareT);
+  spareT = setTimeout(() => {
+    if (spareWv || document.hidden || document.body.classList.contains('game')) return;
+    try { if (localStorage.getItem('liquid.noSpare')) return; } catch {} // для замеров «без заготовки»
+    const wv = document.createElement('webview');
+    wv.setAttribute('partition', PARTITION);
+    wv.setAttribute('allowpopups', '');
+    wv.setAttribute('webpreferences', 'contextIsolation=yes');
+    wv.src = 'about:blank';
+    wv.className = 'spare';
+    wv.addEventListener('dom-ready', () => { wv.__ready = true; }, { once: true });
+    $('#views').appendChild(wv);
+    spareWv = wv;
+  }, 1200);
+}
+function takeSpare() {
+  const wv = spareWv;
+  if (!wv || !wv.__ready) return null;
+  spareWv = null;
+  wv.classList.remove('spare');
+  makeSpare(); // следующую — заготавливаем снова
+  return wv;
+}
+window.spareReady = () => !!(spareWv && spareWv.__ready);
+
 function attachWebview(tab, url) {
-  const wv = document.createElement('webview');
-  wv.setAttribute('partition', PARTITION);
-  wv.setAttribute('allowpopups', '');
-  wv.setAttribute('webpreferences', 'contextIsolation=yes');
-  wv.src = url;
+  // Заготовка подходит, если вкладка открывается сразу с адресом (а не просыпается из сна со своей историей)
+  let wv = takeSpare();
+  const reused = !!wv;
+  if (!wv) {
+    wv = document.createElement('webview');
+    wv.setAttribute('partition', PARTITION);
+    wv.setAttribute('allowpopups', '');
+    wv.setAttribute('webpreferences', 'contextIsolation=yes');
+    wv.src = url;
+  }
   tab.wv = wv;
+  if (reused) { try { tab.wcId = wv.getWebContentsId(); } catch {} }
   tab.sleeping = false;
   tab.loading = true;
   tab.el.classList.remove('sleeping');
@@ -171,9 +207,15 @@ function attachWebview(tab, url) {
     const r = e.result;
     if (r.finalUpdate) $('#findCount').textContent = r.matches ? `${r.activeMatchOrdinal}/${r.matches}` : '0';
   });
-  $('#views').appendChild(wv);
+  if (!reused) $('#views').appendChild(wv); // заготовка уже на месте: перенос webview в DOM перезапустил бы его
   layoutViews();
   window.onWebviewCreated && window.onWebviewCreated(tab, wv); // дополнения (features3.js) вешают свои обработчики
+  if (reused) {
+    // пустая заготовка не должна остаться в истории: «Назад» с первой страницы вкладки вёл бы на белый лист
+    wv.addEventListener('did-navigate', () => { try { wv.clearHistory(); } catch {} }, { once: true });
+    quiet(wv.loadURL(url)); // обработчики уже висят — теперь можно грузить
+  }
+  else makeSpare();
   return wv;
 }
 
