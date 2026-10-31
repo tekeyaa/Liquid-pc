@@ -2,6 +2,20 @@
 // Движок кэшируется на диск, чтобы старт был мгновенным; списки обновляются раз в сутки в фоне.
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+
+// Собрать движок в служебном процессе (см. adblock-build.js). Не получилось — null, тогда соберём здесь, как раньше
+function buildAside(text) {
+  return new Promise((done) => {
+    let child;
+    try { child = require('electron').utilityProcess.fork(path.join(__dirname, 'adblock-build.js'), [], { serviceName: 'Liquid — сборка блокировщика' }); }
+    catch (e) { console.warn('adblock build process', e.message); done(null); return; }
+    const t = setTimeout(() => { try { child.kill(); } catch {} done(null); }, 60e3);
+    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(new Uint8Array(m.buf)); else { console.warn('adblock build', m && m.error); done(null); } });
+    child.once('exit', () => { clearTimeout(t); done(null); });
+    child.postMessage({ text, exceptions: EXCEPTIONS });
+  });
+}
 
 // Наши исключения из списков. Правило EasyList прячет весь ролик Shorts, если в его контейнере есть рекламный блок;
 // YouTube переиспользует контейнеры, блок остаётся — и обычные Shorts пропадают вместе с кнопками.
@@ -46,6 +60,7 @@ class AdBlock {
     // берём его прошлую копию с диска. Раньше один оборванный провайдером список (ERR_CONNECTION_RESET)
     // срывал всё обновление, и блокировщик неделями работал на старых правилах.
     const refresh = async () => {
+      let built = null;
       try {
         // реклама Яндекса, ЖЖ, VK и других русских сайтов есть только в русских списках
         const RU = ['https://filters.adtidy.org/extension/ublock/filters/1.txt', 'https://easylist-downloads.adblockplus.org/advblock.txt'];
@@ -55,20 +70,33 @@ class AdBlock {
           const got = await Promise.all([...base, ...RU].map((u) => this.fetchList(u, fetchFn)));
           const missing = got.filter((g) => !g.text).map((g) => g.url);
           if (missing.length) throw new Error('не скачались и нет копии: ' + missing.join(', '));
-          fresh = ElectronBlocker.parse(got.map((g) => g.text).join('\n'), { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true });
           const net = got.filter((g) => g.from !== 'кэш').length;
-          console.info(`[adblock] списки обновлены: ${net} из ${got.length} из сети${got.some((g) => g.from === 'зеркало') ? ' (часть через зеркало)' : ''}${net < got.length ? ', остальные из сохранённой копии' : ''}`);
           this.lastNet = net === got.length;
-        } else fresh = await ElectronBlocker.fromPrebuiltAdsAndTracking(fetchFn);
-        withExceptions(lib, fresh);
-        fs.writeFileSync(this.cacheFile, Buffer.from(fresh.serialize()));
+          const text = got.map((g) => g.text).join('\n');
+          // списки не изменились с прошлой сборки — пересобирать незачем (раньше пересобирали каждый раз)
+          const hash = crypto.createHash('sha256').update(text).update(EXCEPTIONS.join('\n')).digest('hex');
+          const hashFile = this.cacheFile + '.sha256';
+          let old = ''; try { old = fs.readFileSync(hashFile, 'utf8'); } catch {}
+          if (this.blocker && old === hash) { console.info(`[adblock] списки не изменились (${net} из ${got.length} из сети) — пересборка не нужна`); return; }
+          const t0 = Date.now();
+          const buf = await buildAside(text);
+          built = buf;
+          if (buf) fresh = ElectronBlocker.deserialize(buf);
+          else { fresh = ElectronBlocker.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true }); withExceptions(lib, fresh); }
+          fs.promises.writeFile(hashFile, hash).catch(() => {});
+          console.info(`[adblock] сборка за ${Date.now() - t0} мс ${buf ? 'в отдельном процессе' : 'в основном процессе'}`);
+          console.info(`[adblock] списки обновлены: ${net} из ${got.length} из сети${got.some((g) => g.from === 'зеркало') ? ' (часть через зеркало)' : ''}${net < got.length ? ', остальные из сохранённой копии' : ''}`);
+        } else { fresh = await ElectronBlocker.fromPrebuiltAdsAndTracking(fetchFn); withExceptions(lib, fresh); }
+        fs.promises.writeFile(this.cacheFile, Buffer.from(built || fresh.serialize())).catch(() => {}); // готовый двоичный движок — без повторной упаковки
         const was = this.blocker;
         this.blocker = fresh;
         if (was) for (const s of this.sessions) { try { was.disableBlockingInSession(s); } catch {} this.attach(s); }
         else for (const s of this.sessions) this.attach(s);
       } catch (e) { console.warn('adblock lists', e.message); this.lastNet = false; }
-      // не всё пришло из сети — пробуем ещё раз через полчаса (не больше 6 раз за запуск)
-      if (!this.lastNet && (this.retries = (this.retries || 0) + 1) <= 6) setTimeout(refresh, 30 * 60e3);
+      finally {
+        // не всё пришло из сети — пробуем ещё раз через полчаса (не больше 6 раз за запуск); пересборка — только если списки изменились
+        if (!this.lastNet && (this.retries = (this.retries || 0) + 1) <= 6) setTimeout(refresh, 30 * 60e3);
+      }
     };
     if (!this.blocker) await refresh(); else if (stale) refresh();
     if (this.blocker) for (const s of this.sessions) this.attach(s);
