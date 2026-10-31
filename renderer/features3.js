@@ -88,7 +88,7 @@
   };
   $('#dns').addEventListener('change', async (e) => {
     settings = await L.settings.set({ dns: e.target.value });
-    toast(settings.dns === 'off' ? 'Безопасный DNS выключен' : 'Безопасный DNS включён — адреса сайтов идут зашифрованно');
+    toast(settings.dns === 'auto' ? 'DNS как в Chrome — через провайдера' : settings.dns === 'off' ? 'Только обычный DNS провайдера' : 'DNS зашифрованный — если сайты станут открываться медленно, верни «Как в Chrome»');
   });
   $('#stallRetry').addEventListener('change', (e) => lsSet('liquid.stallRetry', e.target.checked));
 })();

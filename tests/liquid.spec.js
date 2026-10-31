@@ -255,6 +255,20 @@ test('списки блокировщика рекламы скачиваютс�
   expect(logText(), 'списки рекламы не собрались').toMatch(/списки обновлены/);
 });
 
+// ---------------- 1.12.1: заготовленная вкладка ----------------
+test('новая вкладка берёт заготовку и открывает нужный сайт', async () => {
+  await expect.poll(() => win.evaluate(() => window.spareReady()), { timeout: 15_000 }).toBe(true);
+  const r = await win.evaluate((u) => new Promise((done) => {
+    const t = createTab(u);
+    t.wv.addEventListener('did-finish-load', () => done({ url: t.wv.getURL(), back: t.wv.canGoBack(), id: t.wcId }), { once: true });
+  }), `${base}/article.html`);
+  expect(r.url).toContain('/article.html');
+  expect(r.back).toBe(false);   // в истории вкладки нет пустой заготовки
+  expect(r.id).toBeGreaterThan(0);
+  await expect.poll(() => win.evaluate(() => window.spareReady()), { timeout: 15_000 }).toBe(true); // и заготовлена следующая
+  await win.evaluate(() => closeTab(active));
+});
+
 // ---------------- 1.9: вкладки ----------------
 // открыть адрес в текущей вкладке (печать в адресной строке проверяет отдельный тест выше)
 const openUrl = async (u) => { await win.evaluate((x) => navigate(x), u); await expect.poll(activeUrl, { timeout: 15_000 }).toContain(u.replace(base, '')); };

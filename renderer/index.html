@@ -228,14 +228,14 @@
           </label>
           <h4>Сеть</h4>
           <label class="field">
-            <span>Безопасный DNS — провайдер не видит и не подменяет адреса сайтов</span>
+            <span>DNS — где браузер узнаёт адреса сайтов</span>
             <select id="dns">
-              <option value="auto">Автоматически (Cloudflare, Google, AdGuard)</option>
-              <option value="cloudflare">Cloudflare</option>
-              <option value="google">Google</option>
-              <option value="adguard">AdGuard (ещё и режет рекламу)</option>
-              <option value="yandex">Яндекс</option>
-              <option value="off">Выключен — DNS провайдера</option>
+              <option value="auto">Как в Chrome: DNS провайдера (быстрее всего)</option>
+              <option value="yandex">Яндекс, зашифрованный</option>
+              <option value="cloudflare">Cloudflare, зашифрованный (в России сейчас часто зависает)</option>
+              <option value="google">Google, зашифрованный (в России сейчас часто зависает)</option>
+              <option value="adguard">AdGuard, зашифрованный (ещё и режет рекламу)</option>
+              <option value="off">Только обычный DNS провайдера, без шифрования</option>
             </select>
           </label>
           <label class="switch-row"><span>Перезагружать страницу, если она зависла пустой</span><input type="checkbox" id="stallRetry" class="switch" /></label>
