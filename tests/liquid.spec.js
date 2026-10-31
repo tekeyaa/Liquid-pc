@@ -328,6 +328,11 @@ const vt = (js) => inTab(`(() => { const v = document.getElementById('v'); retur
 
 test('окно поверх игры: открывается с тем же видео, вкладка на паузе', async () => {
   await openUrl(`${base}/video.html`);
+  // диагностика: что на самом деле во вкладке
+  const dbg = await win.evaluate(() => ({ url: active.wv.getURL(), id: active.wv.getWebContentsId(), wcId: active.wcId, src: active.wv.getAttribute('src'), spare: active.wv.className, n: document.querySelectorAll('#views webview').length }));
+  const inMain = await app.evaluate(({ webContents }, id) => { const w = webContents.fromId(id); return w ? { url: w.getURL(), type: w.getType(), loading: w.isLoading() } : null; }, dbg.id);
+  const page = await inTab(`({ href: location.href, v: !!document.getElementById('v'), ready: document.readyState, html: document.documentElement.outerHTML.slice(0, 160) })`).catch((e) => ({ err: String(e.message).slice(0, 200) }));
+  expect(JSON.stringify({ dbg, inMain, page })).toContain('"v":true');
   await expect.poll(() => vt('v.currentTime'), { timeout: 15_000 }).toBeGreaterThan(0.3);
   await win.evaluate(() => window.openMini());
   await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.__mini).length), { timeout: 15_000 }).toBe(1);
