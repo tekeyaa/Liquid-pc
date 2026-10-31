@@ -131,6 +131,12 @@ app.on('child-process-gone', (_e, d) => {
 // вторая копия (ярлык нажали, когда Liquid уже открыт) сразу отдаёт окно первой и не пишет в журнал «Запуск»
 const firstInstance = app.requestSingleInstanceLock();
 if (firstInstance) diag.log('info', 'main', `Запуск Liquid ${app.getVersion()} (Electron ${process.versions.electron})`);
+// Датчик заминок основного процесса: пока он занят, окно не отвечает на клики, а запросы сайтов ждут.
+// Каждая заминка дольше 300 мс — в журнал (в автотестах — всегда, у пользователя — тоже, это дёшево)
+{
+  let last = Date.now();
+  setInterval(() => { const now = Date.now(), lag = now - last - 100; last = now; if (lag > 300) diag.log('warn', 'заминка', `Основной процесс был занят ${lag} мс`); }, 100).unref?.();
+}
 
 // Экономия памяти: без кэша страниц «назад/вперёд». (Замеры 1.12: во вкладках-webview Chromium этот кэш
 // и так не использует, так что на скорость «Назад» это не влияет.)

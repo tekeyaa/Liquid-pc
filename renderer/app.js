@@ -25,6 +25,9 @@ window.addEventListener('error', (e) => L.diag.log('error', 'интерфейс'
 window.addEventListener('unhandledrejection', (e) => L.diag.log('error', 'интерфейс', 'Необработанная ошибка: ' + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
 
 
+// датчик заминок окна браузера: долгие задачи интерфейса (больше 300 мс) — в журнал
+try { new PerformanceObserver((l) => { for (const e of l.getEntries()) if (e.duration > 300) L.diag.log('warn', 'заминка', `Окно браузера было занято ${Math.round(e.duration)} мс`); }).observe({ type: 'longtask', buffered: false }); } catch {}
+
 // ---------- утилиты ----------
 // loadURL отклоняется, если загрузку прервали (ушли на другую страницу, перезагрузили) — это не ошибка;
 // настоящие ошибки загрузки и так приходят событием did-fail-load и показываются страницей «Не открылось»

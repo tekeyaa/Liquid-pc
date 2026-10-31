@@ -443,6 +443,11 @@ test('Claude (API) действует на странице и спрашива�
   await expect(win.locator('#msgs .agent-log').last()).toContainText('Нашёл, оплату не делал');
 });
 
+test('заминки основного процесса (для сведения)', async () => {
+  const lines = logText().split('\n').filter((l) => /заминка|списки обновлены|блокировщик\]/.test(l));
+  fs.writeFileSync(path.join(ROOT, 'test-results', 'stalls.txt'), lines.join('\n'));
+});
+
 test('в журнале нет ошибок браузера', async () => {
   await win.waitForTimeout(1500); // журнал пишет пачками раз в секунду
   expect(logErrors()).toEqual([]);

@@ -43,6 +43,12 @@ jobs:
           done
           cat all.json | while IFS= read -r l; do echo "::notice title=Скорость Liquid::$l"; done
 
+      - name: Заминки и списки рекламы (для сведения)
+        if: always()
+        shell: bash
+        run: |
+          [ -f test-results/stalls.txt ] && tail -40 test-results/stalls.txt | while IFS= read -r l; do echo "::notice title=Журнал::${l:0:300}"; done || true
+
       - name: Журнал Liquid при падении
         if: failure()
         shell: bash
@@ -51,6 +57,7 @@ jobs:
           for f in test-results/userdata-*/logs/*.log; do
             [ -f "$f" ] || continue
             grep -E "\[(WARN|ERROR|CRASH)\]" "$f" | tail -20 | while IFS= read -r l; do echo "::warning::${l:0:900}"; done
+            grep -E "заминка|блокировщик" "$f" | tail -30 | while IFS= read -r l; do echo "::warning title=Заминки::${l:0:300}"; done
           done
 
       - name: Отчёт при падении
