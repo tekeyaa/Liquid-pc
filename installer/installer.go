@@ -513,11 +513,8 @@ func runInstall() (err error) {
 		hidden(exec.Command("taskkill", "/IM", "Liquid.exe", "/F")).Run()
 	}
 	time.Sleep(400 * time.Millisecond)
-	if err = os.RemoveAll(appDir()); err != nil {
-		return fmt.Errorf("не удалось заменить старую версию (закрой Liquid): %v", err)
-	}
-	if err = os.CopyFS(appDir(), os.DirFS(unpacked)); err != nil {
-		return fmt.Errorf("не удалось скопировать браузер: %v", err)
+	if err = swapApp(unpacked, silent); err != nil {
+		return err
 	}
 
 	// Копия установщика — через неё браузер потом сам обновляется
@@ -530,6 +527,58 @@ func runInstall() (err error) {
 	makeShortcuts()
 	registerUninstall(setup)
 	setStep("Готово", .98, 1, .5)
+	return nil
+}
+
+// swapApp подменяет папку браузера целиком или не трогает её вовсе.
+// Раньше старая папка удалялась по файлу: если Liquid в этот момент снова открывали, удаление обрывалось
+// на занятом файле — половина файлов уже стёрта, и браузер переставал работать. Теперь новая версия сначала
+// копируется рядом (app.new), старая отодвигается одним переименованием (на Windows оно не проходит, пока
+// Liquid открыт, — тогда ждём, пока его закроют), и только потом новая встаёт на место.
+func swapApp(unpacked string, silent bool) error {
+	newDir, oldDir := appDir()+".new", appDir()+".old"
+	os.RemoveAll(newDir)
+	os.RemoveAll(oldDir)
+	if err := os.CopyFS(newDir, os.DirFS(unpacked)); err != nil {
+		os.RemoveAll(newDir)
+		return fmt.Errorf("не удалось скопировать браузер: %v", err)
+	}
+	var err error
+	for start, tries := time.Now(), 0; ; tries++ {
+		if _, e := os.Stat(appDir()); os.IsNotExist(e) {
+			err = nil
+			break
+		}
+		if err = os.Rename(appDir(), oldDir); err == nil {
+			break
+		}
+		if silent && liquidRunning() {
+			// Liquid снова открыли — ждём, пока закроют (не дольше недели), старая версия остаётся рабочей
+			if time.Since(start) > 7*24*time.Hour {
+				break
+			}
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		if !silent {
+			hidden(exec.Command("taskkill", "/IM", "Liquid.exe", "/F")).Run()
+		}
+		if tries >= 40 { // ~2 минуты: файл держит не Liquid (антивирус, проводник)
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	if err != nil {
+		os.RemoveAll(newDir)
+		return fmt.Errorf("не удалось заменить старую версию (закрой Liquid): %v", err)
+	}
+	if err = os.Rename(newDir, appDir()); err != nil {
+		os.Rename(oldDir, appDir()) // вернуть прежнюю, чтобы браузер остался рабочим
+		return fmt.Errorf("не удалось поставить новую версию: %v", err)
+	}
+	if e := os.RemoveAll(oldDir); e != nil {
+		logf("старая версия удалится в следующий раз: %v", e)
+	}
 	return nil
 }
 
