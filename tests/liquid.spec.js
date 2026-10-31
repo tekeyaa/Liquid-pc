@@ -241,8 +241,7 @@ test('«Почему не открылось?»: узнаёт обрыв пос�
 
 test('зависшая пустая страница перезагружается сама и пишется в журнал', async () => {
   test.setTimeout(80_000);
-  await win.locator('#url').fill(`${base}/hang`);
-  await win.locator('#url').press('Enter');
+  await win.evaluate((u) => navigate(u), `${base}/hang`);
   await expect.poll(() => hits.hang, { timeout: 10_000 }).toBe(1);
   // через 15 секунд браузер должен сам перезагрузить её (второй запрос) и записать это
   await expect.poll(() => hits.hang, { timeout: 30_000 }).toBe(2);
@@ -435,6 +434,8 @@ test('Claude (API): сравнение вкладок и кликабельны�
 
 test('Claude (API) действует на странице и спрашивает перед «Оплатить»', async () => {
   test.setTimeout(60_000);
+  // тест не должен зависеть от предыдущего: режим API включаем сам
+  await win.evaluate(async () => { closePops(); settings = await L.settings.set({ claudeMode: 'api', claudeKey: 'test-key' }); applyClaudeMode(); });
   await openUrl(`${base}/form.html`);
   await win.evaluate(() => { window.runAgent('найди ноутбук'); });
   // на третьем шаге Claude хочет нажать «Оплатить заказ» — должен появиться вопрос

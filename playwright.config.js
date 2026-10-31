@@ -4,6 +4,8 @@ module.exports = {
   timeout: 90_000,
   expect: { timeout: 10_000 },
   workers: 1,
+  // в GitHub упавший тест повторяется один раз в свежем браузере: серверы без видеокарты иногда подвисают
+  retries: process.env.CI ? 1 : 0,
   fullyParallel: false,
   // в GitHub ошибки ещё и пометками у запуска — их видно без скачивания логов
   reporter: process.env.CI ? [['github'], ['list']] : [['list']],

@@ -875,12 +875,13 @@ $('#newChat').onclick = () => {
 async function pageContext() {
   if (!active || isInternal(active.url)) return null;
   try {
-    return await active.wv.executeJavaScript(`(() => ({
+    const wv = active.wv;
+    return await Promise.race([new Promise((r) => setTimeout(() => r(null), 3000)), wv.executeJavaScript(`(() => ({
       title: document.title,
       url: location.href,
       selection: String(getSelection() || '').slice(0, 4000),
       text: (document.body ? document.body.innerText : '').replace(/\\n{3,}/g, '\\n\\n').slice(0, 40000)
-    }))()`);
+    }))()`)]);
   } catch { return null; }
 }
 
