@@ -1463,9 +1463,9 @@ function registerIpc() {
     else if (op === 'back') { const from = mini.__from; mini.close(); try { win?.webContents.send('mini:back', { wcId: from, t }); win?.focus(); } catch {} }
   });
   // «Смотреть вместе»
-  ipcMain.handle('watch:join', async (_e, code) => { try { return { ok: true, code: await watchRoom().join(code) }; } catch (e) { return { ok: false, error: e.message }; } });
-  ipcMain.handle('watch:send', (_e, m) => (watch ? watch.send(m && typeof m === 'object' ? m : {}) : false));
-  ipcMain.on('watch:leave', () => watch?.leave());
+  ipcMain.handle('watch:join', async (e, code) => { try { return { ok: true, code: await watchRoom(e.sender).join(code) }; } catch (err) { return { ok: false, error: err.message }; } });
+  ipcMain.handle('watch:send', (e, m) => { const r = watchRooms.get(e.sender.id); return r ? r.send(m && typeof m === 'object' ? m : {}) : false; });
+  ipcMain.on('watch:leave', (e) => watchRooms.get(e.sender.id)?.leave());
 
   // снимок вкладки для превью при наведении: маленький JPEG, только своих вкладок
   ipcMain.handle('tab:thumb', async (e, wcId) => {
@@ -1724,15 +1724,20 @@ function openMini({ url, t, wcId }) {
 }
 
 // ---------- «Смотреть вместе» ----------
-let watch = null;
+// У каждого окна — своя комната и свой участник. Раньше комната была одна на весь браузер, а её события уходили
+// только в главное окно: второе окно в той же комнате «перезаходило» за первое, показывало «нет связи», а сообщения
+// между окнами отсеивались как свои же
+const watchRooms = new Map(); // id окна (webContents) -> WatchRoom
 if (TEST && process.env.LIQUID_WATCH_BROKERS) WATCH_BROKERS.splice(0, WATCH_BROKERS.length, ...process.env.LIQUID_WATCH_BROKERS.split(',')); // свой брокер в автотестах
-function watchRoom() {
-  if (!watch) watch = new WatchRoom({
-    onMessage: (m) => { try { win?.webContents.send('watch:msg', m); } catch {} },
-    onStatus: (s) => { try { win?.webContents.send('watch:status', s); } catch {} },
-    log: (lvl, msg) => diag.log(lvl, 'вместе', msg),
-  });
-  return watch;
+function watchRoom(wc) {
+  let r = watchRooms.get(wc.id);
+  if (r) return r;
+  const send = (ch, d) => { try { if (!wc.isDestroyed()) wc.send(ch, d); } catch {} };
+  r = new WatchRoom({ onMessage: (m) => send('watch:msg', m), onStatus: (st) => send('watch:status', st), log: (lvl, msg) => diag.log(lvl, 'вместе', msg) });
+  watchRooms.set(wc.id, r);
+  const id = wc.id;
+  wc.once('destroyed', () => { watchRooms.get(id)?.leave(true); watchRooms.delete(id); }); // окно закрыли — выходим из его комнаты
+  return r;
 }
 
 // ---------- старт ----------
@@ -1833,7 +1838,7 @@ app.whenReady().then(async () => {
 
 });
 
-app.on('before-quit', () => { if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); watch?.leave(true); try { globalShortcut.unregisterAll(); } catch {} });
+app.on('before-quit', () => { if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); for (const r of watchRooms.values()) r.leave(true); try { globalShortcut.unregisterAll(); } catch {} });
 app.on('window-all-closed', () => { if (xray) xray.stop(); app.quit(); });
 
 // Одна копия приложения

@@ -397,6 +397,47 @@ test('смотреть вместе: комната, пауза и перемо�
   await win.evaluate(() => closePops());
 });
 
+test('смотреть вместе: два окна одного браузера видят друг друга и переписываются', async () => {
+  test.setTimeout(120_000);
+  await win.evaluate((u) => navigate(u), `${base}/video.html`);
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/video.html');
+  await win.evaluate(() => window.openWatch());
+  await win.locator('#wtName').fill('Окно1');
+  await win.locator('#wtCreate').click();
+  await expect.poll(() => win.evaluate(() => window.watchState().state), { timeout: 20_000 }).toBe('online');
+  const code = await win.evaluate(() => window.watchState().code);
+  // второе окно того же браузера
+  await win.evaluate((u) => L.win.open(u), `${base}/video.html`);
+  let w2 = null;
+  await expect.poll(() => { w2 = app.windows().find((pg) => /[?&]extra=1/.test(pg.url())) || null; return !!w2; }, { timeout: 15_000 }).toBe(true);
+  await w2.waitForLoadState('domcontentloaded');
+  await expect.poll(() => w2.evaluate(() => (active && active.wv ? active.wv.getURL() : '')).catch(() => ''), { timeout: 20_000 }).toContain('/video.html');
+  await w2.evaluate(() => window.openWatch());
+  await w2.locator('#wtName').fill('Окно2');
+  await w2.locator('#wtCodeIn').fill(code);
+  await w2.locator('#wtGo').click();
+  // оба на связи и видят друг друга (раньше второе окно показывало «нет связи», а первое — «пока только вы»)
+  await expect.poll(() => w2.evaluate(() => window.watchState().state), { timeout: 20_000 }).toBe('online');
+  await expect.poll(() => win.evaluate(() => window.watchState().state), { timeout: 5_000 }).toBe('online');
+  await expect.poll(() => win.evaluate(() => window.watchState().people), { timeout: 40_000 }).toBe(1);
+  await expect.poll(() => w2.evaluate(() => window.watchState().people), { timeout: 40_000 }).toBe(1);
+  // сообщения ходят в обе стороны
+  await w2.locator('#wtInput').fill('привет из второго окна');
+  await w2.locator('#wtSend').click();
+  await expect(win.locator('#wtChat')).toContainText('привет из второго окна', { timeout: 20_000 });
+  await win.locator('#wtInput').fill('ответ из первого');
+  await win.locator('#wtSend').click();
+  await expect(w2.locator('#wtChat')).toContainText('ответ из первого', { timeout: 20_000 });
+  // закрыли второе окно — первое остаётся в комнате и на связи
+  const closed = w2.waitForEvent('close');
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.__extra)?.close());
+  await closed;
+  await win.waitForTimeout(1000);
+  expect(await win.evaluate(() => window.watchState().state)).toBe('online');
+  await win.locator('#wtLeave').click();
+  await win.evaluate(() => closePops());
+});
+
 // ---------------- 1.11: Claude ----------------
 test('пересказ видео: расшифровка с таймкодами из плеера', async () => {
   await openUrl(`${base}/fakeyt.html`);
