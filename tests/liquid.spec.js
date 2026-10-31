@@ -580,8 +580,9 @@ test('размер интерфейса: всё крупнее, меню и на
   // меню под панелью и не уходит за низ окна
   await win.locator('#menuBtn').click();
   await expect(win.locator('#menuPop')).toHaveClass(/open/);
-  const m = await win.evaluate(() => { const b = document.getElementById('menuPop').getBoundingClientRect(); return { t: b.top, b: b.bottom, bar: document.getElementById('bar').getBoundingClientRect().bottom, ih: innerHeight }; });
-  expect(m.t).toBeGreaterThanOrEqual(m.bar - 4);
+  const geo = () => win.evaluate(() => { const b = document.getElementById('menuPop').getBoundingClientRect(); return { t: b.top, b: b.bottom, bar: document.getElementById('bar').getBoundingClientRect().bottom, ih: innerHeight }; });
+  await expect.poll(async () => { const g2 = await geo(); return g2.t >= g2.bar - 4; }, { timeout: 3000 }).toBe(true); // меню выезжает с анимацией
+  const m = await geo();
   expect(m.b).toBeLessThanOrEqual(m.ih);
   await win.evaluate(() => closePops());
   // меню вкладки — у курсора, а не со сдвигом в полтора раза
