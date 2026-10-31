@@ -473,14 +473,16 @@ test('вкладки перетаскиваются: меняются места
   // теперь тянем вкладку с формой вниз на страницу и отпускаем — появляется второе окно с ней
   const before = await win.evaluate(() => tabs.length);
   const t = await box(n - 2);
-  const newWin = app.waitForEvent('window');
   await win.mouse.move(t.x + t.width / 2, t.y + t.height / 2);
   await win.mouse.down();
   await win.mouse.move(t.x + t.width / 2 + 40, t.y + 320, { steps: 15 });
   await win.mouse.up();
-  const w2 = await newWin;
+  // новое окно — то, у которого в адресе extra=1 (событие window могло прийти и от другого окна)
+  let w2 = null;
+  await expect.poll(() => { w2 = app.windows().find((p) => /[?&]extra=1/.test(p.url())) || null; return !!w2; }, { timeout: 15_000 }).toBe(true);
   await w2.waitForLoadState('domcontentloaded');
-  await expect.poll(() => w2.evaluate(() => (active && active.wv ? active.wv.getURL() : '')).catch(() => ''), { timeout: 15_000 }).toContain('/form.html');
+  await expect.poll(() => w2.evaluate(() => typeof active !== 'undefined' && !!active).catch(() => false), { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => w2.evaluate(() => (active && active.wv ? active.wv.getURL() : '')).catch(() => ''), { timeout: 20_000 }).toContain('/form.html');
   await expect.poll(() => win.evaluate(() => tabs.length)).toBe(before - 1);
   expect(await w2.evaluate(() => window.isExtraWin())).toBe(true);
   // дополнительное окно не трогает сохранённые вкладки главного

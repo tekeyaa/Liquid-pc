@@ -680,9 +680,17 @@ class SuperRes {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tMid, 0);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
-    if (v.readyState < 2 || !this.frames) c.style.visibility = 'hidden';
+    if (v.readyState < 2 || !this.frames || this.bigNow()) c.style.visibility = 'hidden';
     else c.style.visibility = 'visible';
     this.dirty = true;
+  }
+  // Видео в кадре крупнее, чем место под него на экране (4K в окне 1785×1004): увеличивать нечего, а уменьшать
+  // кадр шейдером хуже, чем это делает сам Chromium (мельтешение на мелких деталях). Тогда слой прячем и
+  // показываем видео как есть. С HDR-цветом обрабатываем всё равно — его без нас не будет.
+  bigNow() {
+    const v = this.v, k = this.crop;
+    this.big = !this.hdr && !!this.ow && v.videoWidth * k[2] >= this.ow * 0.97 && v.videoHeight * k[3] >= this.oh * 0.97;
+    return this.big;
   }
   draw() {
     const gl = this.gl, v = this.v;
@@ -712,7 +720,12 @@ class SuperRes {
     if (!this.alive) return;
     const v = this.v;
     const t = v.currentTime;
-    if (v.readyState >= 2 && (t !== this.lastT || this.dirty)) {
+    if (v.readyState >= 2 && (t !== this.lastT || this.dirty) && this.bigNow()) {
+      // показываем видео как есть, видеокарту не нагружаем; размер окна или HDR поменяются — слой вернётся
+      if (this.c.style.visibility !== 'hidden') this.c.style.visibility = 'hidden';
+      this.lastT = t; this.dirty = false;
+    } else if (v.readyState >= 2 && (t !== this.lastT || this.dirty)) {
+      if (this.frames && this.c.style.visibility === 'hidden') this.c.style.visibility = 'visible';
       this.lastT = t; this.dirty = false;
       try { this.draw(); this.frames++; } catch (e) { this.fail('cors'); return; }
       const f = this.frames;
@@ -1009,6 +1022,7 @@ function barRender() {
   else if (vt.sr !== 'off' && vt.skip.get(v) === 'ui') { st.className = 'st'; st.textContent = 'Для этого плеера выключено: улучшение закрыло бы его кнопки.'; }
   else if (vt.srBroken) { st.className = 'st bad'; st.textContent = `Не работает: ${WHY[vt.srWhy] || 'ошибка'}. Нажми «Чёткость», чтобы попробовать снова.`; }
   else if (vt.sr !== 'off' && vt.lite.has(v)) { st.className = 'st ok'; st.textContent = `Работает в лёгком режиме: резкость${vt.srHdr ? ' и HDR-цвет' : ''} без апскейла — этот плеер не отдаёт кадры видеокарте.`; }
+  else if (vt.sr !== 'off' && r && r.big) { st.className = 'st ok'; st.textContent = `Не нужна: видео ${v.videoWidth}×${v.videoHeight} крупнее плеера на экране (${r.ow}×${r.oh}) — показываю как есть. В полном экране включится сама.`; }
   else if (vt.sr !== 'off' && r && r.frames > 0) { st.className = 'st ok'; st.textContent = `Работает: ${v.videoWidth}×${v.videoHeight} → ${r.ow}×${r.oh}${vt.srHdr ? ' · HDR' : ''}`; }
   else if (vt.sr !== 'off' && v.offsetWidth < 240) { st.className = 'st'; st.textContent = 'Включится, когда видео станет больше.'; }
   else if (vt.sr !== 'off') { st.className = 'st'; st.textContent = 'Включается…'; setTimeout(barRender, 600); }
