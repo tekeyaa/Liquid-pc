@@ -69,8 +69,12 @@ class AdBlock {
         if (base) {
           const got = await Promise.all([...base, ...RU].map((u) => this.fetchList(u, fetchFn)));
           const missing = got.filter((g) => !g.text).map((g) => g.url);
-          if (missing.length) throw new Error('не скачались и нет копии: ' + missing.join(', '));
-          const net = got.filter((g) => g.from !== 'кэш').length;
+          // какой-то список не скачался и копии нет. Движок уже есть — оставляем его (в нём все списки) и пробуем позже.
+          // Движка нет (первый запуск или новое имя кэша) — собираем из того, что есть: без одного списка лучше,
+          // чем совсем без блокировщика. Раньше один оборванный провайдером RU AdList оставлял браузер без блокировки.
+          if (missing.length && (this.blocker || missing.length > got.length / 2)) throw new Error('не скачались и нет копии: ' + missing.join(', '));
+          if (missing.length) console.info(`[adblock] собираю без ${missing.length} списков (не скачались): ${missing.join(', ')}`);
+          const net = got.filter((g) => g.text && g.from !== 'кэш').length;
           this.lastNet = net === got.length;
           const text = got.map((g) => g.text).join('\n');
           // списки не изменились с прошлой сборки — пересобирать незачем (раньше пересобирали каждый раз)
@@ -83,9 +87,9 @@ class AdBlock {
           built = buf;
           if (buf) fresh = ElectronBlocker.deserialize(buf);
           else { fresh = ElectronBlocker.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true }); withExceptions(lib, fresh); }
-          fs.promises.writeFile(hashFile, hash).catch(() => {});
+          if (!missing.length) fs.promises.writeFile(hashFile, hash).catch(() => {}); // неполная сборка — пересоберём, когда скачается всё
           console.info(`[adblock] сборка за ${Date.now() - t0} мс ${buf ? 'в отдельном процессе' : 'в основном процессе'}`);
-          console.info(`[adblock] списки обновлены: ${net} из ${got.length} из сети${got.some((g) => g.from === 'зеркало') ? ' (часть через зеркало)' : ''}${net < got.length ? ', остальные из сохранённой копии' : ''}`);
+          console.info(`[adblock] списки обновлены: ${net} из ${got.length} из сети${got.some((g) => g.from === 'зеркало') ? ' (часть через зеркало)' : ''}${net < got.length - missing.length ? ', остальные из сохранённой копии' : ''}${missing.length ? `, ${missing.length} не скачались — попробую через полчаса` : ''}`);
         } else { fresh = await ElectronBlocker.fromPrebuiltAdsAndTracking(fetchFn); withExceptions(lib, fresh); }
         fs.promises.writeFile(this.cacheFile, Buffer.from(built || fresh.serialize())).catch(() => {}); // готовый двоичный движок — без повторной упаковки
         const was = this.blocker;
