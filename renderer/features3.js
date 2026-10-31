@@ -84,6 +84,7 @@
   // ================= настройки =================
   window.features3Init = () => {
     $('#dns').value = settings.dns || 'auto';
+    markUi();
     $('#stallRetry').checked = stallOn();
   };
   $('#dns').addEventListener('change', async (e) => {
@@ -91,4 +92,11 @@
     toast(settings.dns === 'auto' ? 'DNS как в Chrome — через провайдера' : settings.dns === 'off' ? 'Только обычный DNS провайдера' : 'DNS зашифрованный — если сайты станут открываться медленно, верни «Как в Chrome»');
   });
   $('#stallRetry').addEventListener('change', (e) => lsSet('liquid.stallRetry', e.target.checked));
+  // размер интерфейса
+  const markUi = () => { const k = window.uiScale(); document.querySelectorAll('#uiScale button').forEach((b) => b.classList.toggle('on', +b.dataset.v === k)); };
+  $('#uiScale').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]'); if (!b) return;
+    window.setUiScale(+b.dataset.v); markUi();
+  });
+  window.addEventListener('storage', (e) => { if (e.key === 'liquid.ui') markUi(); });
 })();

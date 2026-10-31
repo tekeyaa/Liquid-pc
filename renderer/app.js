@@ -4,6 +4,20 @@ const L = window.liquid;
 const NEWTAB = new URL('newtab.html', location.href).href;
 const ERRPAGE = new URL('error.html', location.href).href;
 const PARTITION = L.part || 'persist:liquid';
+// ---------- размер интерфейса (Настройки → Оформление) ----------
+// Хранится в браузере, общий для всех окон; увеличивает панели, меню и окошки Liquid, а не сайты
+const UI_SCALES = [0.9, 1, 1.1, 1.25, 1.5];
+function uiScale() { const v = parseFloat(document.documentElement.style.getPropertyValue('--ui')); return v > 0 ? v : 1; }
+function applyUiScale(v) {
+  v = UI_SCALES.includes(+v) ? +v : 1;
+  document.documentElement.style.setProperty('--ui', String(v));
+  window.dispatchEvent(new Event('resize')); // полоса вкладок пересчитывает ширину вкладок
+  return v;
+}
+try { applyUiScale(localStorage.getItem('liquid.ui') || 1); } catch { applyUiScale(1); }
+window.addEventListener('storage', (e) => { if (e.key === 'liquid.ui') applyUiScale(e.newValue || 1); }); // поменяли в другом окне
+window.setUiScale = (v) => { v = applyUiScale(v); try { localStorage.setItem('liquid.ui', String(v)); } catch {} return v; };
+window.uiScale = uiScale;
 if (L.incognito) document.body.classList.add('incognito');
 
 const SEARCH = {
@@ -461,11 +475,17 @@ function tabMenu(tab, x, y) {
   const escT = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   m.innerHTML = items.map((it, i) => (it ? `<button data-i="${i}">${escT(it[0])}</button>` : '<hr>')).join('');
   m.onclick = (e) => { const b = e.target.closest('button'); if (!b) return; hideTabMenu(); items[+b.dataset.i][1](); };
-  m.style.left = Math.min(x, innerWidth - 240) + 'px';
-  m.style.top = Math.max(8, Math.min(y + 6, innerHeight - m.offsetHeight - 8)) + 'px';
+  placeCtx(m, x, y);
   m.classList.add('open');
   setTimeout(() => document.addEventListener('mousedown', hideTabMenu, { once: true }), 0);
 }
+// меню у курсора. Меню увеличено вместе с интерфейсом (zoom), а его left/top тоже умножаются на масштаб — делим
+function placeCtx(m, x, y) {
+  const k = uiScale(), w = 240 * k, h = m.getBoundingClientRect().height || m.offsetHeight * k;
+  m.style.left = Math.max(8, Math.min(x, innerWidth - w)) / k + 'px';
+  m.style.top = Math.max(8, Math.min(y + 6, innerHeight - h - 8)) / k + 'px';
+}
+window.placeCtx = placeCtx;
 function hideTabMenu(e) { if (e && e.target.closest && e.target.closest('#tabMenu')) { document.addEventListener('mousedown', hideTabMenu, { once: true }); return; } $('#tabMenu').classList.remove('open'); }
 function startSplitWith(left, right) {
   if (!right.wv) attachWebview(right, right.url);

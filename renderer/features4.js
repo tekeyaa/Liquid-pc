@@ -149,8 +149,7 @@
     const m = $('#tabMenu');
     m.innerHTML = items.map((it, i) => (it ? `<button data-i="${i}">${esc(it[0])}</button>` : '<hr>')).join('');
     m.onclick = (e) => { const b = e.target.closest('button'); if (!b) return; hideTabMenu(); items[+b.dataset.i][1](); };
-    m.style.left = Math.min(x, innerWidth - 240) + 'px';
-    m.style.top = Math.max(8, Math.min(y + 6, innerHeight - m.offsetHeight - 8)) + 'px';
+    window.placeCtx(m, x, y);
     m.classList.add('open');
     setTimeout(() => document.addEventListener('mousedown', hideTabMenu, { once: true }), 0);
   }

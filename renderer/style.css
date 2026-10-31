@@ -55,7 +55,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 }
 .glass:hover::after { opacity: 1; }
 
-#app { position: relative; z-index: 1; height: 100%; display: grid; grid-template-rows: 44px 50px 1fr; padding: 6px 10px 10px; gap: 6px; }
+#app { position: relative; z-index: 1; height: 100%; display: grid; grid-template-rows: calc(44px * var(--ui)) calc(50px * var(--ui)) 1fr; padding: 6px 10px 10px; gap: 6px; }
 body.fs #app { padding: 0; grid-template-rows: 0 0 1fr; gap: 0; }
 body.fs #tabsrow, body.fs #bar { visibility: hidden; }
 
@@ -152,7 +152,7 @@ body.fs #views { border-radius: 0; border: 0; }
 #views webview { position: absolute; inset: 0; width: 100%; height: 100%; visibility: hidden; pointer-events: none; background: transparent; }
 #views webview.active { visibility: visible; pointer-events: auto; z-index: 1; animation: fadeIn .18s ease-out; }
 @keyframes fadeIn { from { opacity: .6; } }
-body.side #views { right: 398px; transition-delay: 0s; }
+body.side #views { right: calc(398px * var(--ui)); transition-delay: 0s; }
 
 /* ---------- Claude ---------- */
 #side { position: absolute; top: 0; right: 0; bottom: 0; width: 390px; opacity: 0; visibility: hidden; border-radius: var(--r); display: flex; flex-direction: column; overflow: hidden; transform: translate3d(calc(100% + 12px), 0, 0); transition: transform .45s var(--spring), opacity .25s var(--ease), visibility 0s .45s; will-change: transform; }
@@ -276,7 +276,7 @@ body.popped #scrim { display: block; }
   .pill .lbl { display: none; }
   .pill { padding: 0 13px; }
   #side { width: 330px; }
-  body.side #views { right: 338px; }
+  body.side #views { right: calc(338px * var(--ui)); }
 }
 @media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
 
@@ -321,7 +321,7 @@ body.side #update { right: 420px; }
 body.cweb #claudeWeb { display: block; }
 body.cweb #msgs, body.cweb #composer, body.cweb #newChat { display: none; }
 body.cweb #side { width: 440px; }
-body.cweb.side #views { right: 448px; }
+body.cweb.side #views { right: calc(448px * var(--ui)); }
 body.cweb #ctxChip { color: #fff; background: color-mix(in srgb, var(--accent) 25%, transparent); border-color: color-mix(in srgb, var(--accent-2) 40%, transparent); }
 #setPop:not(.api) .api-only { display: none; }
 
@@ -332,7 +332,7 @@ body.cweb #ctxChip { color: #fff; background: color-mix(in srgb, var(--accent) 2
 .fps-big { font-size: 20px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .fps-big.bad { color: #fbbf24; }
 .fps-big.good { color: var(--ok); }
-#setPop { max-height: calc(100vh - 124px); overflow-y: auto; }
+#setPop { max-height: calc((100vh / var(--ui)) - 124px); overflow-y: auto; }
 
 /* ---------- агент идей ---------- */
 #logBtn { width: 42px; height: 42px; position: relative; }
@@ -389,7 +389,7 @@ body.incognito #bg { background: radial-gradient(60vw 60vw at 8% -10%, rgba(91,6
 .pop.menu kbd { margin-left: auto; font: inherit; font-size: 11px; color: var(--faint); }
 .pop.menu hr { border: 0; border-top: 1px solid rgba(255,255,255,.08); margin: 5px 6px; }
 /* Компактное меню: частые действия — плитками по 4 в ряд, остальное — строками. В низком окне меню листается */
-.pop.menu { width: 316px; max-height: calc(100vh - 116px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; }
+.pop.menu { width: 316px; max-height: calc((100vh / var(--ui)) - 116px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; }
 .pop.menu > button { padding: 7px 11px; }
 .pop.menu .mgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; }
 .pop.menu .mgrid.g3 { grid-template-columns: repeat(3, 1fr); }
@@ -410,10 +410,10 @@ body.incognito #bg { background: radial-gradient(60vw 60vw at 8% -10%, rgba(91,6
 .vpn-more { margin-top: 12px; }
 .vpn-more summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 .vpn-more textarea { width: 100%; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: 8px 10px; outline: none; resize: vertical; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; user-select: text; }
-#vpnPop { max-height: calc(100vh - 124px); overflow-y: auto; }
+#vpnPop { max-height: calc((100vh / var(--ui)) - 124px); overflow-y: auto; }
 
 /* библиотека */
-#libPop, #extPop { width: 460px; max-height: calc(100vh - 124px); display: flex; flex-direction: column; }
+#libPop, #extPop { width: 460px; max-height: calc((100vh / var(--ui)) - 124px); display: flex; flex-direction: column; }
 .lib-search { width: 100%; margin: 10px 0 8px; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: 9px 12px; outline: none; user-select: text; }
 .lib-search:focus { border-color: color-mix(in srgb, var(--accent-2) 60%, transparent); }
 .lib-list { flex: 1; overflow-y: auto; min-height: 80px; margin: 0 -6px; padding: 0 6px; }
@@ -509,7 +509,7 @@ body.game .pill.accent.on .spark, body.game #vpnBtn.busy .dot, body.game #empty 
 body.game #vpnPop .orb-btn .ring, body.game #omni #shield, body.game #trBtn.working svg, body.game #updCard .uc-bar i,
 body.game .tab .spin { animation-play-state: paused; }
 #readerBtn.on { color: var(--accent-2); }
-#notesPop { width: 380px; max-height: calc(100vh - 124px); overflow-y: auto; }
+#notesPop { width: 380px; max-height: calc((100vh / var(--ui)) - 124px); overflow-y: auto; }
 #notesPop { width: 440px; display: flex; flex-direction: column; overflow: hidden; }
 .field b { font-weight: 600; color: var(--text); }
 .note { padding: 11px 12px; border-radius: 13px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.07); margin-bottom: 7px; }
@@ -539,7 +539,7 @@ body.game .tab .spin { animation-play-state: paused; }
 #gameBadge { display: none !important; }
 #adPop { left: 14px; right: auto; transform-origin: top left; }
 
-#setPop.settings { left: 50%; top: 50%; right: auto; width: min(880px, calc(100vw - 40px)); height: min(600px, calc(100vh - 80px)); max-height: none; padding: 0; display: flex; flex-direction: column; overflow: hidden; transform-origin: center; transform: translate(-50%, -48%) scale(.96); }
+#setPop.settings { left: 50%; top: 50%; right: auto; width: min(880px, calc((100vw / var(--ui)) - 40px)); height: min(600px, calc((100vh / var(--ui)) - 80px)); max-height: none; padding: 0; display: flex; flex-direction: column; overflow: hidden; transform-origin: center; transform: translate(-50%, -48%) scale(.96); }
 #setPop.settings.open { transform: translate(-50%, -50%); }
 .set-head { display: flex; align-items: center; padding: 16px 14px 10px 22px; border-bottom: 1px solid rgba(255,255,255,.07); }
 .set-title { flex: 1; font-size: 17px; font-weight: 650; }
@@ -736,7 +736,7 @@ body.game #progress::after { animation-play-state: paused; }
 #toast { transition: opacity .25s var(--ease), transform .55s var(--spring); }
 
 /* ---------- «Почему не открылось?» (1.8) ---------- */
-#netPop { width: 420px; max-height: calc(100vh - 124px); overflow-y: auto; }
+#netPop { width: 420px; max-height: calc((100vh / var(--ui)) - 124px); overflow-y: auto; }
 .net-verdict { padding: 11px 13px; border-radius: 14px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); line-height: 1.45; margin-bottom: 10px; }
 .net-verdict.wait { color: var(--muted); }
 .net-verdict.wait::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: var(--accent-2); animation: spin .8s linear infinite; }
@@ -766,12 +766,12 @@ body.game #progress::after { animation-play-state: paused; }
 #spaceBtn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #spaceBtn:active { transform: scale(.94); }
 
-#palette { left: 50%; right: auto; top: 76px; width: min(640px, calc(100vw - 40px)); padding: 8px; transform-origin: top center;
+#palette { left: 50%; right: auto; top: 76px; width: min(640px, calc((100vw / var(--ui)) - 40px)); padding: 8px; transform-origin: top center;
   transform: translate(-50%, -8px) scale(.97); background: linear-gradient(180deg, rgba(40,38,52,.9), rgba(24,22,32,.94)); }
 #palette.open { transform: translate(-50%, 0); }
 #palInput { width: 100%; height: 46px; padding: 0 14px; border-radius: 14px; border: 1px solid rgba(255,255,255,.12); background: rgba(0,0,0,.25); outline: none; font-size: 15px; user-select: text; }
 #palInput:focus { border-color: color-mix(in srgb, var(--accent-2) 55%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
-#palList { margin-top: 6px; max-height: min(460px, calc(100vh - 200px)); overflow-y: auto; }
+#palList { margin-top: 6px; max-height: min(460px, calc((100vh / var(--ui)) - 200px)); overflow-y: auto; }
 .pal-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 11px; cursor: pointer; min-width: 0; }
 .pal-row.sel { background: rgba(255,255,255,.09); }
 .pal-row img, .pal-ic { width: 16px; height: 16px; border-radius: 4px; flex: none; }
@@ -843,3 +843,7 @@ body.tab-tearing #views { outline: 2px dashed rgba(255,255,255,.22); outline-off
 .pop.menu button.tile svg { width: 24px; height: 24px; }
 .pop.menu button.tile span { font-size: 12.5px; }
 .pop.menu hr { margin: 6px 8px; }
+
+/* Размер интерфейса (Настройки → Оформление): увеличиваем панели браузера, меню и окошки, а не сайты */
+:root { --ui: 1; }
+#tabsrow, #bar, #side, .pop, .ctx, #toast, #update { zoom: var(--ui); }

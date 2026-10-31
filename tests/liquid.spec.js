@@ -561,6 +561,42 @@ test('меню: плитки и прокрутка в маленьком окн�
   await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows().find((x) => x.__liquid && !x.__extra); w.setSize(1400, 900); });
 });
 
+test('размер интерфейса: всё крупнее, меню и настройки помещаются в окно', async () => {
+  await win.evaluate(() => closePops());
+  const barH0 = await win.evaluate(() => document.getElementById('bar').getBoundingClientRect().height);
+  await win.evaluate(() => window.openSettings());
+  await win.locator('#setNav [data-t="look"]').click();
+  await win.locator('#uiScale [data-v="1.5"]').click();
+  await expect.poll(() => win.evaluate(() => window.uiScale())).toBe(1.5);
+  const g = await win.evaluate(() => {
+    const r = (s) => { const b = document.querySelector(s).getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, h: b.height }; };
+    return { bar: r('#bar'), set: r('#setPop'), ih: innerHeight, iw: innerWidth, saved: localStorage.getItem('liquid.ui') };
+  });
+  expect(g.saved).toBe('1.5');
+  expect(g.bar.h).toBeGreaterThan(barH0 * 1.3);              // панель стала крупнее
+  expect(g.set.l).toBeGreaterThanOrEqual(0); expect(g.set.t).toBeGreaterThanOrEqual(0);
+  expect(g.set.r).toBeLessThanOrEqual(g.iw + 1); expect(g.set.b).toBeLessThanOrEqual(g.ih + 1); // настройки не вылезают за окно
+  await win.evaluate(() => closePops());
+  // меню под панелью и не уходит за низ окна
+  await win.locator('#menuBtn').click();
+  await expect(win.locator('#menuPop')).toHaveClass(/open/);
+  const m = await win.evaluate(() => { const b = document.getElementById('menuPop').getBoundingClientRect(); return { t: b.top, b: b.bottom, bar: document.getElementById('bar').getBoundingClientRect().bottom, ih: innerHeight }; });
+  expect(m.t).toBeGreaterThanOrEqual(m.bar - 4);
+  expect(m.b).toBeLessThanOrEqual(m.ih);
+  await win.evaluate(() => closePops());
+  // меню вкладки — у курсора, а не со сдвигом в полтора раза
+  const tb = await win.locator('#tabs .tab.active').boundingBox();
+  await win.mouse.click(tb.x + 20, tb.y + tb.height / 2, { button: 'right' });
+  await expect(win.locator('#tabMenu')).toHaveClass(/open/);
+  const cm = await win.evaluate(() => { const b = document.getElementById('tabMenu').getBoundingClientRect(); return { l: b.left, t: b.top }; });
+  expect(Math.abs(cm.l - (tb.x + 20))).toBeLessThan(30);
+  expect(Math.abs(cm.t - (tb.y + tb.height / 2 + 6))).toBeLessThan(30);
+  await win.keyboard.press('Escape'); await win.mouse.click(5, 300);
+  // обратно 100%
+  await win.evaluate(() => window.setUiScale(1));
+  expect(await win.evaluate(() => window.uiScale())).toBe(1);
+});
+
 test('заминки основного процесса (для сведения)', async () => {
   const lines = logText().split('\n').filter((l) => /заминка|списки обновлены|блокировщик\]/.test(l));
   fs.writeFileSync(path.join(ROOT, 'test-results', 'stalls.txt'), lines.join('\n'));
