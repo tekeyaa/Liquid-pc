@@ -832,3 +832,14 @@ body.tab-dragging #views webview { pointer-events: none; }
 #tabs .tab.dragging.tear { opacity: .55; transform: translateY(6px) scale(.94); }
 body.tab-tearing #views { outline: 2px dashed rgba(255,255,255,.22); outline-offset: -8px; border-radius: 14px; }
 #tabs .tab, #tabs .tab img { -webkit-user-drag: none; user-select: none; }
+
+/* Меню крупнее: на больших мониторах (27") прежние 11–13 px читались мелко */
+.pop.menu { width: 372px; padding: 8px; }
+.pop.menu > button { padding: 9px 13px; gap: 13px; font-size: 14.5px; }
+.pop.menu > button svg { width: 20px; height: 20px; flex: none; }
+.pop.menu kbd { font-size: 12px; }
+.pop.menu .mgrid { gap: 3px; }
+.pop.menu button.tile { gap: 7px; padding: 12px 2px 10px; border-radius: 13px; }
+.pop.menu button.tile svg { width: 24px; height: 24px; }
+.pop.menu button.tile span { font-size: 12.5px; }
+.pop.menu hr { margin: 6px 8px; }
