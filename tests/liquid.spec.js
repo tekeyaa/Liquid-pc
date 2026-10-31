@@ -212,6 +212,9 @@ test('видео с превью «главной» идёт в плеере р�
     expect(st.layerVisible).toBe(true);
     expect(st.layerW).toBeGreaterThan(800);
   }
+  // у серверов тестов нет видеокарты: чёткость и видео считает процессор — выключаем, чтобы не мешать следующим тестам
+  await win.evaluate(() => document.querySelector('#srLevel [data-v="off"]').click());
+  await inTab(`document.getElementById('v').pause()`);
 });
 
 // ---------------- 1.8: надёжность ----------------
@@ -328,11 +331,8 @@ const vt = (js) => inTab(`(() => { const v = document.getElementById('v'); retur
 
 test('окно поверх игры: открывается с тем же видео, вкладка на паузе', async () => {
   await openUrl(`${base}/video.html`);
-  // диагностика: что на самом деле во вкладке
-  const dbg = await win.evaluate(() => ({ url: active.wv.getURL(), id: active.wv.getWebContentsId(), wcId: active.wcId, src: active.wv.getAttribute('src'), spare: active.wv.className, n: document.querySelectorAll('#views webview').length }));
-  const inMain = await app.evaluate(({ webContents }, id) => { const w = webContents.fromId(id); return w ? { url: w.getURL(), type: w.getType(), loading: w.isLoading() } : null; }, dbg.id);
-  const page = await inTab(`({ href: location.href, v: !!document.getElementById('v'), ready: document.readyState, html: document.documentElement.outerHTML.slice(0, 160) })`).catch((e) => ({ err: String(e.message).slice(0, 200) }));
-  expect(JSON.stringify({ dbg, inMain, page })).toContain('"v":true');
+  // страница могла ещё не дорисоваться — ждём, пока на ней появится видео
+  await expect.poll(() => inTab(`!!document.getElementById('v')`).catch(() => false), { timeout: 15_000 }).toBe(true);
   await expect.poll(() => vt('v.currentTime'), { timeout: 15_000 }).toBeGreaterThan(0.3);
   await win.evaluate(() => window.openMini());
   await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.__mini).length), { timeout: 15_000 }).toBe(1);
@@ -359,6 +359,7 @@ test('клип: буфер пишет, «Сохранить клип» клад�
   expect(fs.statSync(path.join(dir, f)).size).toBeGreaterThan(10_000);
   fs.unlinkSync(path.join(dir, f));
   await win.evaluate(() => window.toggleClipBuffer()); // выключаем буфер
+  await vt('v.pause()');
 });
 
 test('смотреть вместе: комната, пауза и перемотка от друга, чат', async () => {
