@@ -11,6 +11,7 @@ const { translateBatch } = require('./main/translate');
 const { GameMode } = require('./main/gamemode');
 const { WatchRoom, BROKERS: WATCH_BROKERS } = require('./main/watch');
 const { Diag, sysInfo } = require('./main/diag');
+const ravu = require('./main/ravu');
 const os = require('os');
 let game = null;
 
@@ -1482,6 +1483,8 @@ function registerIpc() {
   };
   const sugCache = new Map();
   // настройки видео для фреймов (в главную страницу их присылает окно браузера)
+  // Liquid RTX: таблицы весов апскейлера RAVU для страниц (читаются с диска один раз, потом из памяти)
+  ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
   ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false }; });
   ipcMain.handle('search:suggest', async (e, q) => {
     q = String(q || '').trim().slice(0, 120);

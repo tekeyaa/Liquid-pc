@@ -232,7 +232,8 @@ test('видео с превью «главной» идёт в плеере р�
   const st = await inTab(`(() => {
     const v = document.getElementById('v'), c = document.querySelector('#watch canvas[data-lq-sr]');
     const gl = !!document.createElement('canvas').getContext('webgl');
-    return { filter: v.style.filter || '', gl, layer: !!c, layerVisible: !!c && c.style.visibility === 'visible', layerW: c ? c.offsetWidth : 0 };
+    const gl2 = !!document.createElement('canvas').getContext('webgl2');
+    return { filter: v.style.filter || '', gl, gl2, layer: !!c, layerVisible: !!c && c.style.visibility === 'visible', layerW: c ? c.offsetWidth : 0 };
   })()`);
   // на плеере сайта не должно остаться фильтров «лёгкого режима» от превью
   expect(st.filter, 'на плеере остался фильтр от превью').not.toContain('lq-sharp');
@@ -241,6 +242,8 @@ test('видео с превью «главной» идёт в плеере р�
     expect(st.layer, 'нет слоя чёткости в плеере ролика').toBe(true);
     expect(st.layerVisible).toBe(true);
     expect(st.layerW).toBeGreaterThan(800);
+    // Liquid RTX: увеличение обученным фильтром RAVU (таблицы весов пришли из main, шейдер собрался и рисовал)
+    if (st.gl2) await expect.poll(() => inTab(`document.querySelector('#watch canvas[data-lq-sr]')?.dataset.lqSrRavu || ''`), { timeout: 15_000 }).toBe('r2');
   }
   // у серверов тестов нет видеокарты: чёткость и видео считает процессор — выключаем, чтобы не мешать следующим тестам
   await win.evaluate(() => document.querySelector('#srLevel [data-v="off"]').click());

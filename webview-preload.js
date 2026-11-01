@@ -1,7 +1,7 @@
 // Preload для сайтов (изолированный мир: сайт не видит этот код). Работает на странице и во фреймах.
 // 1) Вход Google: маскировка под Firefox.  2) Перевод страницы на месте, без поломки вёрстки.
 // 3) Сведения о странице для браузера (язык, есть ли видео).  4) Тема оформления для стартовой страницы.
-// 5) Режим чтения.  6) Видео: скорость, громкость до 300 %, фильтры.  7) Супер-чёткость (WebGL).
+// 5) Режим чтения.  6) Видео: скорость, громкость до 300 %, фильтры.  7) Liquid RTX — супер-чёткость (WebGL2, RAVU + FSR).
 // 8) Кружок с панелью видео.  Плюс боковые кнопки мыши и команды от браузера.
 const { contextBridge, webFrame, ipcRenderer } = require('electron');
 // стартовая страница хранит избранное в настройках приложения, а не в localStorage (его стирает «Очистить данные»)
@@ -451,7 +451,7 @@ function ensureSharpSvg() {
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('width', '0'); svg.setAttribute('height', '0'); svg.style.cssText = 'position:absolute;width:0;height:0;pointer-events:none';
   // lq-sharp — ручная «резкость» из панели; lq-sharp-mid/max — лёгкий режим супер-чёткости
-  for (const [id, k] of [['lq-sharp', 0.6], ['lq-sharp-mid', 0.35], ['lq-sharp-max', 0.7]]) {
+  for (const [id, k] of [['lq-sharp', 0.6], ['lq-sharp-mid', 0.2], ['lq-sharp-max', 0.4]]) {
     const filter = document.createElementNS(ns, 'filter'); filter.setAttribute('id', id); filter.setAttribute('color-interpolation-filters', 'sRGB');
     const conv = document.createElementNS(ns, 'feConvolveMatrix');
     conv.setAttribute('order', '3'); conv.setAttribute('preserveAlpha', 'true');
@@ -574,11 +574,23 @@ function videoCmd(m) {
 }
 
 
-// ---------- 7. Супер-чёткость: апскейл на видеокарте (WebGL) — аналог RTX Video Super Resolution ----------
-// Проход 1: бикубическое (Catmull-Rom) увеличение до размера на экране. Проход 2: адаптивная резкость RCAS (как в AMD FSR) + HDR-цвет.
+// ---------- 7. Liquid RTX (супер-чёткость): апскейл на видеокарте — аналог RTX Video Super Resolution ----------
+// Проход 1 — увеличение до размера на экране обученным фильтром RAVU-Zoom-AR (bjin/mpv-prescalers, LGPL-3):
+//   для каждой точки он смотрит направление и силу края вокруг и берёт веса, подобранные обучением на настоящих
+//   фото именно под такой край, плюс встроенная защита от «звона». Края получаются ровными, без лесенки и ореолов,
+//   а шум сжатия не превращается в мозаику. «Чёткость ×1» — RAVU радиуса 2, «×2» — радиуса 3 (точнее, тяжелее).
+//   Таблицы весов приходят из main (main/ravu — исходные файлы mpv), шейдер собирается из них здесь.
+//   Без WebGL2, пока таблицы грузятся или если видеокарта не успевает — AMD FSR 1 EASU (MIT).
+// Проход 2 — резкость RCAS (FSR 1.0.2, MIT): не выходит за цвета соседей (нет ореолов) и слабее на шуме (нет ряби),
+//   HDR-цвет и лёгкий дизеринг против полос в градиентах.
+// Было (до 1.17): бикубическое увеличение + резкость с «добавкой деталей» — она усиливала шум сжатия, на ×2 давала
+// рябь и мозаику. На стенде с настоящим видео (720p, сжатие как на YouTube): ×2 — PSNR 31,5 → 34,8 дБ, рябь −34 %.
 vt.sr = 'off'; vt.srHdr = false; vt.barOn = true; vt.remember = false;
 const SR_VS = `attribute vec2 p; uniform float flip; varying vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
-const SR_UP = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 src; uniform vec4 crop;
+const SR_VS3 = `#version 300 es
+in vec2 p; uniform float flip; out vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
+// уменьшение (видео крупнее слоя, слой нужен только ради HDR-цвета): бикубическое
+const SR_DOWN = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 src; uniform vec4 crop;
 vec4 cub(float x){ float x2=x*x, x3=x2*x; return vec4(-0.5*x3+x2-0.5*x, 1.5*x3-2.5*x2+1.0, -1.5*x3+2.0*x2+0.5*x, 0.5*x3-0.5*x2); }
 void main(){
   vec2 px = (crop.xy + uv * crop.zw) * src - 0.5; vec2 f = fract(px); vec2 b = (floor(px) + 0.5) / src; vec2 d = 1.0 / src;
@@ -588,57 +600,193 @@ void main(){
     c += row * wy[j]; }
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
-const SR_SHARP = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 dst; uniform float sharp; uniform float hdr; uniform float boost;
+// FSR 1 EASU (AMD FidelityFX, MIT): увеличение по направлению краёв, итог ограничен 4 ближайшими точками — без ореолов
+const SR_EASU = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 src; uniform vec4 crop;
+vec3 T(vec2 p){ return texture2D(t, (p + 0.5) / src).rgb; }
+float Lm(vec3 c){ return c.b * 0.5 + (c.r * 0.5 + c.g); }
+void setF(inout vec2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE){
+  float dc = lD - lC, cb = lC - lB;
+  float lenX = 1.0 / max(max(abs(dc), abs(cb)), 1.0 / 65536.0);
+  float dirX = lD - lB; dir.x += dirX * w;
+  lenX = clamp(abs(dirX) * lenX, 0.0, 1.0); lenX *= lenX; len += lenX * w;
+  float ec = lE - lC, ca = lC - lA;
+  float lenY = 1.0 / max(max(abs(ec), abs(ca)), 1.0 / 65536.0);
+  float dirY = lE - lA; dir.y += dirY * w;
+  lenY = clamp(abs(dirY) * lenY, 0.0, 1.0); lenY *= lenY; len += lenY * w;
+}
+void tap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len2, float lob, float clp, vec3 c){
+  vec2 v = vec2(off.x * dir.x + off.y * dir.y, off.y * dir.x - off.x * dir.y) * len2;
+  float d2 = min(dot(v, v), clp);
+  float wB = 0.4 * d2 - 1.0, wA = lob * d2 - 1.0;
+  wB *= wB; wA *= wA;
+  wB = 1.5625 * wB - 0.5625;
+  float w = wB * wA;
+  aC += c * w; aW += w;
+}
 void main(){
-  vec2 d = 1.0 / dst; vec3 e = texture2D(t, uv).rgb;
+  vec2 pp = (crop.xy + uv * crop.zw) * src - 0.5;
+  vec2 fp = floor(pp); pp -= fp;
+  vec3 b = T(fp + vec2(0.0, -1.0)), c = T(fp + vec2(1.0, -1.0));
+  vec3 e = T(fp + vec2(-1.0, 0.0)), f = T(fp), g = T(fp + vec2(1.0, 0.0)), h = T(fp + vec2(2.0, 0.0));
+  vec3 i = T(fp + vec2(-1.0, 1.0)), j = T(fp + vec2(0.0, 1.0)), k = T(fp + vec2(1.0, 1.0)), l = T(fp + vec2(2.0, 1.0));
+  vec3 n = T(fp + vec2(0.0, 2.0)), o = T(fp + vec2(1.0, 2.0));
+  float bL = Lm(b), cL = Lm(c), eL = Lm(e), fL = Lm(f), gL = Lm(g), hL = Lm(h), iL = Lm(i), jL = Lm(j), kL = Lm(k), lL = Lm(l), nL = Lm(n), oL = Lm(o);
+  vec2 dir = vec2(0.0); float len = 0.0;
+  setF(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
+  setF(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);
+  setF(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);
+  setF(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
+  float dirR = dot(dir, dir);
+  if (dirR < 1.0 / 32768.0) { dirR = 1.0; dir.x = 1.0; } else dirR = inversesqrt(dirR);
+  dir *= dirR;
+  len = len * 0.5; len *= len;
+  float stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));
+  vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+  float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
+  float clp = 1.0 / lob;
+  vec3 mn4 = min(min(f, g), min(j, k)), mx4 = max(max(f, g), max(j, k));
+  vec3 aC = vec3(0.0); float aW = 0.0;
+  tap(aC, aW, vec2(0.0, -1.0) - pp, dir, len2, lob, clp, b);
+  tap(aC, aW, vec2(1.0, -1.0) - pp, dir, len2, lob, clp, c);
+  tap(aC, aW, vec2(-1.0, 1.0) - pp, dir, len2, lob, clp, i);
+  tap(aC, aW, vec2(0.0, 1.0) - pp, dir, len2, lob, clp, j);
+  tap(aC, aW, vec2(0.0, 0.0) - pp, dir, len2, lob, clp, f);
+  tap(aC, aW, vec2(-1.0, 0.0) - pp, dir, len2, lob, clp, e);
+  tap(aC, aW, vec2(1.0, 1.0) - pp, dir, len2, lob, clp, k);
+  tap(aC, aW, vec2(2.0, 1.0) - pp, dir, len2, lob, clp, l);
+  tap(aC, aW, vec2(2.0, 0.0) - pp, dir, len2, lob, clp, h);
+  tap(aC, aW, vec2(1.0, 0.0) - pp, dir, len2, lob, clp, g);
+  tap(aC, aW, vec2(1.0, 2.0) - pp, dir, len2, lob, clp, o);
+  tap(aC, aW, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, n);
+  gl_FragColor = vec4(min(mx4, max(mn4, aC / aW)), 1.0);
+}`;
+// FSR 1.0.2 RCAS (MIT): резкость, ограниченная соседями (без ореолов), слабее там, где похоже на шум (без ряби)
+const SR_RCAS = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 dst; uniform float sharp; uniform float hdr;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float L2(vec3 c){ return c.b * 0.5 + (c.r * 0.5 + c.g); }
+void main(){
+  vec2 d = 1.0 / dst;
+  vec3 e = texture2D(t, uv).rgb;
   vec3 b = texture2D(t, uv + vec2(0.0, -d.y)).rgb, h = texture2D(t, uv + vec2(0.0, d.y)).rgb;
   vec3 dd = texture2D(t, uv + vec2(-d.x, 0.0)).rgb, f = texture2D(t, uv + vec2(d.x, 0.0)).rgb;
-  vec3 mn = min(min(b, dd), min(f, h)), mx = max(max(b, dd), max(f, h));
-  vec3 hitMin = mn / (4.0 * mx + 1e-5), hitMax = (1.0 - mx) / (4.0 * mn - 4.0 - 1e-5);
+  float bL = L2(b), dL = L2(dd), eL = L2(e), fL = L2(f), hL = L2(h);
+  float nz = 0.25 * (bL + dL + fL + hL) - eL;
+  float rng = max(max(max(bL, dL), max(eL, fL)), hL) - min(min(min(bL, dL), min(eL, fL)), hL);
+  nz = 1.0 - 0.5 * clamp(abs(nz) / max(rng, 1.0 / 1024.0), 0.0, 1.0);
+  vec3 mn4 = min(min(b, dd), min(f, h)), mx4 = max(max(b, dd), max(f, h));
+  vec3 hitMin = min(mn4, e) / (4.0 * mx4 + 1e-5);
+  vec3 hitMax = (1.0 - max(mx4, e)) / (4.0 * mn4 - 4.0 - 1e-5);
   vec3 lobeRGB = max(-hitMin, hitMax);
-  float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * sharp;
+  float lobe = max(-0.1875, min(max(lobeRGB.r, max(lobeRGB.g, lobeRGB.b)), 0.0)) * sharp * nz;
   vec3 c = (lobe * (b + dd + f + h) + e) / (4.0 * lobe + 1.0);
-  // дополнительная детализация по яркости (без цветных ореолов), ограничена соседями — без звона
-  float lc = dot(c, vec3(0.299, 0.587, 0.114)), lb = dot((b + dd + f + h) * 0.25, vec3(0.299, 0.587, 0.114));
-  c = clamp(c + (lc - lb) * boost, mn - 0.04, mx + 0.04);
   if (hdr > 0.5) {
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
     c = mix(vec3(l), c, 1.28);                       // насыщенность
     c = c * c * (3.0 - 2.0 * c) * 0.55 + c * 0.45;   // S-кривая: глубже тени, ярче света
     c = pow(max(c, 0.0), vec3(0.92));                // светлее середина
   }
+  c += (hash(gl_FragCoord.xy) - 0.5) / 255.0;        // дизеринг: без полос в плавных градиентах (небо, тени)
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
+// RAVU: шейдер mpv как есть + обёртка: HOOKED_* — исходный кадр, crop — видимая часть кадра
+const ravuFS = (d) => `#version 300 es
+precision highp float; in vec2 uv; out vec4 fragColor; uniform sampler2D HOOKED_raw; uniform vec2 HOOKED_size; uniform vec4 crop;
+${d.luts.map((l) => `uniform sampler2D ${l.name};`).join('\n')}
+#define HOOKED_pt (1.0 / HOOKED_size)
+#define HOOKED_tex(pos) texture(HOOKED_raw, pos)
+vec2 HOOKED_pos;
+${d.body}
+void main(){ HOOKED_pos = crop.xy + uv * crop.zw; fragColor = vec4(clamp(hook().rgb, 0.0, 1.0), 1.0); }`;
+const SR_RAVU = {}; // таблицы весов: одна загрузка на страницу (r2 ~1,5 МБ, r3 ~2,6 МБ)
+const ravuData = (r) => SR_RAVU[r] || (SR_RAVU[r] = ipcRenderer.invoke('sr:ravu', r).catch(() => null));
+const SR_SHARP_K = { mid: 0.4, max: 0.7 }; // сила резкости RCAS по уровням
 class SuperRes {
   constructor(v) {
     this.v = v;
     this.c = document.createElement('canvas');
     this.c.setAttribute('data-lq-sr', '');
     this.c.style.cssText = 'position:absolute;pointer-events:none;margin:0;padding:0;border:0;';
-    const gl = this.c.getContext('webgl', { alpha: true, premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: false });
+    const opts = { alpha: true, premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' };
+    const gl = this.c.getContext('webgl2', opts) || this.c.getContext('webgl', opts);
     if (!gl) throw new Error('nogl');
-    this.gl = gl;
-    const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o); if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
-    const prog = (fs) => { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, SR_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); return p; };
-    this.pUp = prog(SR_UP); this.pSh = prog(SR_SHARP);
-    // адреса атрибутов и параметров шейдеров узнаём один раз, а не на каждом кадре видео
-    const at = (p) => ({ p: gl.getAttribLocation(p, 'p'), t: gl.getUniformLocation(p, 't'), src: gl.getUniformLocation(p, 'src'), flip: gl.getUniformLocation(p, 'flip'),
-      dst: gl.getUniformLocation(p, 'dst'), crop: gl.getUniformLocation(p, 'crop'), sharp: gl.getUniformLocation(p, 'sharp'), boost: gl.getUniformLocation(p, 'boost'), hdr: gl.getUniformLocation(p, 'hdr') });
-    this.lUp = at(this.pUp); this.lSh = at(this.pSh);
+    this.gl = gl; this.gl2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+    this.par = gl.getExtension('KHR_parallel_shader_compile'); // тяжёлый шейдер RAVU собирается, не останавливая страницу
     const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    this.pEasu = this.prog(SR_EASU); this.pRcas = this.prog(SR_RCAS); this.pDown = this.prog(SR_DOWN);
+    for (const p of [this.pEasu, this.pRcas, this.pDown]) if (!gl.getProgramParameter(p.p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p.p) || 'link');
     const tex = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
+    this.tex = tex;
     this.tSrc = tex(); this.tMid = tex();
     this.fb = gl.createFramebuffer();
+    this.ravu = {}; this.ravuReq = {}; this.cap = 2; // cap: 2 — можно RAVU-3, 1 — только RAVU-2, 0 — только FSR (видеокарта не успевает)
+    this.used = '';
     this.level = 'mid'; this.hdr = false; this.alive = true; this.ow = 0; this.oh = 0; this.crop = [0, 0, 1, 1];
     this.frames = 0; this.lastT = -1; this.dirty = true; this.bad = 0; this.retestAt = 0;
     this.c.style.visibility = 'hidden';
     v.insertAdjacentElement('afterend', this.c);
     this.ro = new ResizeObserver(() => this.place()); this.ro.observe(v);
     this.posT = setInterval(() => { if (!document.hidden) this.place(); }, 700); // свёрнутую вкладку не пересчитываем
+    this.perfT = setInterval(() => this.perf(), 2000);
     this.place();
     this.loop();
+  }
+  // программа + адреса её параметров (узнаём один раз, а не на каждом кадре)
+  prog(fs, vs) {
+    const gl = this.gl;
+    const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o); return o; };
+    const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs || SR_VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+    const locs = new Map();
+    return { p, a: -1, u: (n) => { if (!locs.has(n)) locs.set(n, gl.getUniformLocation(p, n)); return locs.get(n); } };
+  }
+  // нужный RAVU: «×2» — радиус 3, «×1» — радиус 2; не готов — берём, что есть (или FSR)
+  pickRavu() {
+    if (!this.gl2 || this.cap < 1) return null;
+    const want = this.level === 'max' && this.cap >= 2 ? 'r3' : 'r2';
+    this.loadRavu(want);
+    const R = this.ravu[want];
+    if (R && R.ok) return R;
+    const r2 = this.ravu.r2;
+    return want === 'r3' && r2 && r2.ok ? r2 : null;
+  }
+  loadRavu(r) {
+    if (this.ravuReq[r]) { const R = this.ravu[r]; if (R && !R.ok && !R.bad) this.ravuCheck(R); return; }
+    this.ravuReq[r] = true;
+    ravuData(r).then((d) => {
+      if (!this.alive || !d || !d.luts) return;
+      const gl = this.gl;
+      const luts = d.luts.map((l) => {
+        let u8 = l.data instanceof Uint8Array ? l.data : new Uint8Array(l.data);
+        if (u8.byteOffset % 4) u8 = u8.slice();
+        const t = this.tex();
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, l.w, l.h, 0, gl.RGBA, gl.FLOAT, new Float32Array(u8.buffer, u8.byteOffset, u8.byteLength >> 2));
+        return [l.name, t];
+      });
+      this.ravu[r] = { name: r, ...this.prog(ravuFS(d), SR_VS3), luts, ok: false, bad: false };
+      this.ravuCheck(this.ravu[r]);
+    }).catch((e) => { console.warn('[liquid] RAVU не загрузился:', e && e.message); });
+  }
+  ravuCheck(R) {
+    const gl = this.gl;
+    if (this.par && !gl.getProgramParameter(R.p, this.par.COMPLETION_STATUS_KHR)) return; // ещё собирается — пока FSR
+    if (gl.getProgramParameter(R.p, gl.LINK_STATUS)) { R.ok = true; this.dirty = true; return; }
+    R.bad = true;
+    console.warn('[liquid] RAVU: видеокарта не собрала шейдер — работаем на FSR:', gl.getProgramInfoLog(R.p));
+  }
+  // Видеокарта не успевает (браузер начал пропускать кадры видео) — ступенька вниз: RAVU-3 → RAVU-2 → FSR
+  perf() {
+    const v = this.v, q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
+    if (!q || v.paused || document.hidden || this.big || !this.used || this.used === 'fsr') { this.q0 = null; return; }
+    if (!this.q0 || this.q0.used !== this.used) { this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used: this.used }; return; }
+    const n = q.totalVideoFrames - this.q0.n, d = q.droppedVideoFrames - this.q0.d;
+    if (n < 48) return;
+    this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used: this.used };
+    if (d / n > 0.12) {
+      this.cap = this.used === 'r3' ? 1 : 0;
+      console.warn(`[liquid] Liquid RTX: пропуск кадров ${Math.round((100 * d) / n)}% на ${this.used} ${this.ow}×${this.oh} — ступенька вниз`);
+      this.slow = true; barRender();
+    }
   }
   place() {
     const v = this.v, c = this.c;
@@ -692,24 +840,38 @@ class SuperRes {
     this.big = !this.hdr && !!this.ow && v.videoWidth * k[2] >= this.ow * 0.97 && v.videoHeight * k[3] >= this.oh * 0.97;
     return this.big;
   }
+  run(P, fb, w, h, texs, set) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); gl.useProgram(P.p);
+    if (P.a < 0) P.a = gl.getAttribLocation(P.p, 'p');
+    gl.enableVertexAttribArray(P.a); gl.vertexAttribPointer(P.a, 2, gl.FLOAT, false, 0, 0);
+    texs.forEach(([n, t], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(P.u(n), i); });
+    set(P.u); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
   draw() {
     const gl = this.gl, v = this.v;
     if (v.readyState < 2 || !v.videoWidth || !this.ow) return; // слой ещё не получил размер — рисовать некуда
-    gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v); // кросс-доменное видео без CORS здесь бросит SecurityError
-    const run = (p, L, fb, tex, w, h, set) => {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); gl.useProgram(p);
-      gl.enableVertexAttribArray(L.p); gl.vertexAttribPointer(L.p, 2, gl.FLOAT, false, 0, 0);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(L.t, 0);
-      set(L); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    };
-    run(this.pUp, this.lUp, this.fb, this.tSrc, this.ow, this.oh, (L) => { gl.uniform2f(L.src, v.videoWidth, v.videoHeight); gl.uniform1f(L.flip, 1); const k = this.crop; gl.uniform4f(L.crop, k[0], k[1], k[2], k[3]); });
-    run(this.pSh, this.lSh, null, this.tMid, this.ow, this.oh, (L) => {
-      gl.uniform2f(L.dst, this.ow, this.oh);
-      gl.uniform1f(L.flip, 0);
-      gl.uniform1f(L.sharp, this.level === 'max' ? 1.0 : 0.75);
-      gl.uniform1f(L.boost, this.level === 'max' ? 0.6 : 0.25);
-      gl.uniform1f(L.hdr, this.hdr ? 1 : 0);
+    const vw = v.videoWidth, vh = v.videoHeight, k = this.crop;
+    const down = vw * k[2] > this.ow || vh * k[3] > this.oh; // видео крупнее слоя (слой ради HDR) — только уменьшаем
+    const R = down ? null : this.pickRavu();
+    if (R) {
+      this.run(R, this.fb, this.ow, this.oh, [['HOOKED_raw', this.tSrc], ...R.luts], (u) => {
+        gl.uniform1f(u('flip'), 1); gl.uniform2f(u('HOOKED_size'), vw, vh); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
+      });
+      if (!this.c.dataset.lqSrRavu) this.c.dataset.lqSrRavu = R.name;
+    } else {
+      this.run(down ? this.pDown : this.pEasu, this.fb, this.ow, this.oh, [['t', this.tSrc]], (u) => {
+        gl.uniform1f(u('flip'), 1); gl.uniform2f(u('src'), vw, vh); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
+      });
+    }
+    this.used = R ? R.name : down ? 'down' : 'fsr';
+    this.c.dataset.lqSr = this.used;
+    this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid]], (u) => {
+      gl.uniform2f(u('dst'), this.ow, this.oh); gl.uniform1f(u('flip'), 0);
+      gl.uniform1f(u('sharp'), down ? 0 : SR_SHARP_K[this.level] ?? 0.4);
+      gl.uniform1f(u('hdr'), this.hdr ? 1 : 0);
     });
   }
   // Рисуем по кадрам экрана и только когда у видео сменился кадр.
@@ -720,6 +882,8 @@ class SuperRes {
     if (!this.alive) return;
     const v = this.v;
     const t = v.currentTime;
+    // RAVU собрался, пока видео на паузе, — перерисуем кадр уже им
+    for (const R of Object.values(this.ravu)) if (R && !R.ok && !R.bad) this.ravuCheck(R);
     if (v.readyState >= 2 && (t !== this.lastT || this.dirty) && this.bigNow()) {
       // показываем видео как есть, видеокарту не нагружаем; размер окна или HDR поменяются — слой вернётся
       if (this.c.style.visibility !== 'hidden') this.c.style.visibility = 'hidden';
@@ -727,7 +891,9 @@ class SuperRes {
     } else if (v.readyState >= 2 && (t !== this.lastT || this.dirty)) {
       if (this.frames && this.c.style.visibility === 'hidden') this.c.style.visibility = 'visible';
       this.lastT = t; this.dirty = false;
+      const was = this.used;
       try { this.draw(); this.frames++; } catch (e) { this.fail('cors'); return; }
+      if (was !== this.used && bar.v === v) barRender();
       const f = this.frames;
       if (f === 8 || f === 60 || f % 600 === 0 || f === this.retestAt) { if (!this.selfTest()) return; }
       if (f === 1) { this.c.style.visibility = 'visible'; this.uiCheck(); }
@@ -791,7 +957,7 @@ class SuperRes {
     toHost({ type: 'srFail', reason });
     barRender();
   }
-  destroy() { if (!this.alive) return; this.alive = false; clearInterval(this.posT); clearTimeout(this.uiT); this.ro.disconnect(); this.c.remove(); vt.srMap.delete(this.v); }
+  destroy() { if (!this.alive) return; this.alive = false; clearInterval(this.posT); clearInterval(this.perfT); clearTimeout(this.uiT); this.ro.disconnect(); this.c.remove(); vt.srMap.delete(this.v); }
 }
 vt.srMap = new Map();
 vt.skip = new WeakMap(); // видео, которые не улучшаем: 'drm' — защищённое, 'ui' — улучшение закрыло бы кнопки плеера
@@ -945,7 +1111,7 @@ function barBuild() {
       <button data-a="mute" title="Громкость до 300% (Alt+колесо)">${IC.vol}</button><input type="range" data-r="vol" min="0" max="300" step="5"><span class="val" data-v="vol">100%</span>
     </div>
     <div class="row">
-      <button class="sr" data-a="sr" title="Супер-чёткость: апскейл и резкость на видеокарте. Нажимай: выкл → средне → сильно">${IC.sr}Чёткость <i data-v="sr"></i></button>
+      <button class="sr" data-a="sr" title="Liquid RTX: увеличение обученным фильтром RAVU и резкость без ряби на видеокарте. Нажимай: выкл → ×1 → ×2">${IC.sr}Чёткость <i data-v="sr"></i></button>
       <button data-a="hdr" title="HDR-цвет">HDR</button>
     </div>
     <div class="st" data-v="st"></div>
@@ -1023,7 +1189,11 @@ function barRender() {
   else if (vt.srBroken) { st.className = 'st bad'; st.textContent = `Не работает: ${WHY[vt.srWhy] || 'ошибка'}. Нажми «Чёткость», чтобы попробовать снова.`; }
   else if (vt.sr !== 'off' && vt.lite.has(v)) { st.className = 'st ok'; st.textContent = `Работает в лёгком режиме: резкость${vt.srHdr ? ' и HDR-цвет' : ''} без апскейла — этот плеер не отдаёт кадры видеокарте.`; }
   else if (vt.sr !== 'off' && r && r.big) { st.className = 'st ok'; st.textContent = `Не нужна: видео ${v.videoWidth}×${v.videoHeight} крупнее плеера на экране (${r.ow}×${r.oh}) — показываю как есть. В полном экране включится сама.`; }
-  else if (vt.sr !== 'off' && r && r.frames > 0) { st.className = 'st ok'; st.textContent = `Работает: ${v.videoWidth}×${v.videoHeight} → ${r.ow}×${r.oh}${vt.srHdr ? ' · HDR' : ''}`; }
+  else if (vt.sr !== 'off' && r && r.frames > 0) {
+    // каким способом сейчас увеличиваем: RAVU-3 / RAVU-2 (обученный фильтр) или FSR (запасной)
+    const how = { r3: ' · RAVU-3', r2: ' · RAVU-2', fsr: r.slow ? ' · FSR (видеокарта не успевала за RAVU)' : ' · FSR' }[r.used] || '';
+    st.className = 'st ok'; st.textContent = `Работает: ${v.videoWidth}×${v.videoHeight} → ${r.ow}×${r.oh}${how}${vt.srHdr ? ' · HDR' : ''}`;
+  }
   else if (vt.sr !== 'off' && v.offsetWidth < 240) { st.className = 'st'; st.textContent = 'Включится, когда видео станет больше.'; }
   else if (vt.sr !== 'off') { st.className = 'st'; st.textContent = 'Включается…'; setTimeout(barRender, 600); }
   else { st.className = 'st'; st.textContent = ''; }
