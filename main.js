@@ -1489,6 +1489,12 @@ function registerIpc() {
   const sugCache = new Map();
   // настройки видео для фреймов (в главную страницу их присылает окно браузера)
   // Liquid RTX: таблицы весов апскейлера RAVU для страниц (читаются с диска один раз, потом из памяти)
+  // Liquid Player просит полный экран, а «жест пользователя» уже израсходовал сайт — повторяем запрос от имени
+  // пользователя в том же фрейме (только для страниц во вкладках)
+  ipcMain.handle('lp:gesture', async (e) => {
+    if (e.sender.getType() !== 'webview' || !e.senderFrame) return false;
+    try { await e.senderFrame.executeJavaScript(`document.dispatchEvent(new CustomEvent('liquid:lpfs'))`, true); return true; } catch { return false; }
+  });
   ipcMain.handle('sr:net', () => { try { return rtxNet(); } catch (err) { console.warn('[liquid] Liquid RTX:', err.message); return null; } });
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
   ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false }; });

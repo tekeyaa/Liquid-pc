@@ -1778,8 +1778,20 @@ function lpVol(x) { setVolume(lp.v, Math.max(0, Math.min(3, Math.round(x * 100) 
 function lpSeek(d) { const v = lp.v; v.currentTime = Math.max(0, Math.min((v.duration || 1e9) - 0.1, v.currentTime + d)); lpHud((d > 0 ? '+' : '−') + Math.abs(d) + ' с'); }
 function lpRate(d) { const v = lp.v; const r = Math.max(0.25, Math.min(4, Math.round((v.playbackRate + d) * 4) / 4)); v.playbackRate = r; vt.want.speed = r; lpHud('Скорость ' + fmtRate(r)); lpRender(); }
 async function lpFull() {
-  try { if (document.fullscreenElement === lp.host) await document.exitFullscreen(); else await lp.host.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { lpHud('Полный экран: нажми F'); }
+  if (document.fullscreenElement === lp.host) { try { await document.exitFullscreen(); } catch {} return; }
+  if (!(await lpFullscreen())) lpHud('Полный экран: нажми F');
 }
+// Полный экран для нашего плеера. Нужен «жест пользователя», а его уже мог израсходовать сам сайт (он только что
+// ушёл в свой полный экран) — тогда просим браузер повторить запрос от имени пользователя (main → этот же фрейм)
+async function lpFullscreen() {
+  if (!lp.open) return false;
+  try { await lp.host.requestFullscreen({ navigationUI: 'hide' }); return true; } catch {}
+  const done = new Promise((ok) => { const t = setTimeout(ok, 1500); document.addEventListener('fullscreenchange', function f() { if (document.fullscreenElement === lp.host) { clearTimeout(t); document.removeEventListener('fullscreenchange', f); ok(); } }); });
+  try { await ipcRenderer.invoke('lp:gesture'); } catch {}
+  await done;
+  return document.fullscreenElement === lp.host;
+}
+document.addEventListener('liquid:lpfs', () => { if (lp.open && document.fullscreenElement !== lp.host) lp.host.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); });
 function lpAct(b) {
   const a = b.dataset.a, v = lp.v;
   if (b.dataset.sr) { vt.sr = b.dataset.sr; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); lp.dirty = true; lpRender(); return; }
@@ -1953,7 +1965,7 @@ function lpOpen(v, fromFs) {
   window.addEventListener('keydown', lpKey, true);
   lp.perfT = setInterval(() => { if (lp.perf.check(v, lp.used) && lp.eng.slower()) { lp.slow = true; console.warn('[liquid] Liquid Player: видеокарта не успевает — ступенька вниз'); lpRender(); } }, 2000);
   lp.capT = setInterval(lpCaptions, 250);
-  if (!fromFs) lp.host.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); // не вышло (нет нажатия) — остаёмся во всё окно
+  if (!fromFs) lpFullscreen(); // не вышло — остаёмся во всё окно, F или кнопка включат полный экран
   lpLayout(); lpRender(); lpUi(); lpLoop();
   ytBest();
   toHost({ type: 'lpOpen', on: true });
@@ -1987,7 +1999,7 @@ document.addEventListener('fullscreenchange', () => {
   const v = fs.tagName === 'VIDEO' ? fs : [...fs.querySelectorAll('video')].sort((a, b) => b.offsetWidth * b.offsetHeight - a.offsetWidth * a.offsetHeight)[0];
   if (!v || !v.videoWidth || v.mediaKeys || vt.skip.get(v) === 'drm') return;
   lpOpen(v, true);
-  if (lp.open) lp.host.requestFullscreen({ navigationUI: 'hide' }).catch(() => lpClose(true)); // нажатие уже «истекло» — остаётся плеер сайта
+  if (lp.open) lpFullscreen().then((ok) => { if (!ok && lp.open && document.fullscreenElement !== lp.host) lpClose(true); }); // не вышло — остаётся плеер сайта
 });
 // Alt+Enter — открыть видео под курсором (или главное) в Liquid Player
 window.addEventListener('keydown', (e) => {
