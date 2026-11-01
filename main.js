@@ -192,7 +192,20 @@ function loadSettings() {
   if (!settingsMem) { try { settingsMem = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch { settingsMem = {}; } }
   return structuredClone(settingsMem);
 }
-function saveSettings(s) { fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2)); settingsMem = structuredClone(s); }
+// Запись настроек на диск — не сразу и не блокируя основной процесс: несколько изменений подряд пишутся одним разом,
+// через временный файл (оборванная запись больше не может испортить settings.json). При выходе — дописываем сразу
+let settingsT = 0, settingsDirty = false;
+function saveSettings(s) {
+  settingsMem = structuredClone(s); settingsDirty = true;
+  clearTimeout(settingsT); settingsT = setTimeout(() => flushSettings(false), 300);
+}
+function flushSettings(sync) {
+  if (!settingsDirty) return; settingsDirty = false; clearTimeout(settingsT);
+  const f = settingsFile(), tmp = f + '.tmp', data = JSON.stringify(settingsMem, null, 2);
+  if (sync) { try { fs.writeFileSync(tmp, data); fs.renameSync(tmp, f); } catch (e) { try { fs.writeFileSync(f, data); } catch {} } return; }
+  fs.promises.writeFile(tmp, data).then(() => fs.promises.rename(tmp, f)).catch((e) => { diag.log('warn', 'настройки', 'Не записались: ' + e.message); settingsDirty = true; });
+}
+app.on('will-quit', () => flushSettings(true));
 function enc(str) {
   if (!str) return '';
   return safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(str).toString('base64') : 'plain:' + str;

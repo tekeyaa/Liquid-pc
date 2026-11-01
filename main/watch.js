@@ -3,6 +3,12 @@
 // записок). Видео каждый смотрит сам со своего сайта — через брокер идут только «пауза на 12:30» и чат.
 // Всё зашифровано ключом из кода комнаты (AES-256-GCM), а тема в брокере — хэш кода: посторонние не прочтут.
 const crypto = require('crypto');
+// случайные байты — из запаса, а не отдельным системным вызовом на каждое сообщение (раньше это было заметно в профиле)
+let pool = Buffer.alloc(0), poolAt = 0;
+function rand(n) {
+  if (poolAt + n > pool.length) { pool = crypto.randomBytes(4096); poolAt = 0; }
+  const out = Buffer.from(pool.subarray(poolAt, poolAt + n)); poolAt += n; return out;
+}
 
 const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt', 'wss://test.mosquitto.org:8081/mqtt'];
 
@@ -59,7 +65,7 @@ class Mqtt {
 
 // ---------- комната ----------
 const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // без похожих 0/O, 1/I
-function newCode() { const b = crypto.randomBytes(8); let s = ''; for (let i = 0; i < 8; i++) s += ALPHA[b[i] % ALPHA.length]; return s.slice(0, 4) + '-' + s.slice(4); }
+function newCode() { const b = rand(8); let s = ''; for (let i = 0; i < 8; i++) s += ALPHA[b[i] % ALPHA.length]; return s.slice(0, 4) + '-' + s.slice(4); }
 const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/(.{4})(.{4}).*/, '$1-$2');
 
 class WatchRoom {
@@ -67,7 +73,7 @@ class WatchRoom {
   // а у другого — другой, они всё равно встретятся на общем. Повторы одного сообщения отсеиваем по номеру.
   constructor({ onMessage, onStatus, log }) {
     this.onMessage = onMessage; this.onStatus = onStatus; this.log = log || (() => {});
-    this.code = ''; this.me = 'lq-' + crypto.randomBytes(6).toString('hex'); this.state = 'off';
+    this.code = ''; this.me = 'lq-' + rand(6).toString('hex'); this.state = 'off';
     this.links = new Map(); // url брокера -> { mq, retry, timer }
     this.seen = new Map();  // номер сообщения -> время (защита от дублей)
   }
@@ -80,7 +86,7 @@ class WatchRoom {
     this._key = crypto.createHash('sha256').update('liquid-watch:' + this.code).digest();
   }
   seal(obj) {
-    const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', this.key, iv);
+    const iv = rand(12), c = crypto.createCipheriv('aes-256-gcm', this.key, iv);
     const ct = Buffer.concat([c.update(JSON.stringify(obj), 'utf8'), c.final()]);
     return Buffer.concat([iv, c.getAuthTag(), ct]);
   }
@@ -113,7 +119,7 @@ class WatchRoom {
     const l = this.links.get(url) || { url, host: new URL(url).hostname, mq: null, retry: 0, timer: 0, trying: false };
     this.links.set(url, l);
     l.trying = true; this.status();
-    const mq = new Mqtt(url, this.me + '-' + crypto.randomBytes(2).toString('hex'), {
+    const mq = new Mqtt(url, this.me + '-' + rand(2).toString('hex'), {
       onMessage: (_t, payload) => this.receive(payload),
       onClose: () => { if (l.mq === mq) { l.mq = null; this.status(); this.relink(l); } },
     });
@@ -151,7 +157,7 @@ class WatchRoom {
     if (!this.code) return false;
     const up = [...this.links.values()].filter((l) => l.mq);
     if (!up.length) return false;
-    const data = this.seal({ ...obj, from: this.me, id: crypto.randomBytes(6).toString('hex'), at: Date.now() });
+    const data = this.seal({ ...obj, from: this.me, id: rand(6).toString('hex'), at: Date.now() });
     for (const l of up) l.mq.publish(this.topic, data);
     return true;
   }
