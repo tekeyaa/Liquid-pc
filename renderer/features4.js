@@ -320,7 +320,10 @@
     if (tab && Date.now() - (tab.thumbAt || 0) < 60e3) return;
     if (!tab || tab !== active || !tab.wv || !tab.wcId || document.hidden || document.body.classList.contains('game') || !/^https?:/.test(tab.url)) return;
     tab.thumbAt = Date.now();
-    try { const d = await L.tabs.thumb(tab.wcId); if (d) tab.thumb = d; } catch {}
+    let d = ''; try { d = await L.tabs.thumb(tab.wcId); } catch {}
+    // кадр не получился (страница ещё не нарисовалась) — пробуем снова через 3 секунды, а не через минуту
+    if (d) { tab.thumb = d; tab.thumbFails = 0; }
+    else if ((tab.thumbFails = (tab.thumbFails || 0) + 1) <= 3) { tab.thumbAt = 0; setTimeout(() => snap(tab), 3000); }
   }
   const prevCreated = window.onWebviewCreated;
   window.onWebviewCreated = (tab, wv) => {
