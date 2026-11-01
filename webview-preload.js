@@ -774,7 +774,7 @@ const netData = () => SR_NET || (SR_NET = ipcRenderer.invoke('sr:net').catch(() 
 const SR_TIERS = ['fsr', 'r2', 'r3', 'net'];
 const SR_NAMES = { net: 'нейросеть Liquid RTX', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
 // резкость RCAS после увеличения: у нейросети своя резкость уже есть — добавляем чуть-чуть
-const SR_SHARP_K = { net: { mid: 0.15, max: 0.45 }, ravu: { mid: 0.4, max: 0.7 }, fsr: { mid: 0.4, max: 0.7 } };
+const SR_SHARP_K = { net: { mid: 0.1, max: 0.4 }, ravu: { mid: 0.4, max: 0.7 }, fsr: { mid: 0.4, max: 0.7 } };
 // Движок Liquid RTX: один WebGL2-контекст на своём холсте, рисует кадр видео в размер холста.
 // Им пользуются и слой поверх плеера сайта, и Liquid Player.
 class RtxEngine {
