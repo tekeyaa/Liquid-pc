@@ -32,7 +32,9 @@ function splitInput(text) {
   const keys = [], subs = [];
   const raw = String(text || '').trim();
   if (!raw) return { keys, subs };
-  const parts = raw.split(/\s+/).filter(Boolean);
+  // ключи — по строкам; в одной строке несколько — по началу следующего ключа (а не по любому пробелу:
+  // в названии сервера после # пробелы бывают — «Сервер А», «🇩🇪 Германия 2»)
+  const parts = raw.split(/\r?\n|\s+(?=(?:vless|vmess|trojan|ssconf|ss|socks5?|socks|https?):\/\/)/i).map((x) => x.trim()).filter(Boolean);
   if (parts.length === 1 && !/:\/\//.test(parts[0])) { keys.push(...decodeSub(parts[0])); return { keys, subs }; }
   for (const p of parts) {
     if (isSubUrl(p)) subs.push(p);
