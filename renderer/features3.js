@@ -47,10 +47,14 @@
   const retried = new Map(); // адрес -> когда перезагружали сами
   const stallOn = () => lsGet('liquid.stallRetry', true);
   // пуста ли страница; если она так зависла, что даже не отвечает за 2 секунды, — тоже считаем пустой
-  const blank = (wv) => Promise.race([
-    wv.executeJavaScript(`(() => { const b = document.body; return !b || ((b.innerText || '').trim().length < 20 && b.getElementsByTagName('*').length < 25 && !document.querySelector('video,canvas,img,iframe,svg')); })()`).catch(() => true),
-    new Promise((r) => setTimeout(() => r(true), 2000)),
-  ]);
+  // вкладка ещё не готова (dom-ready не было) или уже закрыта — executeJavaScript бросает сразу, а не через Promise:
+  // это не «пустая страница», молча пропускаем
+  const blank = (wv) => {
+    let run;
+    try { run = wv.executeJavaScript(`(() => { const b = document.body; return !b || ((b.innerText || '').trim().length < 20 && b.getElementsByTagName('*').length < 25 && !document.querySelector('video,canvas,img,iframe,svg')); })()`).catch(() => true); }
+    catch { return Promise.resolve(false); }
+    return Promise.race([run, new Promise((r) => setTimeout(() => r(true), 2000))]);
+  };
   window.onWebviewCreated = (tab, wv) => {
     let timer = 0;
     const stop = () => { clearTimeout(timer); timer = 0; };

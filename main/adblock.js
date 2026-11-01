@@ -54,7 +54,9 @@ class AdBlock {
     // 1) быстрый старт из кэша
     try {
       if (fs.existsSync(this.cacheFile)) {
-        this.blocker = ElectronBlocker.deserialize(new Uint8Array(fs.readFileSync(this.cacheFile)));
+        const t0 = Date.now();
+        this.blocker = ElectronBlocker.deserialize(new Uint8Array(await fs.promises.readFile(this.cacheFile)));
+        const dt = Date.now() - t0; if (dt > 150) console.info(`[adblock] движок из кэша загружен за ${dt} мс`);
       }
     } catch { this.blocker = null; }
     const stale = !fs.existsSync(this.cacheFile) || Date.now() - fs.statSync(this.cacheFile).mtimeMs > 864e5;
@@ -88,7 +90,7 @@ class AdBlock {
           let hash = r && r.hash;
           const buf = r && r.buf;
           built = buf;
-          if (buf) fresh = ElectronBlocker.deserialize(buf);
+          if (buf) { const t1 = Date.now(); fresh = ElectronBlocker.deserialize(buf); const dt = Date.now() - t1; if (dt > 150) console.info(`[adblock] новый движок загружен за ${dt} мс`); }
           else {
             const text = got.map((g) => g.text).join('\n');
             hash = crypto.createHash('sha256').update(text).update(EXCEPTIONS.join('\n')).digest('hex');

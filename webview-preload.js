@@ -545,6 +545,7 @@ function videoCmd(m) {
     if (m.remember != null) vt.remember = !!m.remember;
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
+    if (m.srContent) vt.srContent = m.srContent;
     if (m.sr != null) { vt.sr = m.sr; vt.srHdr = !!m.srHdr; srSync(); if (lp.open) { lp.dirty = true; lpRender(); } }
     return;
   }
@@ -710,20 +711,21 @@ void main(){ HOOKED_pos = crop.xy + uv * crop.zw; fragColor = vec4(clamp(hook().
 function netShaders(net) {
   const f = (x) => { const s = (+x).toPrecision(6); return /[.e]/.test(s) ? s : s + '.0'; };
   const L = net.layers, dims = net.dims;
-  const head = '#version 300 es\nprecision highp float; precision highp int;\n';
+  const head = '#version 300 es\nprecision highp float; precision highp int;\nconst vec3 W709 = vec3(0.2126, 0.7152, 0.0722);\n';
+  // p — точка во входной текстуре (своя полоса кадра или весь кадр), sz — её размер: края повторяются, как при обучении
   const fetch = (tex, i) => `texelFetch(${tex}, clamp(p + ivec2(${(i % 3) - 1}, ${Math.floor(i / 3) - 1}), ivec2(0), sz - 1), 0)`;
   const out = [];
   for (let li = 0; li < L.length; li++) {
-    const cin = dims[li], cout = dims[li + 1], w = L[li].w, b = L[li].b;
+    const cin = dims[li], cout = dims[li + 1], w = L[li].w, b = L[li].b, last = li === L.length - 1;
     const nIn = Math.ceil(cin / 4), nOut = Math.ceil(cout / 4);
-    let s = head + 'uniform ivec2 sz;\n';
+    let s = head + 'uniform ivec2 sz; uniform ivec2 org;\n';
     if (li === 0) s += 'uniform sampler2D src;\n'; else for (let t = 0; t < nIn; t++) s += `uniform sampler2D f${t};\n`;
     for (let o = 0; o < nOut; o++) s += `layout(location = ${o}) out vec4 o${o};\n`;
-    s += 'void main(){\n  ivec2 p = ivec2(gl_FragCoord.xy);\n';
+    s += 'void main(){\n  ivec2 p = ivec2(gl_FragCoord.xy) + org;\n';
     for (let o = 0; o < nOut; o++) s += `  vec4 a${o} = vec4(${[0, 1, 2, 3].map((k) => f(b[4 * o + k] || 0)).join(', ')});\n`;
     for (let tap = 0; tap < 9; tap++) {
       if (li === 0) {
-        s += `  { float y = dot(${fetch('src', tap)}.rgb, vec3(0.2126, 0.7152, 0.0722));\n`;
+        s += `  { float y = dot(${fetch('src', tap)}.rgb, W709);\n`;
         for (let o = 0; o < nOut; o++) s += `    a${o} += y * vec4(${[0, 1, 2, 3].map((k) => f(w[tap][4 * o + k] || 0)).join(', ')});\n`;
         s += '  }\n';
       } else {
@@ -738,19 +740,49 @@ function netShaders(net) {
         }
       }
     }
-    for (let o = 0; o < nOut; o++) s += `  o${o} = ${li < L.length - 1 ? `max(a${o}, 0.0)` : `a${o}`};\n`;
+    for (let o = 0; o < nOut; o++) s += `  o${o} = ${!last ? `max(a${o}, 0.0)` : `a${o}`};\n`;
     out.push({ fs: s + '}\n', nIn: li === 0 ? 0 : nIn, nOut });
   }
-  // яркость 2×: билинейная основа (из исходного кадра) + подпиксель из сети
-  const hr = head + `uniform sampler2D src; uniform sampler2D res; uniform vec2 lsz; out vec4 o;
+  // яркость 2×: билинейная основа (из исходного кадра) + подпиксель из сети.
+  // Стабильность во времени: где кадр не изменился (средняя яркость 3×3 сдвинулась меньше чем на пару уровней —
+  // зерно и шум сжатия при этом усредняются, а сдвиг краёв нет), смешиваем с прошлым итогом: шум перестаёт «кипеть»
+  // на неподвижных местах (стены, небо, фон в интервью). На движении не трогаем — шлейфов нет
+  const hr = head + `uniform sampler2D src; uniform sampler2D prev; uniform sampler2D res; uniform sampler2D hrPrev; uniform vec2 lsz; uniform float tw; out vec4 o;
 void main(){
   ivec2 q = ivec2(gl_FragCoord.xy); ivec2 p = q >> 1; int k = (q.y & 1) * 2 + (q.x & 1);
   vec4 r = texelFetch(res, p, 0);
-  float base = dot(texture(src, (vec2(q) + 0.5) / (2.0 * lsz)).rgb, vec3(0.2126, 0.7152, 0.0722));
-  o = vec4(base + (k == 0 ? r.x : k == 1 ? r.y : k == 2 ? r.z : r.w), 0.0, 0.0, 1.0);
+  float base = dot(texture(src, (vec2(q) + 0.5) / (2.0 * lsz)).rgb, W709);
+  float y = base + (k == 0 ? r.x : k == 1 ? r.y : k == 2 ? r.z : r.w);
+  if (tw > 0.0) {
+    // только ровные места: в текстуре (трава, листва) медленное движение почти не меняет средние — там не смешиваем
+    ivec2 sz = ivec2(lsz); float m = 0.0, lo = 1.0, hi = 0.0;
+    for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) { ivec2 c = clamp(p + ivec2(i, j), ivec2(0), sz - 1);
+      float a = dot(texelFetch(src, c, 0).rgb, W709), b = dot(texelFetch(prev, c, 0).rgb, W709);
+      m += a - b; lo = min(lo, a); hi = max(hi, a); }
+    float w = (1.0 - smoothstep(1.5 / 255.0, 5.0 / 255.0, abs(m) / 9.0)) * (1.0 - smoothstep(6.0 / 255.0, 14.0 / 255.0, hi - lo));
+    y = mix(y, texelFetch(hrPrev, q, 0).r, tw * w);
+  }
+  o = vec4(y, 0.0, 0.0, 1.0);
 }`;
-  // итог в размер экрана: яркость 2× (бикубически под любой масштаб) + цвет из исходного кадра
-  const compose = head + `in vec2 uv; out vec4 o; uniform sampler2D src; uniform sampler2D hr; uniform vec2 hsz; uniform vec4 crop;
+  // Цвет по яркости. В видео цвет хранится в половинном разрешении (4:2:0) — у 1080p это 960×540, на 4K его
+  // растягивают вчетверо, и цветные края «плывут». Направленный фильтр (He et al.): в окне 5×5 цвет ≈ a·яркость + b;
+  // a и b отсюда, а яркость берём уже чёткую (из сети) — цветные края становятся такими же резкими, как яркостные
+  const cfl = head + `uniform sampler2D src; uniform ivec2 sz; uniform float eps; out vec4 o;
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  float sy = 0.0, sb = 0.0, sr = 0.0, syy = 0.0, syb = 0.0, syr = 0.0;
+  for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
+    vec3 c = texelFetch(src, clamp(p + ivec2(i, j), ivec2(0), sz - 1), 0).rgb; float y = dot(c, W709);
+    float cb = (c.b - y) / 1.8556, cr = (c.r - y) / 1.5748;
+    sy += y; sb += cb; sr += cr; syy += y * y; syb += y * cb; syr += y * cr;
+  }
+  sy /= 25.0; sb /= 25.0; sr /= 25.0;
+  float vy = syy / 25.0 - sy * sy;
+  float ab = (syb / 25.0 - sy * sb) / (vy + eps), ar = (syr / 25.0 - sy * sr) / (vy + eps);
+  o = vec4(ab, sb - ab * sy, ar, sr - ar * sy);
+}`;
+  // итог в размер экрана: яркость 2× (бикубически под любой масштаб) + цвет по яркости (или из кадра)
+  const compose = head + `in vec2 uv; out vec4 o; uniform sampler2D src; uniform sampler2D hr; uniform sampler2D cf; uniform vec2 hsz; uniform vec4 crop; uniform float cfl;
 vec4 cub(float x){ float x2 = x * x, x3 = x2 * x; return vec4(-0.5*x3 + x2 - 0.5*x, 1.5*x3 - 2.5*x2 + 1.0, -1.5*x3 + 2.0*x2 + 0.5*x, 0.5*x3 - 0.5*x2); }
 void main(){
   vec2 s = crop.xy + uv * crop.zw;
@@ -759,22 +791,26 @@ void main(){
   for (int j = 0; j < 4; j++) { float row = 0.0;
     for (int i = 0; i < 4; i++) row += texture(hr, b + d * vec2(float(i) - 1.0, float(j) - 1.0)).r * wx[i];
     y += row * wy[j]; }
-  vec3 c = texture(src, s).rgb;
-  c += y - dot(c, vec3(0.2126, 0.7152, 0.0722));
-  o = vec4(clamp(c, 0.0, 1.0), 1.0);
+  vec3 c = texture(src, s).rgb; float y0 = dot(c, W709);
+  float cb = (c.b - y0) / 1.8556, cr = (c.r - y0) / 1.5748;
+  if (cfl > 0.0) { vec4 k = texture(cf, s); cb = mix(cb, k.x * y + k.y, cfl); cr = mix(cr, k.z * y + k.w, cfl); }
+  vec3 r; r.r = y + 1.5748 * cr; r.b = y + 1.8556 * cb; r.g = (y - 0.2126 * r.r - 0.0722 * r.b) / 0.7152;
+  o = vec4(clamp(r, 0.0, 1.0), 1.0);
 }`;
-  return { layers: out, hr, compose };
+  return { layers: out, hr, cfl, compose };
 }
 // </netShaders>
-const SR_RAVU = {}; // таблицы весов RAVU: одна загрузка на страницу (r2 ~1,5 МБ, r3 ~2,6 МБ)
+const SR_RAVU = {}; // таблицы весов RAVU: одна загрузка на страницу (r2 ~1,5 МБ, r3 ~2,6 МБ) — только если нейросеть недоступна
 const ravuData = (r) => SR_RAVU[r] || (SR_RAVU[r] = ipcRenderer.invoke('sr:ravu', r).catch(() => null));
-let SR_NET = null; // веса нейросети (из main/rtx)
-const netData = () => SR_NET || (SR_NET = ipcRenderer.invoke('sr:net').catch(() => null));
-// ступени качества: 3 — нейросеть, 2 — RAVU-3, 1 — RAVU-2, 0 — FSR. Видеокарта не успевает — ступенька вниз.
-const SR_TIERS = ['fsr', 'r2', 'r3', 'net'];
-const SR_NAMES = { net: 'нейросеть Liquid RTX', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
-// резкость RCAS после увеличения: у нейросети своя резкость уже есть — добавляем чуть-чуть
-const SR_SHARP_K = { net: { mid: 0.1, max: 0.4 }, ravu: { mid: 0.4, max: 0.7 }, fsr: { mid: 0.4, max: 0.7 } };
+const SR_NET = {}; // веса нейросетей (из main/rtx): pro — большая для сильных видеокарт, lite — лёгкая, anime — для рисованного
+const netData = (n) => SR_NET[n] || (SR_NET[n] = ipcRenderer.invoke('sr:net', n).catch(() => null));
+// ступени качества (cap): 4 — нейросеть Pro, 3 — лёгкая (и аниме), 2 — RAVU-3, 1 — RAVU-2, 0 — FSR.
+// Видеокарта не успевает — ступенька вниз.
+const SR_TIER = { fsr: 0, r2: 1, r3: 2, net: 3, anime: 3, pro: 4 };
+const SR_NAMES = { pro: 'нейросеть Liquid RTX Pro', net: 'нейросеть Liquid RTX', anime: 'нейросеть Liquid RTX · аниме', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
+// резкость RCAS после увеличения: у нейросети своя резкость уже есть — «Чисто» почти без добавки, «Чётко» — заметнее
+const SR_SHARP_K = { net: { mid: 0.1, max: 0.4 }, anime: { mid: 0.15, max: 0.45 }, ravu: { mid: 0.4, max: 0.7 }, fsr: { mid: 0.4, max: 0.7 } };
+const SR_NET_FILE = { pro: 'pro', net: 'lite', anime: 'anime' };
 // Движок Liquid RTX: один WebGL2-контекст на своём холсте, рисует кадр видео в размер холста.
 // Им пользуются и слой поверх плеера сайта, и Liquid Player.
 class RtxEngine {
@@ -790,10 +826,13 @@ class RtxEngine {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     this.pEasu = this.prog(SR_EASU); this.pRcas = this.prog(SR_RCAS); this.pDown = this.prog(SR_DOWN); this.pBilin = this.prog(SR_BILIN);
     for (const p of [this.pEasu, this.pRcas, this.pDown, this.pBilin]) if (!gl.getProgramParameter(p.p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p.p) || 'link');
-    this.tSrc = this.tex(); this.tMid = this.tex();
+    // два исходных кадра по очереди: текущий и прошлый (для стабильности во времени)
+    this.tSrcs = [this.tex(), this.tex()]; this.si = 0; this.tSrc = this.tSrcs[0]; this.tMid = this.tex();
     this.fb = gl.createFramebuffer();
-    this.ravu = {}; this.ravuReq = {}; this.net = null; this.netReq = false;
-    this.cap = 3; this.used = ''; this.ow = 0; this.oh = 0; this.lw = 0; this.lh = 0;
+    this.ravu = {}; this.ravuReq = {}; this.nets = {}; this.netReq = {}; this.nb = null;
+    // смешивание с прошлым кадром (temporal) проверено и выключено: на медленном движении по текстуре давало шлейф
+    this.cap = 4; this.used = ''; this.ow = 0; this.oh = 0; this.cfl = 1; this.temporal = 0;
+    this.mem = { out: 0, net: 0 }; this.netFrames = 0; this.cfEps = 0.0004;
   }
   tex(filter) {
     const gl = this.gl, t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
@@ -824,8 +863,11 @@ class RtxEngine {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.ow, this.oh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tMid, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.mem.out = this.ow * this.oh * 4 * 3; // промежуточный кадр + холст (два буфера)
   }
-  // ---- RAVU
+  // сколько видеопамяти занято (оценка, МБ)
+  vram() { return Math.round((this.mem.out + this.mem.net + (this.lastSrcBytes || 0) * 2) / 1048576); }
+  // ---- RAVU (запасной путь)
   loadRavu(r) {
     if (this.ravuReq[r]) return;
     this.ravuReq[r] = true;
@@ -842,55 +884,77 @@ class RtxEngine {
       this.ravu[r] = { name: r, ...this.prog(ravuFS(d), SR_VS3), luts };
     }).catch((e) => console.warn('[liquid] RAVU не загрузился:', e && e.message));
   }
-  // ---- нейросеть
-  loadNet() {
-    if (this.netReq || !this.fbf) return;
-    this.netReq = true;
-    netData().then((d) => {
-      if (this.dead || !d || !d.layers) return;
-      const S = netShaders(d);
-      this.net = { name: 'net', F: d.dims[1], layers: S.layers.map((l) => ({ ...this.prog(l.fs, SR_VS3), nIn: l.nIn, nOut: l.nOut })),
-        hr: this.prog(S.hr, SR_VS3), compose: this.prog(S.compose, SR_VS3), fA: [], fB: [], ok: false };
-    }).catch((e) => console.warn('[liquid] нейросеть Liquid RTX не загрузилась:', e && e.message));
+  // RAVU больше не нужен (работает нейросеть) — отдаём его таблицы и шейдеры
+  freeRavu() {
+    const gl = this.gl;
+    for (const R of Object.values(this.ravu)) { if (!R) continue; for (const [, t] of R.luts) gl.deleteTexture(t); gl.deleteProgram(R.p); }
+    this.ravu = {}; this.ravuReq = {};
   }
-  netReady() {
-    const N = this.net;
+  // ---- нейросети
+  loadNet(name) {
+    if (this.netReq[name] || !this.fbf) return;
+    this.netReq[name] = true;
+    netData(SR_NET_FILE[name]).then((d) => {
+      if (this.dead) return;
+      if (!d || !d.layers) { this.nets[name] = null; return; } // нет такой сети — возьмём следующую
+      const S = netShaders(d);
+      this.nets[name] = { name, F: d.dims[1], L: d.layers.length, layers: S.layers.map((l) => ({ ...this.prog(l.fs, SR_VS3), nIn: l.nIn, nOut: l.nOut })),
+        hr: this.prog(S.hr, SR_VS3), cfl: this.prog(S.cfl, SR_VS3), compose: this.prog(S.compose, SR_VS3), ok: false };
+    }).catch((e) => { this.nets[name] = null; console.warn('[liquid] нейросеть Liquid RTX не загрузилась:', e && e.message); });
+  }
+  netReady(N) {
     if (!N || N.bad) return false;
     if (N.ok) return true;
-    for (const P of [...N.layers, N.hr, N.compose]) { if (!this.ready(P)) { if (P.bad) N.bad = true; return false; } }
+    for (const P of [...N.layers, N.hr, N.cfl, N.compose]) { if (!this.ready(P)) { if (P.bad) N.bad = true; return false; } }
     return (N.ok = true);
   }
-  // текстуры признаков под размер кадра: 2 набора по F/4 текстур (по очереди: вход → выход), остаток, яркость 2×
-  netAlloc(vw, vh) {
-    const N = this.net, gl = this.gl;
-    if (N.w === vw && N.h === vh) return;
-    for (const t of [...N.fA, ...N.fB, N.tRes, N.tHr]) if (t) gl.deleteTexture(t);
-    for (const f of [N.fbA, N.fbB, N.fbR, N.fbH]) if (f) gl.deleteFramebuffer(f);
-    const mk = (fmt, type, w, h, filt) => { const t = this.tex(filt); gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, fmt === gl.R16F ? gl.RED : gl.RGBA, type, null); return t; };
-    const n = Math.ceil(N.F / 4);
-    N.fA = Array.from({ length: n }, () => mk(gl.RGBA16F, gl.HALF_FLOAT, vw, vh, gl.NEAREST));
-    N.fB = Array.from({ length: n }, () => mk(gl.RGBA16F, gl.HALF_FLOAT, vw, vh, gl.NEAREST));
-    N.tRes = mk(gl.RGBA16F, gl.HALF_FLOAT, vw, vh, gl.NEAREST);
-    N.tHr = mk(gl.R16F, gl.HALF_FLOAT, vw * 2, vh * 2, gl.LINEAR);
+  // Память под сеть. Кадр считаем ПОЛОСАМИ (~270 строк + поля под размах свёрток): признаки занимают в 3–4 раза
+  // меньше видеопамяти, чем на весь кадр сразу. Плюс добавка сети, яркость 2× (нынешняя и прошлая) и цвет.
+  netAlloc(N, vw, vh) {
+    const gl = this.gl, nb = this.nb;
+    const n = Math.ceil(N.F / 4), m = N.L, strips = Math.max(1, Math.ceil(vh / 272)), rs = Math.ceil(vh / strips), hs = Math.min(vh, rs + 2 * m);
+    if (nb && nb.w === vw && nb.h === vh && nb.n === n && nb.hs === hs) return nb;
+    if (nb) { for (const t of [...nb.fA, ...nb.fB, nb.tRes, ...nb.hr, nb.tCf]) if (t) gl.deleteTexture(t); for (const f of [nb.fbA, nb.fbB, nb.fbRes, ...nb.fbH, nb.fbCf]) if (f) gl.deleteFramebuffer(f); }
+    const mk = (fmt, w, h, filt) => { const t = this.tex(filt); gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, fmt === gl.R16F ? gl.RED : gl.RGBA, gl.HALF_FLOAT, null); return t; };
     const fbo = (texs) => { const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
       texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0)); return f; };
-    N.fbA = fbo(N.fA); N.fbB = fbo(N.fB); N.fbR = fbo([N.tRes]); N.fbH = fbo([N.tHr]);
+    const B = { w: vw, h: vh, n, hs, rs, hi: 0, fA: [], fB: [] };
+    B.fA = Array.from({ length: n }, () => mk(gl.RGBA16F, vw, hs, gl.NEAREST)); B.fB = Array.from({ length: n }, () => mk(gl.RGBA16F, vw, hs, gl.NEAREST));
+    B.tRes = mk(gl.RGBA16F, vw, vh, gl.NEAREST);
+    const h0 = mk(gl.R16F, vw * 2, vh * 2, gl.LINEAR);
+    B.hr = [h0, this.temporal ? mk(gl.R16F, vw * 2, vh * 2, gl.LINEAR) : null]; B.tCf = mk(gl.RGBA16F, vw, vh, gl.LINEAR);
+    B.fbA = fbo(B.fA); B.fbB = fbo(B.fB); B.fbRes = fbo([B.tRes]); B.fbH = B.hr.map((t) => (t ? fbo([t]) : null)); B.fbCf = fbo([B.tCf]);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    N.w = vw; N.h = vh;
+    this.mem.net = (2 * n * vw * hs + 2 * vw * vh) * 8 + vw * vh * 4 * 2 * (this.temporal ? 2 : 1);
+    this.prevKey = '';
+    return (this.nb = B);
   }
-  run(P, fb, w, h, texs, set, nOut) {
+  run(P, fb, w, h, texs, set, nOut, vp) {
     const gl = this.gl;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); gl.useProgram(P.p);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    if (vp) gl.viewport(vp[0], vp[1], vp[2], vp[3]); else gl.viewport(0, 0, w, h);
+    gl.useProgram(P.p);
     if (this.gl2 && fb) gl.drawBuffers(Array.from({ length: nOut || 1 }, (_, i) => gl.COLOR_ATTACHMENT0 + i));
     if (P.a < 0) P.a = gl.getAttribLocation(P.p, 'p');
     gl.enableVertexAttribArray(P.a); gl.vertexAttribPointer(P.a, 2, gl.FLOAT, false, 0, 0);
     texs.forEach(([n, t], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(P.u(n), i); });
     set(P.u); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
-  // какой способ увеличения сейчас: лучший из готовых, не выше ступени cap
-  pick(level) {
+  // какой способ увеличения сейчас: лучший из готовых, не выше ступени cap.
+  // Пока шейдер нейросети собирается (секунда-другая), рисуем FSR — RAVU ради этого не грузим (лишняя память)
+  pick(level, content) {
     if (!this.gl2) return null;
-    if (this.cap >= 3 && this.fbf) { this.loadNet(); if (this.netReady()) return this.net; }
+    if (this.cap >= 3 && this.fbf) {
+      const order = content === 'anime' ? ['anime', 'net'] : this.cap >= 4 ? ['pro', 'net'] : ['net'];
+      let i = 0;
+      for (; i < order.length; i++) {
+        const n = order[i]; this.loadNet(n);
+        const N = this.nets[n];
+        if (N === undefined) return null;                 // веса ещё идут из main
+        if (N && this.netReady(N)) return N;
+        if (N && !N.bad) return null;                     // собирается
+      }
+    }
     if (this.cap >= 1) {
       const want = level === 'max' && this.cap >= 2 ? 'r3' : 'r2';
       this.loadRavu(want);
@@ -898,39 +962,63 @@ class RtxEngine {
     }
     return null;
   }
-  // рисует кадр src (видео или VideoFrame) размером vw×vh; crop — видимая часть кадра; split — доля «как было» слева
-  draw(src, vw, vh, crop, level, hdr, split) {
+  drawNet(N, vw, vh, k) {
+    const gl = this.gl, B = this.netAlloc(N, vw, vh), m = N.L, last = N.layers.length - 1;
+    const prev = this.tSrcs[this.si ^ 1];
+    const key = `${N.name}|${vw}x${vh}`, tw = this.temporal && this.prevKey === key ? this.temporal : 0;
+    for (let y0 = 0; y0 < vh; y0 += B.rs) {
+      const y1 = Math.min(vh, y0 + B.rs), r0 = Math.max(0, y0 - m), r1 = Math.min(vh, y1 + m), rh = r1 - r0;
+      let inT = null, fbOut = B.fbA, outT = B.fA;
+      N.layers.forEach((P, i) => {
+        if (i === 0) {
+          this.run(P, fbOut, vw, rh, [['src', this.tSrc]], (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2i(u('sz'), vw, vh); gl.uniform2i(u('org'), 0, r0); }, P.nOut, [0, 0, vw, rh]);
+        } else if (i < last) {
+          this.run(P, fbOut, vw, rh, inT.map((t, j) => ['f' + j, t]), (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2i(u('sz'), vw, rh); gl.uniform2i(u('org'), 0, 0); }, P.nOut, [0, 0, vw, rh]);
+        } else {
+          // последний слой пишет сразу в общую текстуру добавки — только свои строки полосы
+          this.run(P, B.fbRes, vw, vh, inT.map((t, j) => ['f' + j, t]), (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2i(u('sz'), vw, rh); gl.uniform2i(u('org'), 0, -r0); }, 1, [0, y0, vw, y1 - y0]);
+        }
+        if (i < last) { inT = outT; [fbOut, outT] = outT === B.fA ? [B.fbB, B.fB] : [B.fbA, B.fA]; }
+      });
+    }
+    const t2 = !!B.hr[1], hi = t2 ? B.hi : 0, hrNow = B.hr[hi], hrPrev = t2 ? B.hr[hi ^ 1] : B.tRes; // без смешивания — заглушка
+    this.run(N.hr, B.fbH[hi], vw * 2, vh * 2, [['src', this.tSrc], ['prev', prev], ['res', B.tRes], ['hrPrev', hrPrev]], (u) => {
+      gl.uniform1f(u('flip'), 0); gl.uniform2f(u('lsz'), vw, vh); gl.uniform1f(u('tw'), t2 ? tw : 0);
+    });
+    if (t2) B.hi ^= 1;
+    this.prevKey = key;
+    if (this.cfl) this.run(N.cfl, B.fbCf, vw, vh, [['src', this.tSrc]], (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2i(u('sz'), vw, vh); gl.uniform1f(u('eps'), this.cfEps); });
+    this.run(N.compose, this.fb, this.ow, this.oh, [['src', this.tSrc], ['hr', hrNow], ['cf', B.tCf]], (u) => {
+      gl.uniform1f(u('flip'), 1); gl.uniform2f(u('hsz'), vw * 2, vh * 2); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]); gl.uniform1f(u('cfl'), this.cfl);
+    });
+  }
+  // рисует кадр src (видео или VideoFrame) размером vw×vh; crop — видимая часть кадра; split — доля «как было» слева;
+  // content — 'video' или 'anime' (рисованное: своя сеть)
+  draw(src, vw, vh, crop, level, hdr, split, content) {
     const gl = this.gl, k = crop;
+    this.si ^= 1; this.tSrc = this.tSrcs[this.si]; this.lastSrcBytes = vw * vh * 4;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); // кросс-доменное видео без CORS здесь бросит SecurityError
     // видео не меньше холста (4K на 4K-экране, слой ради HDR) — увеличивать нечего: только уменьшаем/копируем
     const down = vw * k[2] >= this.ow * 0.97 && vh * k[3] >= this.oh * 0.97 || vw * k[2] > this.ow * 1.05 || vh * k[3] > this.oh * 1.05;
-    const M = down || level === 'off' ? null : this.pick(level);
-    if (M && M.name === 'net') {
-      const N = M; this.netAlloc(vw, vh);
-      let inT = null, fbOut = N.fbA, outT = N.fA;
-      N.layers.forEach((P, i) => {
-        const last = i === N.layers.length - 1;
-        const fb = last ? N.fbR : fbOut;
-        const texs = i === 0 ? [['src', this.tSrc]] : inT.map((t, j) => ['f' + j, t]);
-        this.run(P, fb, vw, vh, texs, (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2i(u('sz'), vw, vh); }, P.nOut);
-        if (!last) { inT = outT; [fbOut, outT] = outT === N.fA ? [N.fbB, N.fB] : [N.fbA, N.fA]; }
-      });
-      this.run(N.hr, N.fbH, vw * 2, vh * 2, [['src', this.tSrc], ['res', N.tRes]], (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2f(u('lsz'), vw, vh); });
-      this.run(N.compose, this.fb, this.ow, this.oh, [['src', this.tSrc], ['hr', N.tHr]], (u) => {
-        gl.uniform1f(u('flip'), 1); gl.uniform2f(u('hsz'), vw * 2, vh * 2); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
-      });
+    const M = down || level === 'off' ? null : this.pick(level, content);
+    if (M && M.layers) {
+      this.drawNet(M, vw, vh, k);
+      if (Object.keys(this.ravu).length && ++this.netFrames > 120) this.freeRavu(); // нейросеть работает стабильно — запасной RAVU не держим
     } else if (M) {
+      this.prevKey = '';
       this.run(M, this.fb, this.ow, this.oh, [['HOOKED_raw', this.tSrc], ...M.luts], (u) => {
         gl.uniform1f(u('flip'), 1); gl.uniform2f(u('HOOKED_size'), vw, vh); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
       });
     } else {
+      this.prevKey = '';
       this.run(down ? this.pDown : level === 'off' ? this.pBilin : this.pEasu, this.fb, this.ow, this.oh, [['t', this.tSrc]], (u) => {
         gl.uniform1f(u('flip'), 1); gl.uniform2f(u('src'), vw, vh); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
       });
     }
+    if (!M || !M.layers) this.netFrames = 0;
     this.used = level === 'off' ? 'off' : M ? M.name : down ? 'down' : 'fsr';
-    const sk = SR_SHARP_K[this.used === 'net' ? 'net' : /^r/.test(this.used) ? 'ravu' : 'fsr'];
+    const sk = SR_SHARP_K[this.used === 'pro' || this.used === 'net' ? 'net' : this.used === 'anime' ? 'anime' : /^r\d/.test(this.used) ? 'ravu' : 'fsr'];
     this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid], ['raw', this.tSrc]], (u) => {
       gl.uniform2f(u('dst'), this.ow, this.oh); gl.uniform1f(u('flip'), 0);
       gl.uniform1f(u('sharp'), down || level === 'off' ? 0 : sk[level] ?? sk.mid);
@@ -938,8 +1026,8 @@ class RtxEngine {
     });
     return this.used;
   }
-  // ступенька вниз: нейросеть → RAVU-3 → RAVU-2 → FSR
-  slower() { const i = SR_TIERS.indexOf(this.used); if (i > 0) { this.cap = Math.min(this.cap, i - 1); return true; } return false; }
+  // ступенька вниз: нейросеть Pro → лёгкая → RAVU-3 → RAVU-2 → FSR
+  slower() { const i = SR_TIER[this.used]; if (i > 0) { this.cap = Math.min(this.cap, i - 1); return true; } return false; }
   destroy() { this.dead = true; try { this.gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {} }
 }
 // Следит, успевает ли видеокарта: браузер пропускает кадры видео или наша отрисовка тормозит кадры экрана.
@@ -960,6 +1048,35 @@ class RtxPerf {
     if (slow) this.reset();
     return slow;
   }
+}
+// Рисованное ли видео (аниме, мультики): у них большие идеально ровные заливки, у съёмки — зерно и текстура везде.
+// Раз в 4 с уменьшаем кадр до 160×90 и считаем долю «ровных» точек (без тёмных — ночь и полосы не в счёт).
+// Проверка на фото и рисунках: у съёмки 0,4–15 %, у рисованного 33–86 %. Решение меняем после 3 одинаковых ответов подряд.
+vt.srContent = 'auto';
+vt.animeNet = false; // сеть для рисованного ещё не обучена — до неё всё считаем «видео» и кадры не разглядываем
+function contentOf(v) {
+  if (!vt.animeNet) return 'video';
+  if (vt.srContent === 'video' || vt.srContent === 'anime') return vt.srContent;
+  const now = performance.now(), st = v.__lqKind || (v.__lqKind = { kind: 'video', t: 0, votes: 0 });
+  if (now - st.t < 4000 || v.readyState < 2) return st.kind;
+  st.t = now;
+  try {
+    const c = vt.kindCv || (vt.kindCv = Object.assign(document.createElement('canvas'), { width: 160, height: 90 }));
+    const g = c.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high'; g.drawImage(v, 0, 0, 160, 90);
+    const a = g.getImageData(0, 0, 160, 90).data, L = (i) => a[i] * 0.2126 + a[i + 1] * 0.7152 + a[i + 2] * 0.0722;
+    let flat = 0, n = 0;
+    for (let y = 1; y < 89; y++) for (let x = 1; x < 159; x++) {
+      const i = (y * 160 + x) * 4, l = L(i);
+      if (l < 24) continue;
+      n++;
+      if (Math.max(Math.abs(l - L(i - 4)), Math.abs(l - L(i + 4)), Math.abs(l - L(i - 640)), Math.abs(l - L(i + 640))) < 1.5) flat++;
+    }
+    if (n < 800) return st.kind;
+    const k = flat / n > 0.22 ? 'anime' : 'video';
+    if (k === st.kind) st.votes = 0; else if (++st.votes >= (st.t0 ? 3 : 1)) { st.kind = k; st.votes = 0; }
+    st.t0 = 1;
+  } catch {} // чужое видео без CORS — считать нельзя, остаётся «видео»
+  return st.kind;
 }
 class SuperRes {
   constructor(v) {
@@ -1038,8 +1155,8 @@ class SuperRes {
   draw() {
     const v = this.v;
     if (v.readyState < 2 || !v.videoWidth || !this.ow) return; // слой ещё не получил размер — рисовать некуда
-    this.used = this.eng.draw(v, v.videoWidth, v.videoHeight, this.crop, this.level, this.hdr, 0);
-    if (/^(net|r\d)$/.test(this.used) && !this.c.dataset.lqSrBest) this.c.dataset.lqSrBest = this.used;
+    this.used = this.eng.draw(v, v.videoWidth, v.videoHeight, this.crop, this.level, this.hdr, 0, contentOf(v));
+    if (/^(pro|net|anime|r\d)$/.test(this.used) && !this.c.dataset.lqSrBest) this.c.dataset.lqSrBest = this.used;
     this.c.dataset.lqSr = this.used;
   }
   // Рисуем по кадрам экрана и только когда у видео сменился кадр.
@@ -1050,8 +1167,8 @@ class SuperRes {
     const t = v.currentTime, now = performance.now();
     this.perfMon.frame(now);
     // шейдер нейросети / RAVU собрался, пока видео на паузе, — перерисуем кадр уже им
-    if (v.paused && !this.dirty && !this.big && /^(fsr|r2|r3)$/.test(this.used) && (++this.idle % 30) === 0) {
-      const best = this.eng.pick(this.level); if ((best ? best.name : 'fsr') !== this.used) this.dirty = true;
+    if (v.paused && !this.dirty && !this.big && /^(fsr|r2|r3|net)$/.test(this.used) && (++this.idle % 30) === 0) {
+      const best = this.eng.pick(this.level, contentOf(this.v)); if ((best ? best.name : 'fsr') !== this.used) this.dirty = true;
     }
     if (v.readyState >= 2 && (t !== this.lastT || this.dirty) && this.bigNow()) {
       // показываем видео как есть, видеокарту не нагружаем; размер окна или HDR поменяются — слой вернётся
@@ -1785,7 +1902,7 @@ async function lpFull() {
 // ушёл в свой полный экран) — тогда просим браузер повторить запрос от имени пользователя (main → этот же фрейм)
 async function lpFullscreen() {
   if (!lp.open) return false;
-  try { await lp.host.requestFullscreen({ navigationUI: 'hide' }); return true; } catch {}
+  if (navigator.userActivation && navigator.userActivation.isActive) { try { await lp.host.requestFullscreen({ navigationUI: 'hide' }); return true; } catch {} }
   const done = new Promise((ok) => { const t = setTimeout(ok, 1500); document.addEventListener('fullscreenchange', function f() { if (document.fullscreenElement === lp.host) { clearTimeout(t); document.removeEventListener('fullscreenchange', f); ok(); } }); });
   try { await ipcRenderer.invoke('lp:gesture'); } catch {}
   await done;
@@ -1797,6 +1914,7 @@ function lpAct(b) {
   if (b.dataset.sr) { vt.sr = b.dataset.sr; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); lp.dirty = true; lpRender(); return; }
   if (b.dataset.q) { lpSetQuality(b.dataset.q); lpMenu(false); return; }
   if (b.dataset.rate) { v.playbackRate = +b.dataset.rate; vt.want.speed = +b.dataset.rate; lpMenu(false); lpRender(); return; }
+  if (b.dataset.content) { vt.srContent = b.dataset.content; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr, content: vt.srContent }); lp.dirty = true; lpMenu('q'); return; }
   if (a === 'close') lpClose();
   else if (a === 'play') lpToggle();
   else if (a === 'back') lpSeek(-10);
@@ -1826,7 +1944,13 @@ async function lpMenu(kind) {
       const NAME = { hd2160: '2160p (4K)', hd1440: '1440p', hd1080: '1080p', hd720: '720p', large: '480p', medium: '360p', small: '240p', tiny: '144p', auto: 'Авто' };
       h += '<b>Качество YouTube</b>' + yq.list.map((x) => `<button data-q="${x}" class="${x === yq.cur ? 'on' : ''}">${NAME[x] || x}</button>`).join('');
     }
+    if (vt.animeNet) {
+      const kind = contentOf(lp.v);
+      h += `<b>Содержимое</b>` + [['auto', `Авто (сейчас: ${kind === 'anime' ? 'рисованное' : 'видео'})`], ['video', 'Видео (съёмка)'], ['anime', 'Аниме и мультики']]
+        .map(([k, t]) => `<button data-content="${k}" class="${vt.srContent === k ? 'on' : ''}">${t}</button>`).join('');
+    }
     h += `<b>Liquid Player</b><button data-a="auto" class="${vt.lpAuto ? 'on' : ''}">Открывать вместо полного экрана сайта</button>`;
+    if (lp.eng) h += `<b>Видеопамять: ~${lp.eng.vram()} МБ</b>`;
   }
   setHTML(m, h);
   m.classList.add('on'); lpUi();
@@ -1920,7 +2044,7 @@ function lpLoop() {
   lp.last = stamp; lp.dirty = false;
   try {
     const was = lp.used;
-    lp.used = lp.eng.draw(src, v.videoWidth, v.videoHeight, [0, 0, 1, 1], vt.sr, vt.srHdr, lp.split);
+    lp.used = lp.eng.draw(src, v.videoWidth, v.videoHeight, [0, 0, 1, 1], vt.sr, vt.srHdr, lp.split, contentOf(v));
     lp.frames++;
     lp.host.dataset.lqUsed = lp.used;
     if (was !== lp.used) lpRender();
@@ -1928,7 +2052,7 @@ function lpLoop() {
     lpError('Этот сайт не разрешает обрабатывать своё видео (защита от копирования или чужой сервер). Открой обычный плеер.');
   } finally { if (vf) vf.close(); }
   // пока на паузе: шейдер нейросети мог собраться — перерисуем лучшим
-  if (v.paused && vt.sr !== 'off' && /^(fsr|r2|r3)$/.test(lp.used) && lp.frames % 30 === 0) { const best = lp.eng.pick(vt.sr); if ((best ? best.name : 'fsr') !== lp.used) lp.dirty = true; }
+  if (v.paused && vt.sr !== 'off' && /^(fsr|r2|r3|net)$/.test(lp.used) && lp.frames % 30 === 0) { const best = lp.eng.pick(vt.sr, contentOf(v)); if ((best ? best.name : 'fsr') !== lp.used) lp.dirty = true; }
 }
 function lpError(t) { const e = lp.root.querySelector('.err'); e.textContent = t; e.classList.add('on'); }
 // клавиши — как в обычных плеерах; сайт их не получает, пока открыт наш

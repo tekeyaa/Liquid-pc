@@ -12,8 +12,15 @@ const { GameMode } = require('./main/gamemode');
 const { WatchRoom, BROKERS: WATCH_BROKERS } = require('./main/watch');
 const { Diag, sysInfo } = require('./main/diag');
 const ravu = require('./main/ravu');
-let rtxNetCache = null; // веса нейросети Liquid RTX (main/rtx), читаются один раз
-const rtxNet = () => rtxNetCache || (rtxNetCache = JSON.parse(fs.readFileSync(path.join(__dirname, 'main', 'rtx', 'liquid-rtx.json'), 'utf8')));
+// веса нейросетей Liquid RTX (main/rtx): lite — лёгкая, pro — большая для сильных видеокарт, anime — для рисованного.
+// Читаются с диска по первому запросу, без остановки основного процесса
+const RTX_FILES = { lite: 'liquid-rtx.json', pro: 'liquid-rtx-pro.json', anime: 'liquid-rtx-anime.json' };
+const rtxNetCache = new Map();
+const rtxNet = (n) => {
+  const f = RTX_FILES[n] || RTX_FILES.lite;
+  if (!rtxNetCache.has(f)) rtxNetCache.set(f, fs.promises.readFile(path.join(__dirname, 'main', 'rtx', f), 'utf8').then(JSON.parse).catch(() => null));
+  return rtxNetCache.get(f);
+};
 const os = require('os');
 let game = null;
 
@@ -229,7 +236,7 @@ function publicSettings() {
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
-    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false,
+    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
@@ -362,13 +369,9 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('did-navigate', (_ev, url) => { if (url) topUrls.set(cid, url); });
   contents.once('destroyed', () => { topUrls.delete(cid); userActs.delete(cid); });
   contents.setMaxListeners(40); // вкладку слушают блокировщик, журнал и интерфейс — 10 по умолчанию мало
-  // один аргумент: в Electron 45 старая форма (ev, lvl, msg, …) выдаёт предупреждение об устаревании
-  contents.on('console-message', function (ev) {
-    const [, lvl, msg, line, src] = arguments;
-    const level = ev && typeof ev.level === 'string' ? ev.level : ({ 0: 'debug', 1: 'info', 2: 'warning', 3: 'error' })[lvl];
-    const message = ev && typeof ev.message === 'string' ? ev.message : msg;
-    const source = String((ev && ev.sourceId) || src || '');
-    const ln = (ev && ev.lineNumber) || line;
+  // только объект события: обращение к старым позиционным аргументам Electron 45 отмечает в журнале как устаревшее
+  contents.on('console-message', (ev) => {
+    const level = String(ev.level || ''), message = ev.message, source = String(ev.sourceId || ''), ln = ev.lineNumber;
     if (level !== 'error' && level !== 'warning') return;
     const ours = contents.getType() !== 'webview' || /webview-preload/i.test(source) || String(message).startsWith('[liquid]');
     if (!ours) return; // предупреждения самих сайтов (их сотни) журналу не нужны — раньше на каждое тратился основной процесс
@@ -608,6 +611,12 @@ function setupPopup(w, openerHost) {
 
 // sessions — каким сессиям, close — рвать ли открытые соединения (нужно при смене режима, не нужно, когда
 // просто добавился сайт в «умный» список или открылось новое окно — иначе прерываются видео и загрузки)
+async function pacSettled(sess) {
+  for (let i = 0; i < 10; i++) {
+    try { if (await sess.resolveProxy('https://www.google.com/')) return; } catch {}
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
 async function applyProxy({ sessions = allSessions(), close = true } = {}) {
   const mode = loadSettings().vpnMode || 'smart';
   smart.vpnOn = !!proxyRules;
@@ -618,7 +627,10 @@ async function applyProxy({ sessions = allSessions(), close = true } = {}) {
     if (!proxyRules && !smart.dpi) await sess.setProxy({ mode: 'direct' });
     else if (!proxyRules || mode === 'smart' || pacAll) await sess.setProxy({ mode: 'pac_script', pacScript: smart.url() }); // без VPN PAC ведёт только обход замедления
     else await sess.setProxy({ proxyRules, proxyBypassRules: '<local>' });
-    if (close) await sess.closeAllConnections();
+    // Новый PAC Chromium скачивает с нашего локального сервера при первом запросе. Если сразу оборвать все
+    // соединения, рвётся и это скачивание — и сайты, открывавшиеся в этот момент, падают с
+    // ERR_MANDATORY_PROXY_CONFIGURATION_FAILED (так было с Twitch при включении обхода). Сначала ждём, пока правила прочитаны.
+    if (close) { await pacSettled(sess); await sess.closeAllConnections(); }
   }
   // при VPN звонки в браузере (WebRTC) не должны выдавать настоящий IP
   for (const wc of webContents.getAllWebContents()) { try { if (wc.getType() !== 'backgroundPage') applyRtcPolicy(wc); } catch {} }
@@ -1295,9 +1307,10 @@ async function downloadVerified(version, asset, sumAsset) {
   }
   if (!sumAsset) throw new Error('в релизе нет контрольной суммы — обновление не ставлю');
   const want = (await (await net.fetch(sumAsset.browser_download_url)).text()).trim().split(/\s+/)[0].toLowerCase();
-  const got = crypto.createHash('sha256').update(buf).digest('hex');
+  // ~100 МБ: считаем и пишем в фоне (раньше основной процесс замирал на 0,3–1,2 с — окно не отвечало)
+  const got = Buffer.from(await crypto.webcrypto.subtle.digest('SHA-256', buf)).toString('hex');
   if (want !== got) throw new Error('контрольная сумма установщика не совпала — обновление отменено');
-  fs.writeFileSync(file, buf);
+  await fs.promises.writeFile(file, buf);
   for (const f of fs.readdirSync(dir)) if (f !== path.basename(file)) { try { fs.rmSync(path.join(dir, f), { force: true }); } catch {} }
   return file;
 }
@@ -1430,6 +1443,7 @@ function registerIpc() {
     if ('srHdr' in patch) s.srHdr = !!patch.srHdr;
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
+    if ('srContent' in patch) s.srContent = ['auto', 'video', 'anime'].includes(patch.srContent) ? patch.srContent : 'auto';
     if ('adblock' in patch) { s.adblock = !!patch.adblock; if (adblock) adblock.enabled = s.adblock; }
     if ('adAllowToggle' in patch) {
       const h = String(patch.adAllowToggle);
@@ -1495,9 +1509,9 @@ function registerIpc() {
     if (e.sender.getType() !== 'webview' || !e.senderFrame) return false;
     try { await e.senderFrame.executeJavaScript(`document.dispatchEvent(new CustomEvent('liquid:lpfs'))`, true); return true; } catch { return false; }
   });
-  ipcMain.handle('sr:net', () => { try { return rtxNet(); } catch (err) { console.warn('[liquid] Liquid RTX:', err.message); return null; } });
+  ipcMain.handle('sr:net', (_e, n) => rtxNet(String(n || 'lite')));
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
-  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false }; });
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto' }; });
   ipcMain.handle('search:suggest', async (e, q) => {
     q = String(q || '').trim().slice(0, 120);
     if (!q || e.sender.session !== ses || /^[a-z]+:\/\//i.test(q)) return [];
@@ -2178,7 +2192,8 @@ app.whenReady().then(async () => {
     },
   });
   game.enabled = loadSettings().gameMode !== false && !TEST;
-  if (!TEST) setTimeout(() => game.start(), 6000);
+  // слежение игрового режима запускаем, когда браузер уже освоился (запуск PowerShell на некоторых ПК заметно ест время)
+  if (!TEST) setTimeout(() => { const t0 = Date.now(); game.start(); const dt = Date.now() - t0; if (dt > 150) diag.log('info', 'заминка', `игровой режим: запуск слежения ${dt} мс`); }, 25000);
   announceUpdate();
   fixShortcuts();
   setTimeout(() => checkUpdates(), 60_000);          // через минуту после запуска

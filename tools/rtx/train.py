@@ -5,8 +5,8 @@ import numpy as np, sys, json, time, os
 D = os.path.dirname(os.path.abspath(__file__))
 F, H, STEPS, OUT = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 rng = np.random.default_rng(1)
-HR, LR, META = np.load(f'{D}/pairs.npy', allow_pickle=True) if not os.environ.get('FAKE') else ([rng.random((200, 200)) for _ in range(3)], [rng.random((100, 100)) for _ in range(3)], [0, 0, 0])
-HR = [h.astype(np.float32) for h in HR]; LR = [l.astype(np.float32) for l in LR]
+HR, LR, META = np.load(f"{D}/{os.environ.get('DATA', 'pairs.npy')}", allow_pickle=True) if not os.environ.get('FAKE') else ([rng.random((200, 200)) for _ in range(3)], [rng.random((100, 100)) for _ in range(3)], [0, 0, 0])
+HR = list(HR); LR = list(LR)  # float16 в памяти, в float32 — только вырезанные куски
 L = H + 2                       # всего свёрток
 P = 40                          # выход: P×P точек кадра LR → 2P×2P HR
 M = L + 1                       # поля: L свёрток + 1 точка для билинейной основы
@@ -32,8 +32,8 @@ def batch(B):
         i = rng.integers(len(LR)); lr, hr = LR[i], HR[i]
         if lr.shape[0] < S + 2 or lr.shape[1] < S + 2: continue
         y0 = rng.integers(0, lr.shape[0] - S); x0 = rng.integers(0, lr.shape[1] - S)
-        a = lr[y0:y0 + S, x0:x0 + S]
-        t = hr[2 * (y0 + M):2 * (y0 + M + P), 2 * (x0 + M):2 * (x0 + M + P)]
+        a = lr[y0:y0 + S, x0:x0 + S].astype(np.float32)
+        t = hr[2 * (y0 + M):2 * (y0 + M + P), 2 * (x0 + M):2 * (x0 + M + P)].astype(np.float32)
         k = rng.integers(4); a = np.rot90(a, k); t = np.rot90(t, k)
         if rng.random() < 0.5: a = a[:, ::-1]; t = t[:, ::-1]
         xs.append(a); ys.append(t)
@@ -97,11 +97,11 @@ def val():
     for i in VAL[:12]:
         lr, hr = LR[i], HR[i]
         hh, ww = min(lr.shape[0], 200), min(lr.shape[1], 200)
-        x = lr[:hh, :ww][None, ..., None]
+        x = lr[:hh, :ww][None, ..., None].astype(np.float32)
         global P
         P0 = P; P = min(hh, ww) - 2 * M
         out = forward(x, False)[0][0]; b = base(x)[0]
-        t = hr[2 * M:2 * (M + P), 2 * M:2 * (M + P)]
+        t = hr[2 * M:2 * (M + P), 2 * M:2 * (M + P)].astype(np.float32)
         ps.append(10 * np.log10(1 / np.mean((np.clip(out, 0, 1) - t) ** 2))); pb.append(10 * np.log10(1 / np.mean((b - t) ** 2)))
         P = P0
     return float(np.mean(ps)), float(np.mean(pb))
