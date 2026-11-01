@@ -83,3 +83,36 @@ test('замеры', async () => {
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true }); fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r) + '\n');
   console.log('PERF', JSON.stringify(r));
 });
+
+// Плавность интерфейса: длительность кадров, пока идут анимации (меню, вкладки, панель Claude, настройки).
+// У серверов GitHub нет видеокарты — всё рисует процессор, поэтому цифры хуже, чем дома, но «до/после» сравнимы
+test('плавность', async () => {
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK, 'один раз');
+  test.setTimeout(240_000);
+  await win.evaluate((u) => navigate(u), `${base}/article.html`);
+  await win.waitForTimeout(1500);
+  const run = (name) => win.evaluate(async (name) => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const frames = []; let on = true, last = performance.now();
+    const tick = (t) => { frames.push(t - last); last = t; if (on) requestAnimationFrame(tick); };
+    requestAnimationFrame((t) => { last = t; requestAnimationFrame(tick); });
+    await sleep(100);
+    const steps = {
+      'меню': async () => { for (let i = 0; i < 5; i++) { openPop('#menuPop'); await sleep(450); closePops(); await sleep(450); } },
+      'новая вкладка': async () => { for (let i = 0; i < 5; i++) { createTab(); await sleep(550); closeTab(active); await sleep(550); } },
+      'переключение вкладок': async () => { const a = active, b = createTab(); await sleep(800); for (let i = 0; i < 6; i++) { activate(i % 2 ? b : a); await sleep(400); } closeTab(b); activate(a); await sleep(400); },
+      'панель Claude': async () => { for (let i = 0; i < 3; i++) { toggleSide(true); await sleep(650); toggleSide(false); await sleep(650); } },
+      'настройки': async () => { for (let i = 0; i < 3; i++) { window.openSettings(); await sleep(600); closePops(); await sleep(500); } },
+    };
+    await steps[name]();
+    on = false; await sleep(50);
+    const s = frames.slice(1).sort((x, y) => x - y);
+    const q = (k) => Math.round(s[Math.min(s.length - 1, Math.floor(s.length * k))] * 10) / 10;
+    return { name, frames: s.length, p50: q(0.5), p95: q(0.95), max: Math.round(s[s.length - 1] || 0), jank: s.filter((x) => x > 34).length };
+  }, name);
+  const out = [];
+  for (const n of ['меню', 'новая вкладка', 'переключение вкладок', 'панель Claude', 'настройки']) out.push(await run(n));
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
+  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'плавность (кадры, мс)', out }) + '\n');
+});
+

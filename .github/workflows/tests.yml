@@ -28,6 +28,16 @@ jobs:
 
       - name: Тесты
         run: npx playwright test tests/liquid.spec.js
+        env:
+          # в рабочих ветках — с профилировщиком: где основной процесс и окно тратят время
+          LIQUID_PROFILE: ${{ github.ref != 'refs/heads/main' && 'test-results/prof' || '' }}
+
+      - name: Профиль (для сведения)
+        if: always() && github.ref != 'refs/heads/main'
+        shell: bash
+        run: |
+          ls test-results/prof/*.cpuprofile >/dev/null 2>&1 || exit 0
+          node tests/prof.js test-results/prof/*.cpuprofile | while IFS= read -r l; do echo "::notice title=Профиль::${l:0:1500}"; done
 
       - name: Заминки и списки рекламы (для сведения)
         if: always()

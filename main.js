@@ -18,6 +18,17 @@ let game = null;
 const TEST = !!process.env.LIQUID_TEST;
 if (process.env.LIQUID_USER_DATA) app.setPath('userData', process.env.LIQUID_USER_DATA);
 if (TEST) app.commandLine.appendSwitch('enable-unsafe-swiftshader');
+// Профилировщик основного процесса (только автотесты, LIQUID_PROFILE=папка): какие функции заняты во время заминок
+if (TEST && process.env.LIQUID_PROFILE) {
+  const ins = new (require('inspector').Session)(); ins.connect();
+  ins.post('Profiler.enable'); ins.post('Profiler.setSamplingInterval', { interval: 1000 }); ins.post('Profiler.start');
+  let saved = false;
+  global.__lqSaveProfile = () => {
+    if (saved) return; saved = true;
+    ins.post('Profiler.stop', (err, r) => { if (err) return; try { fs.mkdirSync(process.env.LIQUID_PROFILE, { recursive: true }); fs.writeFileSync(path.join(process.env.LIQUID_PROFILE, `main-${Date.now()}.cpuprofile`), JSON.stringify(r.profile)); } catch {} });
+  };
+  app.on('will-quit', () => global.__lqSaveProfile());
+}
 
 const PARTITION = 'persist:liquid';
 const UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;

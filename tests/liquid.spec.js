@@ -11,7 +11,7 @@ const ROOT = path.join(__dirname, '..');
 const SITE = path.join(__dirname, 'site');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.webm': 'video/webm' };
 
-let app, win, server, base, dataDir, mqttBroker, brokerUrl;
+let app, win, server, base, dataDir, mqttBroker, brokerUrl, cdp = null;
 
 // Свой MQTT-брокер поверх WebSocket для теста «Смотреть вместе»: публичные брокеры с серверов GitHub
 // работают через раз, а проверяем мы логику Liquid, а не их доступность. Только CONNECT/SUBSCRIBE/PUBLISH QoS 0.
@@ -136,9 +136,17 @@ test.beforeAll(async () => {
   });
   win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
+  // профиль окна браузера (только в рабочих ветках): какие функции интерфейса занимают время
+  if (process.env.LIQUID_PROFILE) {
+    try { cdp = await win.context().newCDPSession(win); await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 1000 }); await cdp.send('Profiler.start'); } catch (e) { cdp = null; console.log('профиль окна не запустился: ' + e.message); }
+  }
 });
 
 test.afterAll(async () => {
+  if (process.env.LIQUID_PROFILE) {
+    try { if (cdp) { const { profile } = await cdp.send('Profiler.stop'); fs.mkdirSync(process.env.LIQUID_PROFILE, { recursive: true }); fs.writeFileSync(path.join(process.env.LIQUID_PROFILE, `ui-${Date.now()}.cpuprofile`), JSON.stringify(profile)); } } catch {}
+    try { await app.evaluate(() => global.__lqSaveProfile && global.__lqSaveProfile()); } catch {}
+  }
   await app?.close().catch(() => {});
   server?.closeAllConnections?.(); server?.close(); mqttBroker?.close();
 });
