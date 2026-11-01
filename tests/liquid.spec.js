@@ -242,10 +242,53 @@ test('видео с превью «главной» идёт в плеере р�
     expect(st.layer, 'нет слоя чёткости в плеере ролика').toBe(true);
     expect(st.layerVisible).toBe(true);
     expect(st.layerW).toBeGreaterThan(800);
-    // Liquid RTX: увеличение обученным фильтром RAVU (таблицы весов пришли из main, шейдер собрался и рисовал)
-    if (st.gl2) await expect.poll(() => inTab(`document.querySelector('#watch canvas[data-lq-sr]')?.dataset.lqSrRavu || ''`), { timeout: 15_000 }).toBe('r2');
+    // Liquid RTX: лучшая ступень, которую умеет видеокарта, — нейросеть (веса из main) или RAVU (таблицы из main)
+    if (st.gl2) await expect.poll(() => inTab(`document.querySelector('#watch canvas[data-lq-sr]')?.dataset.lqSrBest || ''`), { timeout: 30_000 }).toMatch(/^(net|r2)$/);
   }
   // у серверов тестов нет видеокарты: чёткость и видео считает процессор — выключаем, чтобы не мешать следующим тестам
+  await win.evaluate(() => document.querySelector('#srLevel [data-v="off"]').click());
+  await inTab(`document.getElementById('v').pause()`);
+});
+
+// код на странице «с нажатием пользователя» (так приходят команды из меню правой кнопки) — можно включать полный экран
+async function inTabGesture(js) {
+  const id = await win.evaluate(() => active && active.wv && active.wv.getWebContentsId());
+  return app.evaluate(({ webContents }, [wcId, code]) => webContents.fromId(wcId).executeJavaScript(code, true), [id, js]);
+}
+
+test('Liquid Player: свой плеер на весь экран рисует нейросетью, управляет видео сайта, закрывается', async () => {
+  await win.evaluate(() => document.querySelector('#srLevel [data-v="mid"]').click());
+  await win.locator('#url').fill(`${base}/video.html`);
+  await win.locator('#url').press('Enter');
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/video.html');
+  await expect.poll(() => inTab(`document.getElementById('v').currentTime`), { timeout: 15_000 }).toBeGreaterThan(0.3);
+  const caps = await inTab(`(() => { const g = document.createElement('canvas').getContext('webgl2'); return { gl2: !!g, fbf: !!(g && g.getExtension('EXT_color_buffer_float')) }; })()`);
+  // как из меню «Смотреть в Liquid Player»
+  await inTabGesture(`document.dispatchEvent(new CustomEvent('liquid:player'))`);
+  await expect.poll(() => inTab(`!!document.querySelector('lq-player')`)).toBe(true);
+  await expect.poll(() => inTab(`document.fullscreenElement ? document.fullscreenElement.tagName : ''`)).toBe('LQ-PLAYER');
+  if (caps.gl2) await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 40_000 }).toBe(caps.fbf ? 'net' : 'r2');
+  // видео сайта продолжает идти под нашим плеером
+  const t0 = await inTab(`document.getElementById('v').currentTime`);
+  await win.waitForTimeout(1200);
+  expect(await inTab(`document.getElementById('v').currentTime`), 'видео под плеером встало').not.toBe(t0);
+  // пробел — пауза у видео сайта
+  await inTab(`window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }))`);
+  await expect.poll(() => inTab(`document.getElementById('v').paused`)).toBe(true);
+  await inTab(`window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true }))`);
+  await expect.poll(() => inTab(`document.getElementById('v').paused`)).toBe(false);
+  // выход из полного экрана оставляет плеер в окне, Esc закрывает
+  await inTab(`document.exitFullscreen()`);
+  await expect.poll(() => inTab(`!!document.fullscreenElement`)).toBe(false);
+  await inTab(`window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true }))`);
+  await expect.poll(() => inTab(`!!document.querySelector('lq-player')`)).toBe(false);
+  // сайт уходит в полный экран со своим плеером — вместо него открывается Liquid Player
+  await win.waitForTimeout(1700); // сразу после закрытия плеер сам не открывается (защита от повторов)
+  await inTabGesture(`document.getElementById('v').requestFullscreen()`);
+  await expect.poll(() => inTab(`document.fullscreenElement ? document.fullscreenElement.tagName : ''`)).toBe('LQ-PLAYER');
+  await inTab(`document.exitFullscreen()`);
+  await expect.poll(() => inTab(`!!document.querySelector('lq-player')`)).toBe(false);
+  await expect.poll(() => inTab(`!!document.fullscreenElement`)).toBe(false);
   await win.evaluate(() => document.querySelector('#srLevel [data-v="off"]').click());
   await inTab(`document.getElementById('v').pause()`);
 });

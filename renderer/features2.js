@@ -171,6 +171,8 @@
       return;
     }
     if (m.type === 'srPref') { window.saveSrPref({ superRes: m.level, srHdr: !!m.hdr }); return; }
+    if (m.type === 'lpPref') { window.saveSrPref({ lpAuto: !!m.auto }); return; }
+    if (m.type === 'lpOpen') return;
     if (m.type === 'videoPrefs') { const h = hostOf(tab.url); if (vidPrefs[h]) { vidPrefs[h] = m.speed; lsSet('liquid.videoSpeed', vidPrefs); } return; }
     if (m.type === 'videoErr') { toast('Видео: ' + m.error, true); return; }
     if (m.type === 'frame') {
@@ -256,16 +258,18 @@
   $('#gameMode').onchange = async (e) => { settings = await L.settings.set({ gameMode: e.target.checked }); };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
     $('#srHdr').checked = !!settings.srHdr;
     $('#vidBar').checked = settings.vidBar !== false;
+    $('#lpAuto').checked = settings.lpAuto !== false;
   }
   $('#srLevel').addEventListener('click', async (e) => { const b = e.target.closest('button'); if (!b) return; settings = await L.settings.set({ superRes: b.dataset.v }); renderSr(); pushVideoPrefs(); });
   $('#srHdr').onchange = async (e) => { settings = await L.settings.set({ srHdr: e.target.checked }); pushVideoPrefs(); };
   $('#vidBar').onchange = async (e) => { settings = await L.settings.set({ vidBar: e.target.checked }); pushVideoPrefs(); };
+  $('#lpAuto').onchange = async (e) => { settings = await L.settings.set({ lpAuto: e.target.checked }); pushVideoPrefs(); };
   window.saveSrPref = async (p) => { settings = await L.settings.set(p); renderSr(); pushVideoPrefs(); };
   $('#setClose').onclick = () => closePops();
   $('#setExt').onclick = () => { closePops(); setTimeout(() => window.openExtensions(), 120); };

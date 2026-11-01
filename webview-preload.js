@@ -544,11 +544,13 @@ function videoCmd(m) {
     if (m.speed) vt.want.speed = m.speed;
     if (m.remember != null) vt.remember = !!m.remember;
     if (m.bar != null) vt.barOn = m.bar;
-    if (m.sr != null) { vt.sr = m.sr; vt.srHdr = !!m.srHdr; srSync(); }
+    if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
+    if (m.sr != null) { vt.sr = m.sr; vt.srHdr = !!m.srHdr; srSync(); if (lp.open) { lp.dirty = true; lpRender(); } }
     return;
   }
   if (m.op === 'overlay') { const v0 = mainVideo(); if (v0) { barShow(v0, true); barOpen(!bar.open); } return; }
   if (m.op === 'pip') { pipToggle(); return; }
+  if (m.op === 'player') { const v0 = mainVideo(); if (v0) lpOpen(v0); return; }
   if (m.op === 'mini') { miniOut(); return; }
   if (m.op === 'clipbuf') { const v0 = mainVideo(); if (v0) clip.v === v0 ? clipStop(true) : clipStart(v0); return; }
   if (m.op === 'clip') { clipSave(); return; }
@@ -575,20 +577,21 @@ function videoCmd(m) {
 
 
 // ---------- 7. Liquid RTX (супер-чёткость): апскейл на видеокарте — аналог RTX Video Super Resolution ----------
-// Проход 1 — увеличение до размера на экране обученным фильтром RAVU-Zoom-AR (bjin/mpv-prescalers, LGPL-3):
-//   для каждой точки он смотрит направление и силу края вокруг и берёт веса, подобранные обучением на настоящих
-//   фото именно под такой край, плюс встроенная защита от «звона». Края получаются ровными, без лесенки и ореолов,
-//   а шум сжатия не превращается в мозаику. «Чёткость ×1» — RAVU радиуса 2, «×2» — радиуса 3 (точнее, тяжелее).
-//   Таблицы весов приходят из main (main/ravu — исходные файлы mpv), шейдер собирается из них здесь.
-//   Без WebGL2, пока таблицы грузятся или если видеокарта не успевает — AMD FSR 1 EASU (MIT).
-// Проход 2 — резкость RCAS (FSR 1.0.2, MIT): не выходит за цвета соседей (нет ореолов) и слабее на шуме (нет ряби),
-//   HDR-цвет и лёгкий дизеринг против полос в градиентах.
-// Было (до 1.17): бикубическое увеличение + резкость с «добавкой деталей» — она усиливала шум сжатия, на ×2 давала
-// рябь и мозаику. На стенде с настоящим видео (720p, сжатие как на YouTube): ×2 — PSNR 31,5 → 34,8 дБ, рябь −34 %.
-vt.sr = 'off'; vt.srHdr = false; vt.barOn = true; vt.remember = false;
+// Ступени (лучшая, которую тянет видеокарта; не успевает — ступенька вниз):
+//  3) Нейросеть Liquid RTX — своя свёрточная сеть ×2 (main/rtx), обученная как у NVIDIA на кадрах, уменьшенных
+//     вдвое и сжатых H.264 / VP9 / AV1: одновременно убирает следы сжатия (блоки, «москитов», полосы) и
+//     восстанавливает детали. Работает по яркости в сетке кадра (WebGL2, текстуры RGBA16F), цвет — из кадра.
+//  2/1) RAVU-Zoom-AR радиуса 3 / 2 (bjin/mpv-prescalers, LGPL-3, main/ravu) — обученный фильтр без звона.
+//  0) AMD FSR 1 EASU (MIT) — без WebGL2 или на слабой видеокарте.
+// Затем — резкость RCAS (FSR 1.0.2, MIT): не выходит за цвета соседей (нет ореолов) и слабее на шуме (нет ряби),
+// HDR-цвет и дизеринг против полос. «Чисто» — почти без добавочной резкости, «Чётко» — сильнее.
+// Движок общий: им рисуют и слой поверх плеера сайта, и Liquid Player (раздел 10).
+vt.sr = 'off'; vt.srHdr = false; vt.barOn = true; vt.remember = false; vt.lpAuto = true;
 const SR_VS = `attribute vec2 p; uniform float flip; varying vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
 const SR_VS3 = `#version 300 es
 in vec2 p; uniform float flip; out vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
+// «как было»: просто растянуть кадр (так его показывает сам браузер) — для режима «Выкл» и сравнения
+const SR_BILIN = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec4 crop; void main(){ gl_FragColor = vec4(texture2D(t, crop.xy + uv * crop.zw).rgb, 1.0); }`;
 // уменьшение (видео крупнее слоя, слой нужен только ради HDR-цвета): бикубическое
 const SR_DOWN = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 src; uniform vec4 crop;
 vec4 cub(float x){ float x2=x*x, x3=x2*x; return vec4(-0.5*x3+x2-0.5*x, 1.5*x3-2.5*x2+1.0, -1.5*x3+2.0*x2+0.5*x, 0.5*x3-0.5*x2); }
@@ -660,11 +663,14 @@ void main(){
   tap(aC, aW, vec2(0.0, 2.0) - pp, dir, len2, lob, clp, n);
   gl_FragColor = vec4(min(mx4, max(mn4, aC / aW)), 1.0);
 }`;
-// FSR 1.0.2 RCAS (MIT): резкость, ограниченная соседями (без ореолов), слабее там, где похоже на шум (без ряби)
-const SR_RCAS = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 dst; uniform float sharp; uniform float hdr;
+// FSR 1.0.2 RCAS (MIT): резкость, ограниченная соседями (без ореолов), слабее там, где похоже на шум (без ряби).
+// split — режим «сравнить»: левее этой доли ширины показываем кадр как есть (как его растянул бы сам браузер)
+const SR_RCAS = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform sampler2D raw; uniform vec4 crop; uniform float split;
+uniform vec2 dst; uniform float sharp; uniform float hdr;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 float L2(vec3 c){ return c.b * 0.5 + (c.r * 0.5 + c.g); }
 void main(){
+  if (uv.x < split) { gl_FragColor = vec4(texture2D(raw, crop.xy + vec2(uv.x, 1.0 - uv.y) * crop.zw).rgb, 1.0); return; }
   vec2 d = 1.0 / dst;
   vec3 e = texture2D(t, uv).rgb;
   vec3 b = texture2D(t, uv + vec2(0.0, -d.y)).rgb, h = texture2D(t, uv + vec2(0.0, d.y)).rgb;
@@ -697,40 +703,102 @@ ${d.luts.map((l) => `uniform sampler2D ${l.name};`).join('\n')}
 vec2 HOOKED_pos;
 ${d.body}
 void main(){ HOOKED_pos = crop.xy + uv * crop.zw; fragColor = vec4(clamp(hook().rgb, 0.0, 1.0), 1.0); }`;
-const SR_RAVU = {}; // таблицы весов: одна загрузка на страницу (r2 ~1,5 МБ, r3 ~2,6 МБ)
+// ---- нейросеть Liquid RTX: свёрточная сеть ×2, обученная на кадрах, уменьшенных вдвое и сжатых H.264 / VP9 / AV1
+// (как видео на YouTube): одновременно убирает следы сжатия и восстанавливает детали. Работает по яркости в сетке
+// кадра; признаки — текстуры RGBA16F по 4 канала, все выходы слоя за один проход; веса — константы в шейдере.
+// <netShaders>
+function netShaders(net) {
+  const f = (x) => { const s = (+x).toPrecision(6); return /[.e]/.test(s) ? s : s + '.0'; };
+  const L = net.layers, dims = net.dims;
+  const head = '#version 300 es\nprecision highp float; precision highp int;\n';
+  const fetch = (tex, i) => `texelFetch(${tex}, clamp(p + ivec2(${(i % 3) - 1}, ${Math.floor(i / 3) - 1}), ivec2(0), sz - 1), 0)`;
+  const out = [];
+  for (let li = 0; li < L.length; li++) {
+    const cin = dims[li], cout = dims[li + 1], w = L[li].w, b = L[li].b;
+    const nIn = Math.ceil(cin / 4), nOut = Math.ceil(cout / 4);
+    let s = head + 'uniform ivec2 sz;\n';
+    if (li === 0) s += 'uniform sampler2D src;\n'; else for (let t = 0; t < nIn; t++) s += `uniform sampler2D f${t};\n`;
+    for (let o = 0; o < nOut; o++) s += `layout(location = ${o}) out vec4 o${o};\n`;
+    s += 'void main(){\n  ivec2 p = ivec2(gl_FragCoord.xy);\n';
+    for (let o = 0; o < nOut; o++) s += `  vec4 a${o} = vec4(${[0, 1, 2, 3].map((k) => f(b[4 * o + k] || 0)).join(', ')});\n`;
+    for (let tap = 0; tap < 9; tap++) {
+      if (li === 0) {
+        s += `  { float y = dot(${fetch('src', tap)}.rgb, vec3(0.2126, 0.7152, 0.0722));\n`;
+        for (let o = 0; o < nOut; o++) s += `    a${o} += y * vec4(${[0, 1, 2, 3].map((k) => f(w[tap][4 * o + k] || 0)).join(', ')});\n`;
+        s += '  }\n';
+      } else {
+        for (let t = 0; t < nIn; t++) {
+          s += `  { vec4 v = ${fetch('f' + t, tap)};\n`;
+          for (let o = 0; o < nOut; o++) {
+            // столбец j — веса входного канала 4t+j для выходов 4o..4o+3
+            const cols = [0, 1, 2, 3].map((j) => `vec4(${[0, 1, 2, 3].map((k) => f(w[(4 * t + j) * 9 + tap][4 * o + k] || 0)).join(', ')})`);
+            s += `    a${o} += mat4(${cols.join(', ')}) * v;\n`;
+          }
+          s += '  }\n';
+        }
+      }
+    }
+    for (let o = 0; o < nOut; o++) s += `  o${o} = ${li < L.length - 1 ? `max(a${o}, 0.0)` : `a${o}`};\n`;
+    out.push({ fs: s + '}\n', nIn: li === 0 ? 0 : nIn, nOut });
+  }
+  // яркость 2×: билинейная основа (из исходного кадра) + подпиксель из сети
+  const hr = head + `uniform sampler2D src; uniform sampler2D res; uniform vec2 lsz; out vec4 o;
+void main(){
+  ivec2 q = ivec2(gl_FragCoord.xy); ivec2 p = q >> 1; int k = (q.y & 1) * 2 + (q.x & 1);
+  vec4 r = texelFetch(res, p, 0);
+  float base = dot(texture(src, (vec2(q) + 0.5) / (2.0 * lsz)).rgb, vec3(0.2126, 0.7152, 0.0722));
+  o = vec4(base + (k == 0 ? r.x : k == 1 ? r.y : k == 2 ? r.z : r.w), 0.0, 0.0, 1.0);
+}`;
+  // итог в размер экрана: яркость 2× (бикубически под любой масштаб) + цвет из исходного кадра
+  const compose = head + `in vec2 uv; out vec4 o; uniform sampler2D src; uniform sampler2D hr; uniform vec2 hsz; uniform vec4 crop;
+vec4 cub(float x){ float x2 = x * x, x3 = x2 * x; return vec4(-0.5*x3 + x2 - 0.5*x, 1.5*x3 - 2.5*x2 + 1.0, -1.5*x3 + 2.0*x2 + 0.5*x, 0.5*x3 - 0.5*x2); }
+void main(){
+  vec2 s = crop.xy + uv * crop.zw;
+  vec2 px = s * hsz - 0.5; vec2 fr = fract(px); vec2 b = (floor(px) + 0.5) / hsz; vec2 d = 1.0 / hsz;
+  vec4 wx = cub(fr.x), wy = cub(fr.y); float y = 0.0;
+  for (int j = 0; j < 4; j++) { float row = 0.0;
+    for (int i = 0; i < 4; i++) row += texture(hr, b + d * vec2(float(i) - 1.0, float(j) - 1.0)).r * wx[i];
+    y += row * wy[j]; }
+  vec3 c = texture(src, s).rgb;
+  c += y - dot(c, vec3(0.2126, 0.7152, 0.0722));
+  o = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+  return { layers: out, hr, compose };
+}
+// </netShaders>
+const SR_RAVU = {}; // таблицы весов RAVU: одна загрузка на страницу (r2 ~1,5 МБ, r3 ~2,6 МБ)
 const ravuData = (r) => SR_RAVU[r] || (SR_RAVU[r] = ipcRenderer.invoke('sr:ravu', r).catch(() => null));
-const SR_SHARP_K = { mid: 0.4, max: 0.7 }; // сила резкости RCAS по уровням
-class SuperRes {
-  constructor(v) {
-    this.v = v;
-    this.c = document.createElement('canvas');
-    this.c.setAttribute('data-lq-sr', '');
-    this.c.style.cssText = 'position:absolute;pointer-events:none;margin:0;padding:0;border:0;';
-    const opts = { alpha: true, premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' };
-    const gl = this.c.getContext('webgl2', opts) || this.c.getContext('webgl', opts);
+let SR_NET = null; // веса нейросети (из main/rtx)
+const netData = () => SR_NET || (SR_NET = ipcRenderer.invoke('sr:net').catch(() => null));
+// ступени качества: 3 — нейросеть, 2 — RAVU-3, 1 — RAVU-2, 0 — FSR. Видеокарта не успевает — ступенька вниз.
+const SR_TIERS = ['fsr', 'r2', 'r3', 'net'];
+const SR_NAMES = { net: 'нейросеть Liquid RTX', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
+// резкость RCAS после увеличения: у нейросети своя резкость уже есть — добавляем чуть-чуть
+const SR_SHARP_K = { net: { mid: 0.15, max: 0.45 }, ravu: { mid: 0.4, max: 0.7 }, fsr: { mid: 0.4, max: 0.7 } };
+// Движок Liquid RTX: один WebGL2-контекст на своём холсте, рисует кадр видео в размер холста.
+// Им пользуются и слой поверх плеера сайта, и Liquid Player.
+class RtxEngine {
+  constructor(canvas) {
+    this.c = canvas;
+    const opts = { alpha: true, premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: false, powerPreference: 'high-performance', desynchronized: false };
+    const gl = canvas.getContext('webgl2', opts) || canvas.getContext('webgl', opts);
     if (!gl) throw new Error('nogl');
     this.gl = gl; this.gl2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
-    this.par = gl.getExtension('KHR_parallel_shader_compile'); // тяжёлый шейдер RAVU собирается, не останавливая страницу
+    this.par = gl.getExtension('KHR_parallel_shader_compile'); // тяжёлые шейдеры собираются, не останавливая страницу
+    this.fbf = this.gl2 && gl.getExtension('EXT_color_buffer_float'); // без него нейросети некуда писать признаки
     const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-    this.pEasu = this.prog(SR_EASU); this.pRcas = this.prog(SR_RCAS); this.pDown = this.prog(SR_DOWN);
-    for (const p of [this.pEasu, this.pRcas, this.pDown]) if (!gl.getProgramParameter(p.p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p.p) || 'link');
-    const tex = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; };
-    this.tex = tex;
-    this.tSrc = tex(); this.tMid = tex();
+    this.pEasu = this.prog(SR_EASU); this.pRcas = this.prog(SR_RCAS); this.pDown = this.prog(SR_DOWN); this.pBilin = this.prog(SR_BILIN);
+    for (const p of [this.pEasu, this.pRcas, this.pDown, this.pBilin]) if (!gl.getProgramParameter(p.p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p.p) || 'link');
+    this.tSrc = this.tex(); this.tMid = this.tex();
     this.fb = gl.createFramebuffer();
-    this.ravu = {}; this.ravuReq = {}; this.cap = 2; // cap: 2 — можно RAVU-3, 1 — только RAVU-2, 0 — только FSR (видеокарта не успевает)
-    this.used = '';
-    this.level = 'mid'; this.hdr = false; this.alive = true; this.ow = 0; this.oh = 0; this.crop = [0, 0, 1, 1];
-    this.frames = 0; this.lastT = -1; this.dirty = true; this.bad = 0; this.retestAt = 0;
-    this.c.style.visibility = 'hidden';
-    v.insertAdjacentElement('afterend', this.c);
-    this.ro = new ResizeObserver(() => this.place()); this.ro.observe(v);
-    this.posT = setInterval(() => { if (!document.hidden) this.place(); }, 700); // свёрнутую вкладку не пересчитываем
-    this.perfT = setInterval(() => this.perf(), 2000);
-    this.place();
-    this.loop();
+    this.ravu = {}; this.ravuReq = {}; this.net = null; this.netReq = false;
+    this.cap = 3; this.used = ''; this.ow = 0; this.oh = 0; this.lw = 0; this.lh = 0;
+  }
+  tex(filter) {
+    const gl = this.gl, t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter || gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter || gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t;
   }
   // программа + адреса её параметров (узнаём один раз, а не на каждом кадре)
   prog(fs, vs) {
@@ -740,21 +808,29 @@ class SuperRes {
     const locs = new Map();
     return { p, a: -1, u: (n) => { if (!locs.has(n)) locs.set(n, gl.getUniformLocation(p, n)); return locs.get(n); } };
   }
-  // нужный RAVU: «×2» — радиус 3, «×1» — радиус 2; не готов — берём, что есть (или FSR)
-  pickRavu() {
-    if (!this.gl2 || this.cap < 1) return null;
-    const want = this.level === 'max' && this.cap >= 2 ? 'r3' : 'r2';
-    this.loadRavu(want);
-    const R = this.ravu[want];
-    if (R && R.ok) return R;
-    const r2 = this.ravu.r2;
-    return want === 'r3' && r2 && r2.ok ? r2 : null;
+  ready(P) { // собрался ли шейдер (не останавливая страницу, если видеокарта умеет собирать в фоне)
+    const gl = this.gl;
+    if (P.ok || P.bad) return P.ok;
+    if (this.par && !gl.getProgramParameter(P.p, this.par.COMPLETION_STATUS_KHR)) return false;
+    if (gl.getProgramParameter(P.p, gl.LINK_STATUS)) P.ok = true;
+    else { P.bad = true; console.warn('[liquid] Liquid RTX: видеокарта не собрала шейдер:', gl.getProgramInfoLog(P.p)); }
+    return P.ok;
   }
+  size(ow, oh) {
+    if (ow === this.ow && oh === this.oh) return;
+    const gl = this.gl;
+    this.ow = this.c.width = Math.max(2, ow); this.oh = this.c.height = Math.max(2, oh);
+    gl.bindTexture(gl.TEXTURE_2D, this.tMid);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.ow, this.oh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tMid, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  // ---- RAVU
   loadRavu(r) {
-    if (this.ravuReq[r]) { const R = this.ravu[r]; if (R && !R.ok && !R.bad) this.ravuCheck(R); return; }
+    if (this.ravuReq[r]) return;
     this.ravuReq[r] = true;
     ravuData(r).then((d) => {
-      if (!this.alive || !d || !d.luts) return;
+      if (this.dead || !d || !d.luts) return;
       const gl = this.gl;
       const luts = d.luts.map((l) => {
         let u8 = l.data instanceof Uint8Array ? l.data : new Uint8Array(l.data);
@@ -763,28 +839,152 @@ class SuperRes {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, l.w, l.h, 0, gl.RGBA, gl.FLOAT, new Float32Array(u8.buffer, u8.byteOffset, u8.byteLength >> 2));
         return [l.name, t];
       });
-      this.ravu[r] = { name: r, ...this.prog(ravuFS(d), SR_VS3), luts, ok: false, bad: false };
-      this.ravuCheck(this.ravu[r]);
-    }).catch((e) => { console.warn('[liquid] RAVU не загрузился:', e && e.message); });
+      this.ravu[r] = { name: r, ...this.prog(ravuFS(d), SR_VS3), luts };
+    }).catch((e) => console.warn('[liquid] RAVU не загрузился:', e && e.message));
   }
-  ravuCheck(R) {
+  // ---- нейросеть
+  loadNet() {
+    if (this.netReq || !this.fbf) return;
+    this.netReq = true;
+    netData().then((d) => {
+      if (this.dead || !d || !d.layers) return;
+      const S = netShaders(d);
+      this.net = { name: 'net', F: d.dims[1], layers: S.layers.map((l) => ({ ...this.prog(l.fs, SR_VS3), nIn: l.nIn, nOut: l.nOut })),
+        hr: this.prog(S.hr, SR_VS3), compose: this.prog(S.compose, SR_VS3), fA: [], fB: [], ok: false };
+    }).catch((e) => console.warn('[liquid] нейросеть Liquid RTX не загрузилась:', e && e.message));
+  }
+  netReady() {
+    const N = this.net;
+    if (!N || N.bad) return false;
+    if (N.ok) return true;
+    for (const P of [...N.layers, N.hr, N.compose]) { if (!this.ready(P)) { if (P.bad) N.bad = true; return false; } }
+    return (N.ok = true);
+  }
+  // текстуры признаков под размер кадра: 2 набора по F/4 текстур (по очереди: вход → выход), остаток, яркость 2×
+  netAlloc(vw, vh) {
+    const N = this.net, gl = this.gl;
+    if (N.w === vw && N.h === vh) return;
+    for (const t of [...N.fA, ...N.fB, N.tRes, N.tHr]) if (t) gl.deleteTexture(t);
+    for (const f of [N.fbA, N.fbB, N.fbR, N.fbH]) if (f) gl.deleteFramebuffer(f);
+    const mk = (fmt, type, w, h, filt) => { const t = this.tex(filt); gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, fmt === gl.R16F ? gl.RED : gl.RGBA, type, null); return t; };
+    const n = Math.ceil(N.F / 4);
+    N.fA = Array.from({ length: n }, () => mk(gl.RGBA16F, gl.HALF_FLOAT, vw, vh, gl.NEAREST));
+    N.fB = Array.from({ length: n }, () => mk(gl.RGBA16F, gl.HALF_FLOAT, vw, vh, gl.NEAREST));
+    N.tRes = mk(gl.RGBA16F, gl.HALF_FLOAT, vw, vh, gl.NEAREST);
+    N.tHr = mk(gl.R16F, gl.HALF_FLOAT, vw * 2, vh * 2, gl.LINEAR);
+    const fbo = (texs) => { const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0)); return f; };
+    N.fbA = fbo(N.fA); N.fbB = fbo(N.fB); N.fbR = fbo([N.tRes]); N.fbH = fbo([N.tHr]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    N.w = vw; N.h = vh;
+  }
+  run(P, fb, w, h, texs, set, nOut) {
     const gl = this.gl;
-    if (this.par && !gl.getProgramParameter(R.p, this.par.COMPLETION_STATUS_KHR)) return; // ещё собирается — пока FSR
-    if (gl.getProgramParameter(R.p, gl.LINK_STATUS)) { R.ok = true; this.dirty = true; return; }
-    R.bad = true;
-    console.warn('[liquid] RAVU: видеокарта не собрала шейдер — работаем на FSR:', gl.getProgramInfoLog(R.p));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); gl.useProgram(P.p);
+    if (this.gl2 && fb) gl.drawBuffers(Array.from({ length: nOut || 1 }, (_, i) => gl.COLOR_ATTACHMENT0 + i));
+    if (P.a < 0) P.a = gl.getAttribLocation(P.p, 'p');
+    gl.enableVertexAttribArray(P.a); gl.vertexAttribPointer(P.a, 2, gl.FLOAT, false, 0, 0);
+    texs.forEach(([n, t], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(P.u(n), i); });
+    set(P.u); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
-  // Видеокарта не успевает (браузер начал пропускать кадры видео) — ступенька вниз: RAVU-3 → RAVU-2 → FSR
-  perf() {
-    const v = this.v, q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
-    if (!q || v.paused || document.hidden || this.big || !this.used || this.used === 'fsr') { this.q0 = null; return; }
-    if (!this.q0 || this.q0.used !== this.used) { this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used: this.used }; return; }
+  // какой способ увеличения сейчас: лучший из готовых, не выше ступени cap
+  pick(level) {
+    if (!this.gl2) return null;
+    if (this.cap >= 3 && this.fbf) { this.loadNet(); if (this.netReady()) return this.net; }
+    if (this.cap >= 1) {
+      const want = level === 'max' && this.cap >= 2 ? 'r3' : 'r2';
+      this.loadRavu(want);
+      for (const r of want === 'r3' ? ['r3', 'r2'] : ['r2']) { const R = this.ravu[r]; if (R && this.ready(R)) return R; }
+    }
+    return null;
+  }
+  // рисует кадр src (видео или VideoFrame) размером vw×vh; crop — видимая часть кадра; split — доля «как было» слева
+  draw(src, vw, vh, crop, level, hdr, split) {
+    const gl = this.gl, k = crop;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); // кросс-доменное видео без CORS здесь бросит SecurityError
+    // видео не меньше холста (4K на 4K-экране, слой ради HDR) — увеличивать нечего: только уменьшаем/копируем
+    const down = vw * k[2] >= this.ow * 0.97 && vh * k[3] >= this.oh * 0.97 || vw * k[2] > this.ow * 1.05 || vh * k[3] > this.oh * 1.05;
+    const M = down || level === 'off' ? null : this.pick(level);
+    if (M && M.name === 'net') {
+      const N = M; this.netAlloc(vw, vh);
+      let inT = null, fbOut = N.fbA, outT = N.fA;
+      N.layers.forEach((P, i) => {
+        const last = i === N.layers.length - 1;
+        const fb = last ? N.fbR : fbOut;
+        const texs = i === 0 ? [['src', this.tSrc]] : inT.map((t, j) => ['f' + j, t]);
+        this.run(P, fb, vw, vh, texs, (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2i(u('sz'), vw, vh); }, P.nOut);
+        if (!last) { inT = outT; [fbOut, outT] = outT === N.fA ? [N.fbB, N.fB] : [N.fbA, N.fA]; }
+      });
+      this.run(N.hr, N.fbH, vw * 2, vh * 2, [['src', this.tSrc], ['res', N.tRes]], (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2f(u('lsz'), vw, vh); });
+      this.run(N.compose, this.fb, this.ow, this.oh, [['src', this.tSrc], ['hr', N.tHr]], (u) => {
+        gl.uniform1f(u('flip'), 1); gl.uniform2f(u('hsz'), vw * 2, vh * 2); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
+      });
+    } else if (M) {
+      this.run(M, this.fb, this.ow, this.oh, [['HOOKED_raw', this.tSrc], ...M.luts], (u) => {
+        gl.uniform1f(u('flip'), 1); gl.uniform2f(u('HOOKED_size'), vw, vh); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
+      });
+    } else {
+      this.run(down ? this.pDown : level === 'off' ? this.pBilin : this.pEasu, this.fb, this.ow, this.oh, [['t', this.tSrc]], (u) => {
+        gl.uniform1f(u('flip'), 1); gl.uniform2f(u('src'), vw, vh); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
+      });
+    }
+    this.used = level === 'off' ? 'off' : M ? M.name : down ? 'down' : 'fsr';
+    const sk = SR_SHARP_K[this.used === 'net' ? 'net' : /^r/.test(this.used) ? 'ravu' : 'fsr'];
+    this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid], ['raw', this.tSrc]], (u) => {
+      gl.uniform2f(u('dst'), this.ow, this.oh); gl.uniform1f(u('flip'), 0);
+      gl.uniform1f(u('sharp'), down || level === 'off' ? 0 : sk[level] ?? sk.mid);
+      gl.uniform1f(u('hdr'), hdr ? 1 : 0); gl.uniform1f(u('split'), split || 0); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
+    });
+    return this.used;
+  }
+  // ступенька вниз: нейросеть → RAVU-3 → RAVU-2 → FSR
+  slower() { const i = SR_TIERS.indexOf(this.used); if (i > 0) { this.cap = Math.min(this.cap, i - 1); return true; } return false; }
+  destroy() { this.dead = true; try { this.gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {} }
+}
+// Следит, успевает ли видеокарта: браузер пропускает кадры видео или наша отрисовка тормозит кадры экрана.
+class RtxPerf {
+  constructor() { this.q0 = null; this.dts = []; this.last = 0; }
+  frame(now) { if (this.last) { this.dts.push(now - this.last); if (this.dts.length > 120) this.dts.shift(); } this.last = now; }
+  reset() { this.q0 = null; this.dts = []; this.last = 0; }
+  // true — пора ступенька вниз
+  check(v, used) {
+    const q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
+    if (!q || v.paused || document.hidden || !used || used === 'fsr' || used === 'off' || used === 'down') { this.reset(); return false; }
+    if (!this.q0 || this.q0.used !== used) { this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used }; this.dts = []; return false; }
     const n = q.totalVideoFrames - this.q0.n, d = q.droppedVideoFrames - this.q0.d;
-    if (n < 48) return;
-    this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used: this.used };
-    if (d / n > 0.12) {
-      this.cap = this.used === 'r3' ? 1 : 0;
-      console.warn(`[liquid] Liquid RTX: пропуск кадров ${Math.round((100 * d) / n)}% на ${this.used} ${this.ow}×${this.oh} — ступенька вниз`);
+    let slow = false;
+    if (n >= 48) { slow = d / n > 0.12; this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used }; }
+    // кадры экрана: обычно ~7–17 мс; если медиана выросла до 40+ мс при идущем видео — не успеваем
+    if (this.dts.length >= 60) { const s = [...this.dts].sort((a, b) => a - b); if (s[s.length >> 1] > 40) slow = true; this.dts = []; }
+    if (slow) this.reset();
+    return slow;
+  }
+}
+class SuperRes {
+  constructor(v) {
+    this.v = v;
+    this.c = document.createElement('canvas');
+    this.c.setAttribute('data-lq-sr', '');
+    this.c.style.cssText = 'position:absolute;pointer-events:none;margin:0;padding:0;border:0;';
+    this.eng = new RtxEngine(this.c);
+    this.gl = this.eng.gl;
+    this.perfMon = new RtxPerf();
+    this.used = '';
+    this.level = 'mid'; this.hdr = false; this.alive = true; this.ow = 0; this.oh = 0; this.crop = [0, 0, 1, 1];
+    this.frames = 0; this.lastT = -1; this.dirty = true; this.bad = 0; this.retestAt = 0; this.idle = 0;
+    this.c.style.visibility = 'hidden';
+    v.insertAdjacentElement('afterend', this.c);
+    this.ro = new ResizeObserver(() => this.place()); this.ro.observe(v);
+    this.posT = setInterval(() => { if (!document.hidden) this.place(); }, 700); // свёрнутую вкладку не пересчитываем
+    this.perfT = setInterval(() => this.perf(), 2000);
+    this.place();
+    this.loop();
+  }
+  perf() {
+    if (this.big) { this.perfMon.reset(); return; }
+    if (this.perfMon.check(this.v, this.used) && this.eng.slower()) {
+      console.warn(`[liquid] Liquid RTX: видеокарта не успевает (${this.used} ${this.ow}×${this.oh}) — ступенька вниз`);
       this.slow = true; barRender();
     }
   }
@@ -801,7 +1001,7 @@ class SuperRes {
     this.crop = [0, 0, 1, 1]; // какая часть кадра видна: x, y, ширина, высота (доли)
     if (fit === 'cover') {
       // видео растянуто с обрезкой краёв (так теперь показывает YouTube): слой во весь элемент, а в шейдер —
-      // только видимая часть кадра. Раньше в этом случае включался «лёгкий режим» — фильтр прямо на плеере сайта
+      // только видимая часть кадра
       const k = Math.max(ew / vw, eh / vh) || 1;
       const cw = Math.min(1, ew / (vw * k)), ch = Math.min(1, eh / (vh * k));
       const pos = String(cs.objectPosition || '50% 50%').split(/\s+/).map((t) => (/%$/.test(t) ? parseFloat(t) / 100 : 0.5));
@@ -818,16 +1018,11 @@ class SuperRes {
     this.sig = sig;
     Object.assign(c.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
     c.style.zIndex = cs.zIndex === 'auto' ? '' : cs.zIndex; c.style.transform = cs.transform === 'none' ? '' : cs.transform;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // реальные точки экрана (4K-монитор при масштабе 150 % — 1,5 точки на пиксель страницы), но не больше 4K
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
     let ow = Math.round(w * dpr), oh = Math.round(h * dpr);
     const cap = Math.sqrt((3840 * 2160) / Math.max(1, ow * oh)); if (cap < 1) { ow = Math.round(ow * cap); oh = Math.round(oh * cap); }
-    if (ow !== this.ow || oh !== this.oh) {
-      this.ow = c.width = Math.max(2, ow); this.oh = c.height = Math.max(2, oh);
-      const gl = this.gl; gl.bindTexture(gl.TEXTURE_2D, this.tMid);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.ow, this.oh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tMid, 0);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    }
+    this.eng.size(ow, oh); this.ow = this.eng.ow; this.oh = this.eng.oh;
     if (v.readyState < 2 || !this.frames || this.bigNow()) c.style.visibility = 'hidden';
     else c.style.visibility = 'visible';
     this.dirty = true;
@@ -840,50 +1035,24 @@ class SuperRes {
     this.big = !this.hdr && !!this.ow && v.videoWidth * k[2] >= this.ow * 0.97 && v.videoHeight * k[3] >= this.oh * 0.97;
     return this.big;
   }
-  run(P, fb, w, h, texs, set) {
-    const gl = this.gl;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(0, 0, w, h); gl.useProgram(P.p);
-    if (P.a < 0) P.a = gl.getAttribLocation(P.p, 'p');
-    gl.enableVertexAttribArray(P.a); gl.vertexAttribPointer(P.a, 2, gl.FLOAT, false, 0, 0);
-    texs.forEach(([n, t], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(P.u(n), i); });
-    set(P.u); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  }
   draw() {
-    const gl = this.gl, v = this.v;
+    const v = this.v;
     if (v.readyState < 2 || !v.videoWidth || !this.ow) return; // слой ещё не получил размер — рисовать некуда
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v); // кросс-доменное видео без CORS здесь бросит SecurityError
-    const vw = v.videoWidth, vh = v.videoHeight, k = this.crop;
-    const down = vw * k[2] > this.ow || vh * k[3] > this.oh; // видео крупнее слоя (слой ради HDR) — только уменьшаем
-    const R = down ? null : this.pickRavu();
-    if (R) {
-      this.run(R, this.fb, this.ow, this.oh, [['HOOKED_raw', this.tSrc], ...R.luts], (u) => {
-        gl.uniform1f(u('flip'), 1); gl.uniform2f(u('HOOKED_size'), vw, vh); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
-      });
-      if (!this.c.dataset.lqSrRavu) this.c.dataset.lqSrRavu = R.name;
-    } else {
-      this.run(down ? this.pDown : this.pEasu, this.fb, this.ow, this.oh, [['t', this.tSrc]], (u) => {
-        gl.uniform1f(u('flip'), 1); gl.uniform2f(u('src'), vw, vh); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
-      });
-    }
-    this.used = R ? R.name : down ? 'down' : 'fsr';
+    this.used = this.eng.draw(v, v.videoWidth, v.videoHeight, this.crop, this.level, this.hdr, 0);
+    if (/^(net|r\d)$/.test(this.used) && !this.c.dataset.lqSrBest) this.c.dataset.lqSrBest = this.used;
     this.c.dataset.lqSr = this.used;
-    this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid]], (u) => {
-      gl.uniform2f(u('dst'), this.ow, this.oh); gl.uniform1f(u('flip'), 0);
-      gl.uniform1f(u('sharp'), down ? 0 : SR_SHARP_K[this.level] ?? 0.4);
-      gl.uniform1f(u('hdr'), this.hdr ? 1 : 0);
-    });
   }
   // Рисуем по кадрам экрана и только когда у видео сменился кадр.
   // (requestVideoFrameCallback не используем: когда наш слой закрывает видео, Chromium может перестать его вызывать — картинка «застывала»)
-  // Проверки «зависания» больше нет: рисуем, только когда у видео сменился кадр, значит наш слой
-  // всегда показывает то же, что и само видео; если видео стоит (буферизация, реклама) — стоит и он.
   loop() {
     if (!this.alive) return;
     const v = this.v;
-    const t = v.currentTime;
-    // RAVU собрался, пока видео на паузе, — перерисуем кадр уже им
-    for (const R of Object.values(this.ravu)) if (R && !R.ok && !R.bad) this.ravuCheck(R);
+    const t = v.currentTime, now = performance.now();
+    this.perfMon.frame(now);
+    // шейдер нейросети / RAVU собрался, пока видео на паузе, — перерисуем кадр уже им
+    if (v.paused && !this.dirty && !this.big && /^(fsr|r2|r3)$/.test(this.used) && (++this.idle % 30) === 0) {
+      const best = this.eng.pick(this.level); if ((best ? best.name : 'fsr') !== this.used) this.dirty = true;
+    }
     if (v.readyState >= 2 && (t !== this.lastT || this.dirty) && this.bigNow()) {
       // показываем видео как есть, видеокарту не нагружаем; размер окна или HDR поменяются — слой вернётся
       if (this.c.style.visibility !== 'hidden') this.c.style.visibility = 'hidden';
@@ -957,7 +1126,7 @@ class SuperRes {
     toHost({ type: 'srFail', reason });
     barRender();
   }
-  destroy() { if (!this.alive) return; this.alive = false; clearInterval(this.posT); clearInterval(this.perfT); clearTimeout(this.uiT); this.ro.disconnect(); this.c.remove(); vt.srMap.delete(this.v); }
+  destroy() { if (!this.alive) return; this.alive = false; clearInterval(this.posT); clearInterval(this.perfT); clearTimeout(this.uiT); this.ro.disconnect(); this.c.remove(); this.eng.destroy(); vt.srMap.delete(this.v); }
 }
 vt.srMap = new Map();
 vt.skip = new WeakMap(); // видео, которые не улучшаем: 'drm' — защищённое, 'ui' — улучшение закрыло бы кнопки плеера
@@ -1073,7 +1242,8 @@ button { all: unset; cursor: pointer; height: 28px; min-width: 28px; padding: 0 
 button:hover { background: rgba(255,255,255,.12); color: #fff; }
 button:active { transform: scale(.92); }
 button.on { background: linear-gradient(180deg, #e88a68, #c9633f); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3); }
-button.sr { width: 98px; } button.sr.on { background: linear-gradient(180deg, #34d399, #059669); }
+button.sr { min-width: 98px; } button.sr.on { background: linear-gradient(180deg, #34d399, #059669); }
+button.lp { background: rgba(232,138,104,.22); color: #fff; } button.lp:hover { background: linear-gradient(180deg, #e88a68, #c9633f); }
 button.sr i { font-style: normal; font-size: 10px; font-weight: 700; opacity: .85; }
 svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .val { width: 36px; text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -1093,6 +1263,7 @@ const IC = {
   more: '<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/></svg>',
   mini: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M8 20.5h8"/><rect x="11.5" y="9.5" width="6.5" height="4.5" rx="1" fill="currentColor" stroke="none"/></svg>',
   dot: '<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
+  play: '<svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor"/></svg>',
 };
 const bar = { host: null, root: null, el: null, dot: null, v: null, hideT: 0, hover: false, open: false };
 function barBuild() {
@@ -1111,8 +1282,9 @@ function barBuild() {
       <button data-a="mute" title="Громкость до 300% (Alt+колесо)">${IC.vol}</button><input type="range" data-r="vol" min="0" max="300" step="5"><span class="val" data-v="vol">100%</span>
     </div>
     <div class="row">
-      <button class="sr" data-a="sr" title="Liquid RTX: увеличение обученным фильтром RAVU и резкость без ряби на видеокарте. Нажимай: выкл → ×1 → ×2">${IC.sr}Чёткость <i data-v="sr"></i></button>
-      <button data-a="hdr" title="HDR-цвет">HDR</button>
+      <button class="sr" data-a="sr" title="Liquid RTX на плеере сайта: нейросеть убирает сжатие и увеличивает до разрешения экрана. Нажимай: выкл → чисто → чётко">${IC.sr}Чёткость <i data-v="sr"></i></button>
+      <button data-a="hdr" title="HDR-цвет">HDR</button><span class="grow"></span>
+      <button data-a="player" class="lp" title="Liquid Player: смотреть на весь экран в своём плеере с Liquid RTX (Alt+Enter)">${IC.play}Плеер</button>
     </div>
     <div class="st" data-v="st"></div>
     <div class="more">
@@ -1148,6 +1320,7 @@ function barBuild() {
     }
     else if (a === 'hdr') { vt.srHdr = !vt.srHdr; if (vt.srHdr) { vt.srBroken = false; vt.srWhy = ''; if (vt.sr === 'off') vt.sr = 'mid'; } srSync(); toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); }
     else if (a === 'pip') pipToggle(v);
+    else if (a === 'player') { barOpen(false); lpOpen(v); }
     else if (a === 'more') { barExpand(!bar.el.classList.contains('x')); barPlace(); }
     else if (a === 'comp') setComp(v, !vt.graphs.get(v)?.compOn);
     else if (a === 'loop') v.loop = !v.loop;
@@ -1179,7 +1352,7 @@ function barRender() {
   const vol = Math.round(getVolume(v) * 100);
   q('[data-r="vol"]').value = vol; q('[data-v="vol"]').textContent = vol + '%';
   const sr = q('[data-a="sr"]'); sr.classList.toggle('on', vt.sr !== 'off');
-  q('[data-v="sr"]').textContent = vt.sr === 'off' ? '' : vt.sr === 'mid' ? '×1' : '×2';
+  q('[data-v="sr"]').textContent = vt.sr === 'off' ? '' : vt.sr === 'mid' ? 'чисто' : 'чётко';
   q('[data-a="hdr"]').classList.toggle('on', vt.srHdr);
   const st = q('[data-v="st"]'), r = vt.srMap.get(v);
   const WHY = { cors: 'сайт не даёт обработать своё видео', gpu: 'видеокарта не отдала кадр', stall: 'кадры перестали обновляться', nogl: 'нет WebGL', small: 'видео слишком маленькое' };
@@ -1191,7 +1364,7 @@ function barRender() {
   else if (vt.sr !== 'off' && r && r.big) { st.className = 'st ok'; st.textContent = `Не нужна: видео ${v.videoWidth}×${v.videoHeight} крупнее плеера на экране (${r.ow}×${r.oh}) — показываю как есть. В полном экране включится сама.`; }
   else if (vt.sr !== 'off' && r && r.frames > 0) {
     // каким способом сейчас увеличиваем: RAVU-3 / RAVU-2 (обученный фильтр) или FSR (запасной)
-    const how = { r3: ' · RAVU-3', r2: ' · RAVU-2', fsr: r.slow ? ' · FSR (видеокарта не успевала за RAVU)' : ' · FSR' }[r.used] || '';
+    const how = SR_NAMES[r.used] ? ' · ' + SR_NAMES[r.used] + (r.slow ? ' (видеокарта не успевала за лучшим)' : '') : '';
     st.className = 'st ok'; st.textContent = `Работает: ${v.videoWidth}×${v.videoHeight} → ${r.ow}×${r.oh}${how}${vt.srHdr ? ' · HDR' : ''}`;
   }
   else if (vt.sr !== 'off' && v.offsetWidth < 240) { st.className = 'st'; st.textContent = 'Включится, когда видео станет больше.'; }
@@ -1460,6 +1633,372 @@ for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
 // ---------- команды от браузера ----------
 window.addEventListener('error', (e) => { if (e.filename && /webview-preload|liquid/i.test(e.filename)) report('скрипт страницы', e.error || e.message); });
 ipcRenderer.on('liquid', (_e, msg) => { try { liquidCmd(msg); } catch (err) { report('команда ' + (msg && msg.type), err); } });
+// ---------- 10. Liquid Player: свой плеер поверх любого сайта ----------
+// Берёт видео сайта (YouTube, VK, Rutube, любое <video>) и показывает его на весь экран через Liquid RTX:
+// кадр за кадром на видеокарте в реальное разрешение экрана (1080p → 4K). Звук, буферизация, реклама и перемотка
+// остаются у сайта — мы управляем его же <video>, поэтому работает везде, где видео не защищено DRM.
+// Открывается: кнопкой на видео, Alt+Enter, из меню правой кнопки и сам вместо полноэкранного режима сайта.
+const LP_CSS = `
+:host { all: initial; position: fixed; inset: 0; z-index: 2147483647; background: #000; display: block; }
+.wrap { position: absolute; inset: 0; overflow: hidden; cursor: none; font: 13px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: #fff; user-select: none; }
+.wrap.ui { cursor: default; }
+canvas { position: absolute; display: block; }
+.ui-l { position: absolute; left: 0; right: 0; opacity: 0; transition: opacity .25s; pointer-events: none; }
+.wrap.ui .ui-l { opacity: 1; pointer-events: auto; }
+.top { top: 0; padding: 18px 24px 40px; background: linear-gradient(rgba(0,0,0,.7), transparent); display: flex; align-items: center; gap: 12px; }
+.title { flex: 1; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge { font-size: 12px; padding: 5px 10px; border-radius: 10px; background: rgba(16,185,129,.18); color: #6ee7b7; border: 1px solid rgba(110,231,183,.3); white-space: nowrap; }
+.badge.off { background: rgba(255,255,255,.08); color: rgba(255,255,255,.7); border-color: rgba(255,255,255,.15); }
+.bot { bottom: 0; padding: 40px 24px 18px; background: linear-gradient(transparent, rgba(0,0,0,.78)); }
+.seek { position: relative; height: 18px; cursor: pointer; display: flex; align-items: center; }
+.seek .tr { position: absolute; left: 0; right: 0; height: 4px; border-radius: 4px; background: rgba(255,255,255,.2); transition: height .15s; }
+.seek:hover .tr { height: 7px; }
+.seek .bf, .seek .pl { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+.seek .bf { background: rgba(255,255,255,.3); } .seek .pl { background: linear-gradient(90deg, #e88a68, #f2a081); }
+.seek .knob { position: absolute; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+.seek .tip { position: absolute; bottom: 22px; transform: translateX(-50%); padding: 3px 7px; border-radius: 6px; background: rgba(0,0,0,.8); font-size: 12px; font-variant-numeric: tabular-nums; display: none; }
+.seek:hover .tip { display: block; }
+.row { display: flex; align-items: center; gap: 4px; margin-top: 8px; }
+.grow { flex: 1; }
+button { all: unset; cursor: pointer; height: 38px; min-width: 38px; padding: 0 10px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; color: rgba(255,255,255,.9); font-size: 13px; transition: background .15s, transform .25s cubic-bezier(.2,.9,.25,1.2); white-space: nowrap; }
+button:hover { background: rgba(255,255,255,.14); color: #fff; } button:active { transform: scale(.92); }
+button.on { background: linear-gradient(180deg, #34d399, #059669); color: #fff; }
+button.acc.on { background: linear-gradient(180deg, #e88a68, #c9633f); }
+svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+svg.fill { fill: currentColor; stroke: none; }
+.time { font-variant-numeric: tabular-nums; color: rgba(255,255,255,.85); padding: 0 8px; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 90px; height: 4px; border-radius: 4px; background: rgba(255,255,255,.25); outline: none; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #fff; }
+.seg { display: inline-flex; background: rgba(255,255,255,.08); border-radius: 12px; padding: 2px; }
+.seg button { height: 34px; border-radius: 10px; padding: 0 12px; }
+.menu { position: absolute; bottom: 92px; right: 24px; min-width: 200px; padding: 6px; border-radius: 14px; background: rgba(24,22,32,.92); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.14); display: none; flex-direction: column; }
+.menu.on { display: flex; } .menu button { justify-content: flex-start; height: 34px; } .menu b { padding: 6px 10px 4px; font-size: 11px; font-weight: 600; color: rgba(255,255,255,.5); text-transform: uppercase; letter-spacing: .04em; }
+.split { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: rgba(255,255,255,.85); box-shadow: 0 0 10px rgba(0,0,0,.6); display: none; cursor: ew-resize; }
+.split.on { display: block; }
+.split::before { content: ''; position: absolute; left: -14px; right: -14px; top: 0; bottom: 0; }
+.split i { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 34px; height: 34px; border-radius: 50%; background: rgba(255,255,255,.92); box-shadow: 0 4px 14px rgba(0,0,0,.5); }
+.split .l, .split .r { position: absolute; top: 18px; padding: 4px 9px; border-radius: 8px; background: rgba(0,0,0,.65); font-size: 12px; white-space: nowrap; font-style: normal; }
+.split .l { right: 14px; } .split .r { left: 14px; color: #6ee7b7; }
+.cap { position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%); max-width: 80%; text-align: center; pointer-events: none; }
+.cap span { display: inline; padding: 2px 8px; line-height: 1.55; font-size: 26px; background: rgba(8,8,8,.75); color: #fff; -webkit-box-decoration-break: clone; box-decoration-break: clone; white-space: pre-line; }
+.wrap.ui .cap { bottom: calc(9% + 70px); }
+.hud { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(.9); padding: 14px 22px; border-radius: 16px; background: rgba(0,0,0,.6); font-size: 20px; font-weight: 600; opacity: 0; transition: opacity .2s, transform .3s; pointer-events: none; }
+.hud.on { opacity: 1; transform: translate(-50%, -50%); }
+.spin { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px; border-radius: 50%; border: 3px solid rgba(255,255,255,.2); border-top-color: #fff; animation: r 0.9s linear infinite; display: none; }
+.spin.on { display: block; } @keyframes r { to { transform: rotate(360deg); } }
+.err { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 520px; padding: 18px 22px; border-radius: 16px; background: rgba(30,20,24,.9); color: #fecaca; text-align: center; display: none; }
+.err.on { display: block; }
+.skip { position: absolute; right: 24px; bottom: 110px; height: 42px; padding: 0 18px; border-radius: 12px; background: rgba(0,0,0,.7); border: 1px solid rgba(255,255,255,.3); font-size: 15px; display: none; }
+.skip.on { display: inline-flex; }`;
+const LPI = {
+  play: '<svg class="fill" viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
+  pause: '<svg class="fill" viewBox="0 0 24 24"><rect x="6.5" y="5" width="4" height="14" rx="1.2"/><rect x="13.5" y="5" width="4" height="14" rx="1.2"/></svg>',
+  back: '<svg viewBox="0 0 24 24"><path d="M11 7 6 12l5 5M18 7l-5 5 5 5"/></svg>', fwd: '<svg viewBox="0 0 24 24"><path d="m13 7 5 5-5 5M6 7l5 5-5 5"/></svg>',
+  vol: '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
+  mute: '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="m16 9.5 5 5M21 9.5l-5 5"/></svg>',
+  cmp: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M12 3v18"/></svg>',
+  gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  full: '<svg viewBox="0 0 24 24"><path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/></svg>',
+  close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+  pip: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><rect x="12" y="11.5" width="7" height="5.5" rx="1.2" fill="currentColor" stroke="none"/></svg>',
+};
+const lp = { host: null, root: null, wrap: null, cv: null, eng: null, perf: null, v: null, open: false, fs: false, split: 0, uiT: 0, hudT: 0,
+  last: -1, lastT: -1, dirty: true, raf: 0, frames: 0, ytQ: null, capObs: null, offs: [], fromFs: false, used: '' };
+const fmtT = (s) => { if (!isFinite(s)) return '∞'; s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+function lpBuild() {
+  if (lp.host) return;
+  lp.host = document.createElement('lq-player');
+  lp.root = lp.host.attachShadow({ mode: 'closed' });
+  setHTML(lp.root, `<style>${LP_CSS}</style><div class="wrap">
+    <canvas></canvas><div class="split"><i></i><em class="l">Как было</em><em class="r">Liquid RTX</em></div>
+    <div class="cap"></div><div class="spin"></div><div class="hud"></div><div class="err"></div><button class="skip" data-a="skip">Пропустить рекламу ›</button>
+    <div class="ui-l top"><div class="title"></div><span class="badge"></span><button data-a="close" title="Закрыть Liquid Player (Esc)">${LPI.close}</button></div>
+    <div class="menu" data-m="q"></div>
+    <div class="ui-l bot">
+      <div class="seek"><div class="tr"><div class="bf"></div><div class="pl"></div></div><div class="knob"></div><div class="tip"></div></div>
+      <div class="row">
+        <button data-a="play" title="Пауза / играть (пробел)">${LPI.play}</button>
+        <button data-a="back" title="Назад 10 с (←)">${LPI.back}</button><button data-a="fwd" title="Вперёд 10 с (→)">${LPI.fwd}</button>
+        <button data-a="mute" title="Звук (M)">${LPI.vol}</button><input type="range" data-r="vol" min="0" max="300" step="5">
+        <span class="time"></span><span class="grow"></span>
+        <span class="seg" title="Liquid RTX: Выкл — как в обычном плеере; Чисто — нейросеть убирает сжатие и восстанавливает детали; Чётко — плюс резкость">
+          <button data-sr="off">Выкл</button><button data-sr="mid">Чисто</button><button data-sr="max">Чётко</button></span>
+        <button data-a="hdr" class="acc" title="HDR-цвет">HDR</button>
+        <button data-a="cmp" class="acc" title="Сравнить: слева как было, справа Liquid RTX (C)">${LPI.cmp}</button>
+        <button data-a="speed" title="Скорость (Shift+< / >)"><span data-v="speed">1×</span></button>
+        <button data-a="q" title="Качество и настройки">${LPI.gear}</button>
+        <button data-a="pip" title="Картинка в картинке">${LPI.pip}</button>
+        <button data-a="full" title="Во весь экран (F)">${LPI.full}</button>
+      </div>
+    </div></div>`);
+  const q = (s) => lp.root.querySelector(s);
+  lp.wrap = q('.wrap'); lp.cv = q('canvas');
+  if (!lp.wrap || !lp.cv) { report('Liquid Player', 'не удалось собрать разметку'); lp.host = null; return; }
+  lp.wrap.addEventListener('mousemove', () => lpUi());
+  lp.wrap.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) { if (e.target === lp.cv || e.target === lp.wrap) { lpMenu(false); lpToggle(); } return; }
+    e.stopPropagation(); lpAct(b);
+  });
+  lp.wrap.addEventListener('dblclick', (e) => { if (e.target === lp.cv) lpFull(); });
+  lp.wrap.addEventListener('wheel', (e) => { e.preventDefault(); lpVol(getVolume(lp.v) + (e.deltaY < 0 ? 0.05 : -0.05)); }, { passive: false });
+  q('[data-r="vol"]').addEventListener('input', (e) => lpVol(+e.target.value / 100));
+  // перемотка: нажал и тянешь
+  const sk = q('.seek');
+  const at = (e) => { const r = sk.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); };
+  sk.addEventListener('pointerdown', (e) => {
+    sk.setPointerCapture(e.pointerId); lp.seeking = true;
+    const mv = (ev) => { const d = lp.v.duration; if (isFinite(d)) { lp.seekTo = at(ev) * d; lpRenderTime(); } };
+    const up = (ev) => { sk.removeEventListener('pointermove', mv); sk.removeEventListener('pointerup', up); lp.seeking = false;
+      const d = lp.v.duration; if (isFinite(d)) lp.v.currentTime = at(ev) * d; lp.seekTo = null; };
+    sk.addEventListener('pointermove', mv); sk.addEventListener('pointerup', up); mv(e);
+  });
+  sk.addEventListener('mousemove', (e) => { const d = lp.v && lp.v.duration; const tip = q('.tip'); if (!isFinite(d)) return; tip.textContent = fmtT(at(e) * d); tip.style.left = (at(e) * 100) + '%'; });
+  // разделитель «сравнить» тянется мышью
+  const sp = q('.split');
+  sp.addEventListener('pointerdown', (e) => {
+    e.stopPropagation(); sp.setPointerCapture(e.pointerId);
+    const mv = (ev) => { const r = lp.cv.getBoundingClientRect(); lp.split = Math.max(0.02, Math.min(0.98, (ev.clientX - r.left) / r.width)); lp.dirty = true; lpPlaceSplit(); };
+    const up = () => { sp.removeEventListener('pointermove', mv); sp.removeEventListener('pointerup', up); };
+    sp.addEventListener('pointermove', mv); sp.addEventListener('pointerup', up);
+  });
+  for (const ev of ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'keydown', 'keyup']) lp.host.addEventListener(ev, (e) => e.stopPropagation());
+  new ResizeObserver(() => lpLayout()).observe(lp.wrap);
+}
+function lpUi() {
+  if (!lp.wrap) return;
+  lp.wrap.classList.add('ui');
+  clearTimeout(lp.uiT);
+  lp.uiT = setTimeout(() => { if (!lp.v || lp.v.paused || lp.menu) return; lp.wrap.classList.remove('ui'); }, 2600);
+}
+function lpHud(t) { const h = lp.root.querySelector('.hud'); h.textContent = t; h.classList.add('on'); clearTimeout(lp.hudT); lp.hudT = setTimeout(() => h.classList.remove('on'), 700); }
+function lpToggle() { const v = lp.v; if (!v) return; if (v.paused) v.play().catch(() => {}); else v.pause(); }
+function lpVol(x) { setVolume(lp.v, Math.max(0, Math.min(3, Math.round(x * 100) / 100))); lpHud('Громкость ' + Math.round(getVolume(lp.v) * 100) + '%'); lpRender(); }
+function lpSeek(d) { const v = lp.v; v.currentTime = Math.max(0, Math.min((v.duration || 1e9) - 0.1, v.currentTime + d)); lpHud((d > 0 ? '+' : '−') + Math.abs(d) + ' с'); }
+function lpRate(d) { const v = lp.v; const r = Math.max(0.25, Math.min(4, Math.round((v.playbackRate + d) * 4) / 4)); v.playbackRate = r; vt.want.speed = r; lpHud('Скорость ' + fmtRate(r)); lpRender(); }
+async function lpFull() {
+  try { if (document.fullscreenElement === lp.host) await document.exitFullscreen(); else await lp.host.requestFullscreen({ navigationUI: 'hide' }); } catch (e) { lpHud('Полный экран: нажми F'); }
+}
+function lpAct(b) {
+  const a = b.dataset.a, v = lp.v;
+  if (b.dataset.sr) { vt.sr = b.dataset.sr; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); lp.dirty = true; lpRender(); return; }
+  if (b.dataset.q) { lpSetQuality(b.dataset.q); lpMenu(false); return; }
+  if (b.dataset.rate) { v.playbackRate = +b.dataset.rate; vt.want.speed = +b.dataset.rate; lpMenu(false); lpRender(); return; }
+  if (a === 'close') lpClose();
+  else if (a === 'play') lpToggle();
+  else if (a === 'back') lpSeek(-10);
+  else if (a === 'fwd') lpSeek(10);
+  else if (a === 'mute') setVolume(v, getVolume(v) > 0 ? 0 : 1);
+  else if (a === 'hdr') { vt.srHdr = !vt.srHdr; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); lp.dirty = true; }
+  else if (a === 'cmp') { lp.split = lp.split ? 0 : 0.5; lp.dirty = true; lpPlaceSplit(); }
+  else if (a === 'full') lpFull();
+  else if (a === 'pip') pipToggle(v);
+  else if (a === 'speed') lpMenu(lp.menu === 'speed' ? false : 'speed');
+  else if (a === 'q') lpMenu(lp.menu === 'q' ? false : 'q');
+  else if (a === 'auto') { vt.lpAuto = !vt.lpAuto; toHost({ type: 'lpPref', auto: vt.lpAuto }); lpMenu('q'); }
+  else if (a === 'skip') { const sk = ytSkip(); if (sk) sk.click(); }
+  lpRender();
+}
+// меню: качество (на YouTube), скорость, «открывать сам»
+async function lpMenu(kind) {
+  lp.menu = kind || null;
+  const m = lp.root.querySelector('.menu');
+  if (!kind) { m.classList.remove('on'); return; }
+  let h = '';
+  if (kind === 'speed') {
+    h = '<b>Скорость</b>' + [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 3].map((r) => `<button data-rate="${r}" class="${lp.v.playbackRate === r ? 'on' : ''}">${fmtRate(r)}</button>`).join('');
+  } else {
+    const yq = await ytQualities();
+    if (yq && yq.list.length) {
+      const NAME = { hd2160: '2160p (4K)', hd1440: '1440p', hd1080: '1080p', hd720: '720p', large: '480p', medium: '360p', small: '240p', tiny: '144p', auto: 'Авто' };
+      h += '<b>Качество YouTube</b>' + yq.list.map((x) => `<button data-q="${x}" class="${x === yq.cur ? 'on' : ''}">${NAME[x] || x}</button>`).join('');
+    }
+    h += `<b>Liquid Player</b><button data-a="auto" class="${vt.lpAuto ? 'on' : ''}">Открывать вместо полного экрана сайта</button>`;
+  }
+  setHTML(m, h);
+  m.classList.add('on'); lpUi();
+}
+// YouTube: список качеств и выбор — через его собственный плеер (он в странице, не в нашем изолированном мире)
+async function ytQualities() {
+  if (!/(^|\.)youtube\.com$/.test(location.hostname)) return null;
+  try { return await webFrame.executeJavaScript(`(() => { const p = document.getElementById('movie_player'); if (!p || !p.getAvailableQualityLevels) return null;
+    return { list: p.getAvailableQualityLevels(), cur: p.getPlaybackQuality() }; })()`); } catch { return null; }
+}
+async function lpSetQuality(q) {
+  try { await webFrame.executeJavaScript(`(() => { const p = document.getElementById('movie_player'); if (p && p.setPlaybackQualityRange) p.setPlaybackQualityRange(${JSON.stringify(q)}, ${JSON.stringify(q)}); })()`); lpHud('Качество: ' + q.replace('hd', '').replace(/^(\d+)$/, '$1p')); } catch {}
+}
+// при открытии на YouTube просим лучшее доступное качество: плеер сайта под нашим не видно, и он мог выбрать меньшее
+async function ytBest() {
+  const yq = await ytQualities();
+  if (!yq || !yq.list.length) return;
+  const best = yq.list.find((x) => x !== 'auto');
+  if (best && best !== yq.cur) lpSetQuality(best);
+}
+// субтитры: YouTube рисует их своими элементами (под нашим плеером их не видно) — повторяем текст у себя;
+// у остальных сайтов — дорожки textTracks в режиме «показывать»
+const ytSkip = () => { const b = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern'); return b && b.offsetParent ? b : null; };
+function lpCaptions() {
+  const box = lp.root.querySelector('.cap'), v = lp.v;
+  if (!v.isConnected) { lpClose(); return; } // сайт убрал видео (ушли на другую страницу)
+  lp.root.querySelector('.skip').classList.toggle('on', !!ytSkip());
+  let t = '';
+  const yt = document.querySelector('.ytp-caption-window-container');
+  if (yt) t = [...yt.querySelectorAll('.ytp-caption-segment')].map((s) => s.textContent).join(' ').trim();
+  else for (const tr of v.textTracks || []) if (tr.mode === 'showing' && tr.activeCues) t += [...tr.activeCues].map((c) => c.text || '').join('\n');
+  if (box.__t === t) return;
+  box.__t = t; setHTML(box, t ? '<span></span>' : ''); if (t) box.firstChild.textContent = t.replace(/<[^>]+>/g, '');
+}
+function lpLayout() {
+  if (!lp.open || !lp.v) return;
+  const W = lp.wrap.clientWidth, H = lp.wrap.clientHeight, v = lp.v;
+  const vw = v.videoWidth || 16, vh = v.videoHeight || 9;
+  const k = Math.min(W / vw, H / vh);
+  const w = Math.round(vw * k), h = Math.round(vh * k);
+  Object.assign(lp.cv.style, { width: w + 'px', height: h + 'px', left: Math.round((W - w) / 2) + 'px', top: Math.round((H - h) / 2) + 'px' });
+  // настоящие точки экрана: 4K-монитор с масштабом 150 % — 1,5 точки на пиксель страницы → холст 3840×2160
+  const dpr = window.devicePixelRatio || 1;
+  lp.eng.size(Math.round(w * dpr), Math.round(h * dpr));
+  lp.dirty = true; lpPlaceSplit();
+}
+function lpPlaceSplit() {
+  const sp = lp.root.querySelector('.split'); sp.classList.toggle('on', !!lp.split);
+  if (!lp.split) return;
+  const r = lp.cv.getBoundingClientRect(), wr = lp.wrap.getBoundingClientRect();
+  sp.style.left = (r.left - wr.left + r.width * lp.split) + 'px'; sp.style.top = (r.top - wr.top) + 'px'; sp.style.height = r.height + 'px'; sp.style.bottom = 'auto';
+}
+function lpRenderTime() {
+  const v = lp.v, q = (s) => lp.root.querySelector(s), d = v.duration, t = lp.seekTo ?? v.currentTime;
+  q('.time').textContent = fmtT(t) + ' / ' + fmtT(d);
+  const p = isFinite(d) && d > 0 ? t / d : 0;
+  q('.pl').style.width = (p * 100) + '%'; q('.knob').style.left = (p * 100) + '%';
+  let bf = 0; try { for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= t + 0.5) bf = Math.max(bf, v.buffered.end(i)); } catch {}
+  q('.bf').style.width = (isFinite(d) && d > 0 ? Math.min(1, bf / d) * 100 : 0) + '%';
+}
+function lpRender() {
+  if (!lp.open || !lp.v) return;
+  const v = lp.v, q = (s) => lp.root.querySelector(s);
+  setHTML(q('[data-a="play"]'), v.paused ? LPI.play : LPI.pause);
+  const vol = getVolume(v); setHTML(q('[data-a="mute"]'), vol > 0 ? LPI.vol : LPI.mute); q('[data-r="vol"]').value = Math.round(vol * 100);
+  q('[data-v="speed"]').textContent = fmtRate(v.playbackRate);
+  for (const b of lp.root.querySelectorAll('[data-sr]')) b.classList.toggle('on', b.dataset.sr === vt.sr);
+  q('[data-a="hdr"]').classList.toggle('on', vt.srHdr); q('[data-a="cmp"]').classList.toggle('on', !!lp.split);
+  q('.title').textContent = document.title.replace(/ - YouTube$/, '');
+  const bd = q('.badge'), out = `${lp.eng.ow}×${lp.eng.oh}`;
+  const how = SR_NAMES[lp.used] || '';
+  if (vt.sr === 'off') { bd.className = 'badge off'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · Liquid RTX выкл`; }
+  else if (lp.used === 'down') { bd.className = 'badge off'; bd.textContent = `Видео ${v.videoWidth}×${v.videoHeight} — уже не меньше экрана, показываю как есть`; }
+  else { bd.className = 'badge'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · ${how}${lp.slow ? ' (видеокарта не успевала за лучшим)' : ''}${vt.srHdr ? ' · HDR' : ''}`; }
+  q('.spin').classList.toggle('on', v.readyState < 3 && !v.paused);
+  lpRenderTime();
+}
+// кадр: рисуем, только когда у видео действительно новый кадр (VideoFrame знает его время), иначе — по времени видео
+function lpLoop() {
+  if (!lp.open) return;
+  lp.raf = requestAnimationFrame(lpLoop);
+  const v = lp.v, now = performance.now();
+  lp.perf.frame(now);
+  if (v.readyState < 2 || !v.videoWidth) return;
+  if (lp.vw !== v.videoWidth || lp.vh !== v.videoHeight) { lp.vw = v.videoWidth; lp.vh = v.videoHeight; lpLayout(); }
+  let src = v, vf = null, stamp = v.currentTime;
+  if (typeof VideoFrame === 'function' && !lp.noVF) {
+    try { vf = new VideoFrame(v); stamp = vf.timestamp; src = vf; } catch (e) { lp.noVF = true; }
+  }
+  if (stamp === lp.last && !lp.dirty) { if (vf) vf.close(); return; }
+  lp.last = stamp; lp.dirty = false;
+  try {
+    const was = lp.used;
+    lp.used = lp.eng.draw(src, v.videoWidth, v.videoHeight, [0, 0, 1, 1], vt.sr, vt.srHdr, lp.split);
+    lp.frames++;
+    lp.host.dataset.lqUsed = lp.used;
+    if (was !== lp.used) lpRender();
+  } catch (e) {
+    lpError('Этот сайт не разрешает обрабатывать своё видео (защита от копирования или чужой сервер). Открой обычный плеер.');
+  } finally { if (vf) vf.close(); }
+  // пока на паузе: шейдер нейросети мог собраться — перерисуем лучшим
+  if (v.paused && vt.sr !== 'off' && /^(fsr|r2|r3)$/.test(lp.used) && lp.frames % 30 === 0) { const best = lp.eng.pick(vt.sr); if ((best ? best.name : 'fsr') !== lp.used) lp.dirty = true; }
+}
+function lpError(t) { const e = lp.root.querySelector('.err'); e.textContent = t; e.classList.add('on'); }
+// клавиши — как в обычных плеерах; сайт их не получает, пока открыт наш
+function lpKey(e) {
+  if (!lp.open) return;
+  const k = e.code, v = lp.v;
+  const map = {
+    Space: () => lpToggle(), KeyK: () => lpToggle(), ArrowLeft: () => lpSeek(-5), ArrowRight: () => lpSeek(5), KeyJ: () => lpSeek(-10), KeyL: () => lpSeek(10),
+    ArrowUp: () => lpVol(getVolume(v) + 0.05), ArrowDown: () => lpVol(getVolume(v) - 0.05), KeyM: () => { setVolume(v, getVolume(v) > 0 ? 0 : 1); lpRender(); },
+    KeyF: () => lpFull(), KeyC: () => { lp.split = lp.split ? 0 : 0.5; lp.dirty = true; lpPlaceSplit(); lpRender(); },
+    Period: () => e.shiftKey && lpRate(0.25), Comma: () => e.shiftKey && lpRate(-0.25), Escape: () => { if (document.fullscreenElement !== lp.host) lpClose(); },
+  };
+  if (/^Digit\d$/.test(k) && isFinite(v.duration)) { v.currentTime = v.duration * (+k.slice(5)) / 10; }
+  else if (map[k] && !e.ctrlKey && !e.metaKey && !e.altKey) map[k]();
+  else return;
+  e.preventDefault(); e.stopImmediatePropagation(); lpUi();
+}
+const LP_EV = ['play', 'pause', 'volumechange', 'ratechange', 'progress', 'waiting', 'playing', 'seeked', 'durationchange'];
+function lpOpen(v, fromFs) {
+  if (!v || lp.open) return;
+  if (v.mediaKeys) { toHost({ type: 'videoErr', error: 'защищённое видео (DRM) — сервис не разрешает показывать его в своём плеере' }); return; }
+  lpBuild(); if (!lp.host) return;
+  // свежий холст на каждое открытие: у закрытого плеера контекст видеокарты освобождён, второй раз его не получить
+  const cv = document.createElement('canvas'); lp.cv.replaceWith(cv); lp.cv = cv;
+  try { lp.eng = new RtxEngine(lp.cv); } catch (e) { toHost({ type: 'videoErr', error: 'нет WebGL — Liquid Player не может рисовать видео' }); return; }
+  lp.v = v; lp.open = true; lp.fromFs = !!fromFs; lp.perf = new RtxPerf(); lp.used = ''; lp.slow = false; lp.last = -1; lp.dirty = true; lp.frames = 0; lp.split = 0;
+  lp.root.querySelector('.err').classList.remove('on');
+  // слой чёткости поверх плеера сайта не нужен, пока открыт наш (видеокарта занята одним)
+  vt.srMap.get(v)?.destroy();
+  document.documentElement.appendChild(lp.host);
+  lp.onEv = () => lpRender(); lp.onTime = () => { lpRenderTime(); lpCaptions(); };
+  for (const ev of LP_EV) v.addEventListener(ev, lp.onEv);
+  v.addEventListener('timeupdate', lp.onTime);
+  window.addEventListener('keydown', lpKey, true);
+  lp.perfT = setInterval(() => { if (lp.perf.check(v, lp.used) && lp.eng.slower()) { lp.slow = true; console.warn('[liquid] Liquid Player: видеокарта не успевает — ступенька вниз'); lpRender(); } }, 2000);
+  lp.capT = setInterval(lpCaptions, 250);
+  if (!fromFs) lp.host.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); // не вышло (нет нажатия) — остаёмся во всё окно
+  lpLayout(); lpRender(); lpUi(); lpLoop();
+  ytBest();
+  toHost({ type: 'lpOpen', on: true });
+}
+async function lpClose(keepFs) {
+  if (!lp.open) return;
+  const v = lp.v;
+  lp.open = false; cancelAnimationFrame(lp.raf); clearInterval(lp.perfT); clearInterval(lp.capT); clearTimeout(lp.uiT);
+  for (const ev of LP_EV) v.removeEventListener(ev, lp.onEv);
+  v.removeEventListener('timeupdate', lp.onTime);
+  window.removeEventListener('keydown', lpKey, true);
+  lpMenu(false);
+  // выходим из полного экрана целиком (под нашим мог остаться полноэкранный плеер сайта)
+  if (!keepFs) for (let i = 0; i < 3 && document.fullscreenElement; i++) { try { await document.exitFullscreen(); } catch { break; } }
+  lp.eng.destroy(); lp.eng = null;
+  lp.host.remove(); lp.v = null; lp.closedAt = performance.now();
+  toHost({ type: 'lpOpen', on: false });
+  setTimeout(srSync, 100);
+}
+// сайт ушёл в полный экран со своим плеером — подменяем его нашим (нажатие пользователя ещё действует)
+document.addEventListener('fullscreenchange', () => {
+  const fs = document.fullscreenElement;
+  if (lp.open) {
+    // наш плеер вышел из полного экрана: открыт вместо полноэкранного плеера сайта — закрываемся совсем
+    // (под нами мог остаться полноэкранный плеер сайта — выходим и из него); открыт кнопкой — остаёмся в окне
+    if (fs === lp.host) return;
+    if (fs || lp.fromFs) lpClose();
+    return;
+  }
+  if (!fs || !vt.lpAuto || vt.sr === 'off' || fs === lp.host || performance.now() - (lp.closedAt || -1e9) < 1500) return;
+  const v = fs.tagName === 'VIDEO' ? fs : [...fs.querySelectorAll('video')].sort((a, b) => b.offsetWidth * b.offsetHeight - a.offsetWidth * a.offsetHeight)[0];
+  if (!v || !v.videoWidth || v.mediaKeys || vt.skip.get(v) === 'drm') return;
+  lpOpen(v, true);
+  if (lp.open) lp.host.requestFullscreen({ navigationUI: 'hide' }).catch(() => lpClose(true)); // нажатие уже «истекло» — остаётся плеер сайта
+});
+// Alt+Enter — открыть видео под курсором (или главное) в Liquid Player
+window.addEventListener('keydown', (e) => {
+  if (!e.altKey || e.code !== 'Enter' || e.ctrlKey || e.metaKey || lp.open) return;
+  const v = videoAt(barX, barY) || mainVideo();
+  if (!v) return;
+  e.preventDefault(); e.stopImmediatePropagation(); lpOpen(v);
+}, true);
+// из меню правой кнопки: браузер присылает событие с «нажатием пользователя», чтобы можно было включить полный экран
+document.addEventListener('liquid:player', (e) => { const d = e.detail || {}; const v = (d.x != null && videoAt(d.x, d.y)) || mainVideo(); if (v) lpOpen(v); });
+
 function liquidCmd(msg) {
   if (!msg) return;
   if (msg.type === 'translate') msg.on ? translateOn() : translateOff();

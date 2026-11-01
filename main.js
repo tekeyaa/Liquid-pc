@@ -12,6 +12,8 @@ const { GameMode } = require('./main/gamemode');
 const { WatchRoom, BROKERS: WATCH_BROKERS } = require('./main/watch');
 const { Diag, sysInfo } = require('./main/diag');
 const ravu = require('./main/ravu');
+let rtxNetCache = null; // веса нейросети Liquid RTX (main/rtx), читаются один раз
+const rtxNet = () => rtxNetCache || (rtxNetCache = JSON.parse(fs.readFileSync(path.join(__dirname, 'main', 'rtx', 'liquid-rtx.json'), 'utf8')));
 const os = require('os');
 let game = null;
 
@@ -227,7 +229,7 @@ function publicSettings() {
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
-    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false,
+    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
@@ -468,6 +470,8 @@ app.on('web-contents-created', (_e, contents) => {
       t.push({ label: 'Вырезать', role: 'cut' }, { label: 'Копировать', role: 'copy' }, { label: 'Вставить', role: 'paste' }, { type: 'separator' });
     }
     if (p.mediaType === 'video') {
+      // «нажатие пользователя» (второй аргумент true) — чтобы плеер смог включить полный экран
+      t.push({ label: 'Смотреть в Liquid Player (Alt+Enter)', click: () => (p.frame || contents).executeJavaScript(`document.dispatchEvent(new CustomEvent('liquid:player', { detail: { x: ${Number(p.x) || 0}, y: ${Number(p.y) || 0} } }))`, true).catch(() => {}) });
       t.push({ label: 'Картинка в картинке', click: () => host().send('shortcut', { key: 'pip' }) });
       t.push({ label: 'Настройки видео (скорость, громкость)', click: () => host().send('shortcut', { key: 'video' }) });
       t.push({ label: 'Окно поверх игры', click: () => host().send('shortcut', { key: 'mini' }) });
@@ -1425,6 +1429,7 @@ function registerIpc() {
     if ('superRes' in patch) s.superRes = ['off', 'mid', 'max'].includes(patch.superRes) ? patch.superRes : 'off';
     if ('srHdr' in patch) s.srHdr = !!patch.srHdr;
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
+    if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
     if ('adblock' in patch) { s.adblock = !!patch.adblock; if (adblock) adblock.enabled = s.adblock; }
     if ('adAllowToggle' in patch) {
       const h = String(patch.adAllowToggle);
@@ -1484,8 +1489,9 @@ function registerIpc() {
   const sugCache = new Map();
   // настройки видео для фреймов (в главную страницу их присылает окно браузера)
   // Liquid RTX: таблицы весов апскейлера RAVU для страниц (читаются с диска один раз, потом из памяти)
+  ipcMain.handle('sr:net', () => { try { return rtxNet(); } catch (err) { console.warn('[liquid] Liquid RTX:', err.message); return null; } });
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
-  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false }; });
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false }; });
   ipcMain.handle('search:suggest', async (e, q) => {
     q = String(q || '').trim().slice(0, 120);
     if (!q || e.sender.session !== ses || /^[a-z]+:\/\//i.test(q)) return [];
