@@ -2130,6 +2130,7 @@ app.whenReady().then(async () => {
   // список заблокированных сайтов: копия с диска сразу, свежий — через 15 секунд после запуска и дальше раз в сутки
   loadBlockList().then(() => { if (vpnState.on) applyProxy({ close: false }); });
   setTimeout(() => updateBlockList(false), TEST ? 2000 : 15000);
+  if (!TEST) setTimeout(() => vpnSubsUpdate(false).catch(() => {}), 40000); // подписки — раз в сутки: новые серверы и ключи
   setInterval(() => { updateBlockList(false); vpnSubsUpdate(false).catch(() => {}); }, 6 * 3600e3).unref?.();
   // после сна компьютера соединения VPN обычно мёртвые — сразу проверяем связь
   const { powerMonitor } = require('electron');
