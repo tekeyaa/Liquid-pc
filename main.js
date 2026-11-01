@@ -63,12 +63,16 @@ const FF_VER = 128 + Math.floor((Date.now() - Date.UTC(2024, 6, 9)) / (28 * 864e
 const FF_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${FF_VER}.0) Gecko/20100101 Firefox/${FF_VER}.0`;
 const AUTH_HOSTS = /^https:\/\/(accounts\.google\.com|accounts\.youtube\.com|myaccount\.google\.com)\//;
 const WEBVIEW_PRELOAD = path.join(__dirname, 'webview-preload.js');
-const USER_INPUT = new Set(['mouseDown', 'mouseUp', 'keyDown', 'rawKeyDown', 'char', 'gestureTap', 'touchStart', 'touchEnd']);
 const POPUP_INPUT = new Set(['mouseDown', 'keyDown', 'rawKeyDown', 'char', 'gestureTap']);
 
 // Адрес страницы в каждой вкладке. Обработчики сетевых запросов спрашивали его у фрейма на КАЖДЫЙ запрос
 // (сотни на одну страницу), а это вызов в движок; теперь — поиск в таблице.
 const topUrls = new Map(); // webContentsId -> адрес главной страницы
+// Когда человек последний раз нажимал мышь или клавишу во вкладке (для разрешения всплывающих окон).
+// Сообщает preload страницы — только о нажатиях. Раньше основной процесс получал КАЖДОЕ событие ввода
+// вкладки (движение мыши, прокрутку — сотни в секунду) и в это время не обслуживал запросы сайтов
+const userActs = new Map(); // webContentsId -> время
+ipcMain.on('user:act', (e) => { userActs.set(e.sender.id, Date.now()); });
 const GOOGLEISH = /google|gstatic|youtube|ggpht/i;
 function topUrlOf(d, exact) {
   const u = exact ? undefined : topUrls.get(d.webContentsId);
@@ -82,6 +86,7 @@ function topUrlOf(d, exact) {
 const AUTH_FILTER = { urls: ['*://*.google.com/*', '*://*.gstatic.com/*', '*://*.googleapis.com/*', '*://accounts.youtube.com/*', '*://*.googleusercontent.com/*'] };
 function hardenSession(sess) {
   sess.setUserAgent(UA);
+  if (TEST && process.env.LIQUID_PERF_NOHOOKS) return; // замер: сколько стоит сам перехват запросов
   sess.webRequest.onBeforeSendHeaders(AUTH_FILTER, (d, cb) => {
     const h = d.requestHeaders;
     // для запросов к Google — всегда точный адрес из фрейма, как раньше: от этого зависит вход в аккаунт
@@ -337,7 +342,7 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('did-start-navigation', setTop);
   contents.on('did-redirect-navigation', setTop);
   contents.on('did-navigate', (_ev, url) => { if (url) topUrls.set(cid, url); });
-  contents.once('destroyed', () => topUrls.delete(cid));
+  contents.once('destroyed', () => { topUrls.delete(cid); userActs.delete(cid); });
   contents.setMaxListeners(40); // вкладку слушают блокировщик, журнал и интерфейс — 10 по умолчанию мало
   // один аргумент: в Electron 45 старая форма (ev, lvl, msg, …) выдаёт предупреждение об устаревании
   contents.on('console-message', function (ev) {
@@ -358,7 +363,7 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('responsive', () => diag.log('info', kind(), 'Страница снова отвечает'));
   contents.on('did-fail-load', (_ev, code, desc, url, isMain) => { if (isMain && code !== -3) diag.log('warn', 'загрузка', `${desc} (${code})`, logUrl(url)); });
   contents.on('will-attach-webview', (_ev, wp) => {
-    wp.preload = WEBVIEW_PRELOAD;
+    wp.preload = TEST && process.env.LIQUID_PERF_NOPRELOAD ? undefined : WEBVIEW_PRELOAD; // замер: сколько стоит наш preload
     wp.nodeIntegration = false;
     // preload запускается и во фреймах (встроенные плееры), Node.js там по-прежнему выключен
     wp.nodeIntegrationInSubFrames = true;
@@ -370,18 +375,29 @@ app.on('web-contents-created', (_e, contents) => {
 app.on('web-contents-created', (_e, contents) => {
   if (contents.getType() !== 'webview') return;
   const host = () => hostOf(contents);
+  // Можно ли назад/вперёд — присылаем окну сами после каждого перехода. Раньше окно спрашивало это у вкладки
+  // синхронно (canGoBack/canGoForward) при каждом обновлении панели и ждало ответа основного процесса.
+  // Пустая заготовка (about:blank в начале истории) за «назад» не считается
+  const navState = () => {
+    try {
+      const h = contents.navigationHistory, i = h.getActiveIndex();
+      const back = h.canGoBack() && !(i === 1 && /^about:blank/.test(h.getEntryAtIndex(0)?.url || ''));
+      host().send('tab:nav', { id: contents.id, back, fwd: h.canGoForward() });
+    } catch {}
+  };
+  contents.on('did-navigate', navState);
+  contents.on('did-navigate-in-page', navState);
   contents.on('did-navigate', () => { if (adblock) adblock.resetCount(contents.id); });
   contents.once('destroyed', () => { if (adblock) adblock.counts.delete(contents.id); }); // счётчик закрытой вкладки больше не нужен
   applyRtcPolicy(contents);
   contents.on('did-start-navigation', (d) => { if (d.isMainFrame) applyRtcPolicy(contents, d.url); });
 
   // Всплывающие окна разрешаем только сразу после нажатия или клавиши (как блокировщик попапов в Chrome)
-  let lastInput = 0, lastPopupToast = 0;
-  contents.on('input-event', (_ev, ie) => { if (USER_INPUT.has(ie.type)) lastInput = Date.now(); }); // приходит и на каждое движение мыши — проверка должна быть дешёвой
+  let lastPopupToast = 0;
   contents.setWindowOpenHandler(({ url, disposition, features }) => {
     let site = ''; try { site = new URL(contents.getURL()).hostname.replace(/^www\./, ''); } catch {}
     const allowed = (loadSettings().popupAllow || []).includes(site);
-    if (!allowed && Date.now() - lastInput > 5000) {
+    if (!allowed && Date.now() - (userActs.get(contents.id) || 0) > 5000) {
       if (Date.now() - lastPopupToast > 4000) { lastPopupToast = Date.now(); try { host().send('popup:blocked', { site, url }); } catch {} }
       diag.log('info', 'попап', 'Заблокировано окно без нажатия', url);
       return { action: 'deny' };
@@ -1761,7 +1777,7 @@ app.whenReady().then(async () => {
   await smart.start().catch(() => {});
   syncSmartLists();
   adblock = new AdBlock(app.getPath('userData'));
-  if (TEST && process.env.LIQUID_PERF_NOADBLOCK) adblock.init = async () => false; // замер скорости без блокировщика
+  if (TEST && (process.env.LIQUID_PERF_NOADBLOCK || process.env.LIQUID_PERF_NOHOOKS)) adblock.init = async () => false; // замер скорости без блокировщика
   const st0 = loadSettings();
   adblock.enabled = st0.adblock !== false;
   adblock.allow = new Set(st0.adAllow || []);

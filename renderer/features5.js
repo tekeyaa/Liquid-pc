@@ -36,7 +36,7 @@
       return x.hostname.replace(/^www\./, '') === y.hostname.replace(/^www\./, '') && x.pathname.replace(/\/$/, '') === y.pathname.replace(/\/$/, '');
     } catch { return a === b; }
   }
-  const tabUrl = (t) => { try { return t.wv.getURL() || t.url; } catch { return t?.url || ''; } };
+  const tabUrl = (t) => t?.url || '';
   const send = (m) => L.watch.send({ ...m, name: myName || 'Гость' });
 
   function bindTab(tab) {
@@ -135,6 +135,8 @@
   }
   function render() {
     const inRoom = !!W.code;
+    // окошко закрыто — перерисовывать его незачем (раньше чат и список перестраивались каждые 5 секунд)
+    if (!$('#watchPop').classList.contains('open')) { document.body.classList.toggle('watching', inRoom); return; }
     $('#wtJoin').hidden = inRoom; $('#wtRoom').hidden = !inRoom;
     $('#wtName').value = myName;
     if (inRoom) {

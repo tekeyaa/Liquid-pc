@@ -19,7 +19,7 @@
 
     // края: a — левый/верхний, b — правый/нижний; по второй оси следим без растяжения
     const cur = { l: 0, r: 0, t: 0, b: 0 }, vel = { l: 0, r: 0, t: 0, b: 0 };
-    let ready = false, raf = 0, last = 0, followUntil = 0;
+    let ready = false, raf = 0, last = 0, followUntil = 0, tg = null, dirty = true;
 
     function target() {
       const el = pick(box);
@@ -34,9 +34,11 @@
     }
     function snap(tg) { Object.assign(cur, tg); vel.l = vel.r = vel.t = vel.b = 0; paint(0); }
 
+    // Цель (место активного пункта) читаем только после изменений, а не на каждом кадре: чтение offsetLeft
+    // сразу после записи стилей заставляло браузер пересчитывать раскладку панели в каждом кадре анимации
     function frame(now) {
       raf = 0;
-      const tg = target();
+      if (dirty || now < followUntil) { tg = target(); dirty = false; }
       if (!tg) { g.classList.remove('on'); ready = false; return; }
       if (!ready || reduce.matches || document.hidden) { ready = true; g.classList.add('on'); snap(tg); return; }
       let dt = Math.min(0.034, (now - (last || now)) / 1000) || 1 / 120;
@@ -60,8 +62,9 @@
       raf = requestAnimationFrame(frame);
     }
     // ms — сколько ещё следить за целью: вкладки сами анимируют ширину, выделение едет вместе с ними
-    function kick(ms = 520) {
-      followUntil = Math.max(followUntil, performance.now() + ms);
+    function kick(ms = 0) {
+      dirty = true;
+      if (ms) followUntil = Math.max(followUntil, performance.now() + ms);
       if (!raf) { last = 0; raf = requestAnimationFrame(frame); }
     }
 
@@ -75,8 +78,8 @@
         if (m.type === 'childList' ? m.target === box : sig(m.oldValue) !== sig(m.target.getAttribute('class'))) { kick(); return; }
       }
     }).observe(box, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'], attributeOldValue: true });
-    new ResizeObserver(() => kick(120)).observe(box);
-    addEventListener('resize', () => kick(120));
+    new ResizeObserver(() => kick()).observe(box);
+    addEventListener('resize', () => kick());
     kick();
     return { kick };
   }

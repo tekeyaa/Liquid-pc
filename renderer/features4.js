@@ -6,7 +6,7 @@
   const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
   const uid = () => Math.random().toString(36).slice(2, 9);
   const COLORS = ['#d97757', '#6366f1', '#22c55e', '#0ea5e9', '#f59e0b', '#ec4899', '#a855f7', '#14b8a6', '#ef4444'];
-  const tabUrl = (t) => (t.wv ? (() => { try { return t.wv.getURL() || t.url; } catch { return t.url; } })() : t.url);
+  const tabUrl = (t) => t.url; // адрес держим в курсе по событиям вкладки — без синхронного вопроса
 
   // ================= Пространства и группы =================
   // Пространство — свой набор вкладок («Игры», «Учёба»): переключил — и полоса вкладок целиком другая.

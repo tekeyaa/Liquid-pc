@@ -38,7 +38,7 @@
   };
   window.historyTitle = (tab) => {
     if (L.incognito || !tab.wv) return;
-    let u = ''; try { u = tab.wv.getURL(); } catch {}
+    const u = tab.url || '';
     if (history[u] && tab.title) { history[u].t = tab.title; saveHistory(); }
   };
 

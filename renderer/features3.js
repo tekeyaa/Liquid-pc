@@ -10,7 +10,7 @@
   async function runDiag() {
     const tab = netTab;
     // пока страница не загрузилась, webview может ещё не знать свой адрес — тогда берём адрес вкладки
-    const url = tab && ((tab.wv && (() => { try { return tab.wv.getURL(); } catch { return ''; } })()) || tab.url);
+    const url = tab && tab.url;
     const my = ++netRun;
     $('#netHost').textContent = hostOf(url) || 'Нет открытого сайта';
     $('#netVerdict').className = 'net-verdict wait';
@@ -61,7 +61,7 @@
       timer = setTimeout(async () => {
         timer = 0;
         if (!tab.wv || tab.wv !== wv || !tab.loading) return;
-        let cur = ''; try { cur = wv.getURL(); } catch {}
+        const cur = tab.url || '';
         if (cur && cur !== url && hostOf(cur) !== hostOf(url)) return;
         if (!(await blank(wv))) return;
         const host = hostOf(url);

@@ -107,7 +107,7 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
   el.addEventListener('contextmenu', (e) => { e.preventDefault(); tabMenu(tab, e.clientX, e.clientY); });
   el.querySelector('.x').addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab); });
 
-  if (after && tabs.includes(after) && after.el.nextSibling) $('#tabs').insertBefore(el, after.el.nextSibling); else $('#tabs').appendChild(el);
+  flipTabs(() => { if (after && tabs.includes(after) && after.el.nextSibling) $('#tabs').insertBefore(el, after.el.nextSibling); else $('#tabs').appendChild(el); });
   window.onTabCreated && window.onTabCreated(tab, { after }); // пространства и группы (features4.js)
   if (lazy) { tab.sleeping = true; el.classList.add('sleeping'); updateTab(tab); }
   else attachWebview(tab, startUrl);
@@ -159,14 +159,15 @@ function attachWebview(tab, url) {
     wv.src = url;
   }
   tab.wv = wv;
-  if (reused) { try { tab.wcId = wv.getWebContentsId(); } catch {} }
+  if (reused) { try { tab.wcId = wv.getWebContentsId(); applyNav(tab); } catch {} }
+  else wv.addEventListener('did-attach', () => { try { if (!tab.wcId) { tab.wcId = wv.getWebContentsId(); applyNav(tab); } } catch {} }, { once: true });
   tab.sleeping = false;
   tab.loading = true;
   tab.el.classList.remove('sleeping');
   const { fav, el } = tab;
 
   wv.addEventListener('dom-ready', () => {
-    if (!tab.wcId) tab.wcId = wv.getWebContentsId();
+    if (!tab.wcId) { tab.wcId = wv.getWebContentsId(); applyNav(tab); }
     if (isInternal(tab.url) && window.sendTheme) window.sendTheme(wv);
   });
   wv.addEventListener('page-title-updated', (e) => { tab.title = e.title; updateTab(tab); window.historyTitle && window.historyTitle(tab); });
@@ -184,7 +185,7 @@ function attachWebview(tab, url) {
   });
   const onNav = (e) => {
     if (e.isMainFrame === false) return;
-    tab.url = wv.getURL();
+    if (e.url) tab.url = e.url; // адрес приходит в самом событии — синхронно спрашивать вкладку не нужно
     if (isInternal(tab.url)) { fav.src = 'favicon.svg'; tab.favicon = ''; }
     updateTab(tab);
   };
@@ -245,7 +246,7 @@ function mouseNav(tab, dir) {
   // одно нажатие приходит и событием мыши, и командой окна Windows — второе пропускаем
   if (Date.now() - lastMouseNav < 350) return;
   lastMouseNav = Date.now();
-  try { if (dir === 'back' ? wv.canGoBack() : wv.canGoForward()) dir === 'back' ? wv.goBack() : wv.goForward(); } catch {}
+  try { if (dir === 'back' ? tab.canBack : tab.canFwd) dir === 'back' ? wv.goBack() : wv.goForward(); } catch {}
 }
 window.mouseNav = mouseNav;
 for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
@@ -258,7 +259,6 @@ for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
 
 function sleepTab(tab) {
   if (!tab.wv || tab === active || tab.playing || (split && (tab === split.left || tab === split.right))) return false;
-  try { tab.url = tab.wv.getURL() || tab.url; } catch {}
   tab.wv.remove();
   tab.wv = null;
   tab.wcId = null;
@@ -325,10 +325,15 @@ function closeTab(tab, opts) {
   const i = tabs.indexOf(tab);
   if (i < 0) return;
   const moved = !!(opts && opts.moved); // вкладку унесли в другое окно — в «закрытые» не кладём
-  if (!moved && !L.incognito && !isInternal(tab.url)) { closedTabs.push({ url: tab.wv ? tab.wv.getURL() : tab.url, title: tab.title, i }); if (closedTabs.length > 25) closedTabs.shift(); }
+  if (!moved && !L.incognito && !isInternal(tab.url)) { closedTabs.push({ url: tab.url, title: tab.title, i }); if (closedTabs.length > 25) closedTabs.shift(); }
   if (split && (tab === split.left || tab === split.right)) endSplit(true, tab);
   tabs.splice(i, 1);
-  tab.el.classList.add('closing');
+  flipTabs(() => {
+    // вкладка покидает ряд сразу и гаснет на своём месте поверх него; соседи плавно съезжаются (трансформацией)
+    const el = tab.el, x = el.offsetLeft, y = el.offsetTop, w = el.offsetWidth;
+    Object.assign(el.style, { position: 'absolute', left: x + 'px', top: y + 'px', width: w + 'px' });
+    el.classList.add('closing');
+  });
   if (tab.wv) tab.wv.style.visibility = 'hidden';
   setTimeout(() => { tab.el.remove(); tab.wv?.remove(); fitTabs(); }, 300);
   if (active === tab) {
@@ -351,7 +356,7 @@ function tearOutAt(ev) {
 }
 function moveTabNear(tab, target, before) {
   if (tab === target) return;
-  target.el.parentNode.insertBefore(tab.el, before ? target.el : target.el.nextSibling);
+  flipTabs(() => target.el.parentNode.insertBefore(tab.el, before ? target.el : target.el.nextSibling), tab);
   tabs.splice(tabs.indexOf(tab), 1);
   tabs.splice(tabs.indexOf(target) + (before ? 0 : 1), 0, tab);
 }
@@ -393,7 +398,7 @@ function tabDrag(tab, e) {
 function tearOffTab(tab, x, y) {
   if (L.incognito) { toast('Вкладку из инкогнито нельзя унести в обычное окно'); return; }
   if (tabs.length < 2) { toast('Это единственная вкладка в окне'); return; }
-  const url = tab.wv ? (safeUrl(tab.wv) || tab.url) : tab.url;
+  const url = tab.url;
   L.win.open(isInternal(url) ? '' : url, x, y);
   closeTab(tab, { moved: true });
 }
@@ -465,7 +470,7 @@ function tabMenu(tab, x, y) {
   const items = [
     ['Открыть рядом с текущей', () => { if (tab === active) startSplit(); else startSplitWith(active, tab); }],
     [tab.sleeping ? 'Разбудить' : 'Усыпить (освободить память)', () => { if (tab.sleeping) activate(tab); else if (!sleepTab(tab)) toast('Эту вкладку сейчас нельзя усыпить'); }],
-    ['Дублировать', () => createTab(tab.wv ? tab.wv.getURL() : tab.url, { after: tab })],
+    ['Дублировать', () => createTab(tab.url, { after: tab })],
     ...(L.incognito ? [] : [['В отдельное окно', () => tearOffTab(tab)]]),
     ...(window.tabMenuExtra ? window.tabMenuExtra(tab) : []), // группы и пространства (features4.js)
     null,
@@ -511,12 +516,11 @@ function saveSession() {
 }
 function writeSession() {
   const data = {
-    tabs: tabs.map((t) => ({ url: t.wv ? (safeUrl(t.wv) || t.url) : t.url, title: t.title, favicon: t.favicon || '', space: t.space, group: t.group })),
+    tabs: tabs.map((t) => ({ url: t.url, title: t.title, favicon: t.favicon || '', space: t.space, group: t.group })),
     active: Math.max(0, tabs.indexOf(active)),
   };
   try { localStorage.setItem('liquid.session', JSON.stringify(data)); } catch {}
 }
-function safeUrl(wv) { try { return wv.getURL(); } catch { return ''; } }
 function restoreSession() {
   if (L.incognito || !settings.restore) return false;
   let data;
@@ -538,10 +542,31 @@ function restoreSession() {
 window.addEventListener('beforeunload', () => { clearTimeout(saveT); if (!L.incognito && !extraWin) writeSession(); });
 
 function fitTabs() {
-  requestAnimationFrame(() => {
+  if (fitTabs.raf) return; // несколько вызовов за кадр — один пересчёт
+  fitTabs.raf = requestAnimationFrame(() => {
+    fitTabs.raf = 0;
     const w = ($('#tabsrow').clientWidth - 230 - (window.tabsChromeWidth ? window.tabsChromeWidth() : 0)) / Math.max((window.visibleTabs ? window.visibleTabs() : tabs).length, 1);
-    tabs.forEach((t) => t.el.classList.toggle('narrow', w < 90 && t !== active));
+    if (tabs.some((t) => t.el.classList.contains('narrow') !== (w < 90 && t !== active)))
+      flipTabs(() => tabs.forEach((t) => t.el.classList.toggle('narrow', w < 90 && t !== active)));
   });
+}
+// Плавное движение вкладок (FLIP): состав и порядок меняем сразу, а каждую вкладку ведём трансформацией от старого
+// места к новому. Раньше анимировались ширина и отступы — браузер пересчитывал раскладку всей полосы на каждом кадре
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function flipTabs(change, skip) {
+  const box = $('#tabs');
+  const live = () => box.querySelectorAll('.tab:not(.closing)');
+  const before = new Map();
+  if (!reduceMotion.matches && !document.hidden) for (const el of live()) before.set(el, el.getBoundingClientRect().left);
+  change();
+  if (!before.size) return;
+  for (const el of live()) {
+    if (skip && el === skip.el) continue;
+    const b = before.get(el); if (b == null) continue;
+    const dx = b - el.getBoundingClientRect().left;
+    if (Math.abs(dx) < 1) continue;
+    el.animate([{ transform: `translate3d(${dx}px,0,0)` }, { transform: 'translate3d(0,0,0)' }], { duration: 320, easing: 'cubic-bezier(.22,.9,.26,1)', composite: 'add' });
+  }
 }
 window.addEventListener('resize', fitTabs);
 
@@ -560,10 +585,8 @@ function syncChrome() {
     clearTimeout(syncChrome.t);
     syncChrome.t = setTimeout(() => document.body.classList.remove('loaded'), 600);
   }
-  try {
-    $('#back').disabled = !wv.canGoBack();
-    $('#fwd').disabled = !wv.canGoForward();
-  } catch { /* webview ещё не готов */ }
+  $('#back').disabled = !active.canBack;
+  $('#fwd').disabled = !active.canFwd;
   window.syncOmniExtras && window.syncOmniExtras(active);
 }
 function decodeSafe(u) { try { return decodeURI(u); } catch { return u; } }
@@ -577,8 +600,17 @@ function navigate(input) {
 }
 
 // ---------- навигация ----------
-$('#back').onclick = () => active?.wv.canGoBack() && active.wv.goBack();
-$('#fwd').onclick = () => active?.wv.canGoForward() && active.wv.goForward();
+$('#back').onclick = () => active?.canBack && active.wv.goBack();
+$('#fwd').onclick = () => active?.canFwd && active.wv.goForward();
+// «назад/вперёд» присылает основной процесс после каждого перехода (раньше — синхронный вопрос вкладке)
+const navPending = new Map();
+function applyNav(tab) { const s = navPending.get(tab.wcId); if (s) { navPending.delete(tab.wcId); tab.canBack = s.back; tab.canFwd = s.fwd; if (tab === active) syncChrome(); } }
+L.tabs.onNav((s) => {
+  const tab = tabs.find((t) => t.wcId === s.id);
+  if (!tab) { navPending.set(s.id, s); if (navPending.size > 50) navPending.delete(navPending.keys().next().value); return; }
+  tab.canBack = s.back; tab.canFwd = s.fwd;
+  if (tab === active) { $('#back').disabled = !s.back; $('#fwd').disabled = !s.fwd; }
+});
 $('#reload').onclick = () => { if (!active) return; active.loading ? active.wv.stop() : active.wv.reload(); };
 $('#newTab').onclick = () => createTab();
 $('#omni').addEventListener('submit', (e) => { e.preventDefault(); navigate($('#url').value); $('#url').blur(); });
@@ -794,7 +826,7 @@ $('#shield').onclick = () => {
 $('#dangerLeave').onclick = () => {
   $('#danger').classList.remove('open');
   if (!active) return;
-  if (active.wv.canGoBack()) active.wv.goBack(); else quiet(active.wv.loadURL(newtabUrl()));
+  if (active.canBack) active.wv.goBack(); else quiet(active.wv.loadURL(newtabUrl()));
 };
 $('#dangerStay').onclick = () => $('#danger').classList.remove('open');
 $('#guard').onchange = async (e) => { settings = await L.settings.set({ guard: e.target.checked }); };
@@ -1109,8 +1141,8 @@ L.onShortcut(({ key, shift }) => {
       activate(list[(i + (shift ? -1 : 1) + list.length) % list.length]);
       break;
     }
-    case 'back': active?.wv.canGoBack() && active.wv.goBack(); break;
-    case 'forward': active?.wv.canGoForward() && active.wv.goForward(); break;
+    case 'back': active?.canBack && active.wv.goBack(); break;
+    case 'forward': active?.canFwd && active.wv.goForward(); break;
     case '=': case '+': zoom(0.5); break;
     case '-': zoom(-0.5); break;
     case '0': active?.wv.setZoomLevel(0); toast('Масштаб 100%'); break;

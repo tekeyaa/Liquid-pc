@@ -75,17 +75,17 @@ body.fs #tabsrow, body.fs #bar { visibility: hidden; }
   flex: 0 1 210px; min-width: 44px; height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 11px;
   border-radius: 13px; color: var(--muted); cursor: default; overflow: hidden; position: relative;
   background: rgba(255,255,255,.035); border: 1px solid transparent;
-  transition: background .3s var(--ease), color .2s, border-color .3s, box-shadow .3s, flex-basis .28s var(--ease), min-width .28s var(--ease), opacity .2s, transform .35s var(--spring);
-  animation: tabIn .5s var(--spring);
+  transition: background .3s var(--ease), color .2s, border-color .3s, box-shadow .3s, opacity .2s, transform .35s var(--spring);
+  animation: tabIn .42s var(--spring);
 }
-@keyframes tabIn { from { opacity: 0; transform: translate3d(0, 6px, 0) scale(.86); } }
 .tab:hover { background: rgba(255,255,255,.075); color: var(--text); }
 .tab.active {
   color: var(--text); border-color: var(--stroke);
   background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.06));
   box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 8px 22px -12px rgba(0,0,0,.6);
 }
-.tab.closing { flex-basis: 0 !important; min-width: 0 !important; opacity: 0; transform: scale(.8); padding: 0; margin-left: -6px; }
+/* закрытая вкладка уже вне ряда (position: absolute в closeTab) — только гаснет, без пересчёта раскладки */
+.tab.closing { opacity: 0; transform: scale(.82); pointer-events: none; transition: opacity .18s var(--ease), transform .26s var(--ease); animation: none; }
 .tab .fav { width: 16px; height: 16px; border-radius: 4px; flex: none; object-fit: contain; }
 .tab .spin { width: 14px; height: 14px; border-radius: 50%; flex: none; border: 2px solid rgba(255,255,255,.18); border-top-color: var(--accent-2); animation: spin .8s linear infinite; display: none; }
 .tab.loading .spin { display: block; }
@@ -653,15 +653,8 @@ body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.35); }
 .seg2 button.on { background: transparent; box-shadow: none; }
 .seg2 button { transition: color .3s var(--ease); }
 
-/* ---------- вкладки: раскрываются и схлопываются, соседи плавно отъезжают ---------- */
-.tab {
-  transition: background .3s var(--ease), color .25s, border-color .3s, box-shadow .3s,
-    flex-basis .3s var(--ease), min-width .3s var(--ease), padding .3s var(--ease), margin .3s var(--ease),
-    opacity .22s var(--ease), transform .38s var(--spring);
-  animation: tabIn .46s var(--ease);
-}
-@keyframes tabIn { from { opacity: 0; flex-basis: 0; min-width: 0; padding-left: 0; padding-right: 0; transform: scale(.82); } 60% { opacity: 1; } }
-.tab.closing { transform: scale(.75) translateY(2px); }
+/* ---------- вкладки: появляются и исчезают трансформацией, соседи отъезжают через FLIP (app.js) ---------- */
+@keyframes tabIn { from { opacity: 0; transform: translate3d(0, 4px, 0) scale(.84); } 55% { opacity: 1; } }
 .tab .fav { transition: transform .4s var(--spring); }
 .tab:active .fav { transform: scale(.85); }
 .tab::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .3s var(--ease);
@@ -709,8 +702,11 @@ body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.35); }
 .sg { transition: background .18s var(--ease); }
 
 /* окно настроек: фон за ним мягко темнеет и размывается */
-body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.35); backdrop-filter: blur(3px); transition: background .3s var(--ease), backdrop-filter .3s var(--ease); }
-@starting-style { body.popped #scrim { background: rgba(0,0,0,0); backdrop-filter: blur(0); } }
+/* размытие всего окна (вместе со страницей) пересчитывалось на каждом кадре открытия — кадры по 50–290 мс.
+   Теперь фон просто мягко темнеет, а само окно настроек — плотное, без размытия под собой */
+body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.42); transition: background .28s var(--ease); }
+@starting-style { body.popped #scrim { background: rgba(0,0,0,0); } }
+#setPop.settings { backdrop-filter: none; background: linear-gradient(180deg, rgb(36,34,48), rgb(21,19,29)); }
 @keyframes secIn { from { opacity: 0; transform: translate3d(0, 10px, 0); } }
 .set-sec.on { animation: secIn .38s var(--ease); }
 #setNav button { transition: color .25s var(--ease), background .2s; }

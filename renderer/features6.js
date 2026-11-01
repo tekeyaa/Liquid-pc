@@ -2,7 +2,7 @@
 (() => {
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
-  const tabUrl = (t) => { try { return t.wv.getURL() || t.url; } catch { return t?.url || ''; } };
+  const tabUrl = (t) => t?.url || '';
   const isWebTab = (t) => t && /^https?:/.test(tabUrl(t));
   const mmss = (s) => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${x}` : `${m}:${x}`; };
   const run = (tab, js, ms = 15000) => Promise.race([tab.wv.executeJavaScript(js), new Promise((_, no) => setTimeout(() => no(new Error('страница не ответила')), ms))]);
@@ -197,7 +197,15 @@
     const log = addMsg('ai', '');
     log.classList.add('agent-log');
     const lines = [];
-    const say = (t) => { lines.push(t); log.innerHTML = lines.map((x) => `<div>${esc(x)}</div>`).join('') + (agent.busy ? '<button class="agent-stop">Остановить</button>' : ''); $('#msgs').scrollTop = $('#msgs').scrollHeight; };
+    // строка за строкой — добавляем, а не пересобираем весь журнал; прокрутка — в следующем кадре
+    const stopBtn = Object.assign(document.createElement('button'), { className: 'agent-stop', textContent: 'Остановить' });
+    log.appendChild(stopBtn);
+    const say = (t) => {
+      lines.push(t);
+      const d = document.createElement('div'); d.textContent = t; log.insertBefore(d, stopBtn);
+      stopBtn.hidden = !agent.busy;
+      requestAnimationFrame(() => { const m = $('#msgs'); m.scrollTop = m.scrollHeight; });
+    };
     log.addEventListener('click', (e) => { if (e.target.closest('.agent-stop')) { agent.stop = true; say('Останавливаю…'); } });
     const messages = [{ role: 'user', content: `Задача: ${task}\n\nСтраница сейчас:\n${snapText(snap)}` }];
     say('Смотрю страницу…');
@@ -246,7 +254,8 @@
       if (!finished && !agent.stop) say('Остановился: слишком много шагов.');
     } catch (e) { say('Ошибка: ' + e.message); L.diag.log('warn', 'claude', 'действия на странице: ' + e.message); }
     agent.busy = false;
-    say(agent.stop ? 'Остановлено.' : '');
+    if (agent.stop) say('Остановлено.');
+    stopBtn.hidden = true;
   };
   // подтверждение рискованного действия
   function confirmAct(text) {

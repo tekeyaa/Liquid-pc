@@ -41,7 +41,7 @@ contextBridge.exposeInMainWorld('liquid', {
     onError: on('claude:error'),
     onAsk: on('claude:ask'),
   },
-  tabs: { onOpen: on('tab:open'), onSearch: on('tab:search'), freeze: (ids, on) => ipcRenderer.invoke('tabs:freeze', { ids, on }), thumb: (wcId) => ipcRenderer.invoke('tab:thumb', wcId) },
+  tabs: { onNav: on('tab:nav'), onOpen: on('tab:open'), onSearch: on('tab:search'), freeze: (ids, on) => ipcRenderer.invoke('tabs:freeze', { ids, on }), thumb: (wcId) => ipcRenderer.invoke('tab:thumb', wcId) },
   devtools: (wcId) => ipcRenderer.send('webview:devtools', wcId),
   onShortcut: on('shortcut'),
   onToast: on('toast'),

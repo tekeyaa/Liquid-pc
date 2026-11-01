@@ -40,7 +40,7 @@ test('эталон: Chromium', async () => {
 
 // новая вкладка с сайтом: от нажатия до загрузки — с заготовленной вкладкой и без неё
 test('новые вкладки', async () => {
-  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK, 'один раз');
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS, 'один раз');
   test.setTimeout(240_000);
   const open = (u) => win.evaluate((x) => new Promise((done) => {
     const t0 = performance.now(), t = createTab(x);
@@ -79,7 +79,7 @@ test('замеры', async () => {
     out.backs.push({ ms: Date.now() - t0, bf: await inTab('!!window.__bf'), why: await inTab(`(() => { try { const r = performance.getEntriesByType('navigation')[0].notRestoredReasons; return r ? JSON.stringify((r.reasons || []).map((x) => x.reason)).slice(0, 200) : ''; } catch { return ''; } })()`) });
   }
   const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-  const r = { mode: process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный', why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
+  const r = { mode: process.env.LIQUID_PERF_NOPRELOAD ? 'голый webview (без перехватов и preload)' : process.env.LIQUID_PERF_NOHOOKS ? 'без перехватов запросов' : process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный', why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true }); fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r) + '\n');
   console.log('PERF', JSON.stringify(r));
 });
@@ -87,7 +87,7 @@ test('замеры', async () => {
 // Плавность интерфейса: длительность кадров, пока идут анимации (меню, вкладки, панель Claude, настройки).
 // У серверов GitHub нет видеокарты — всё рисует процессор, поэтому цифры хуже, чем дома, но «до/после» сравнимы
 test('плавность', async () => {
-  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK, 'один раз');
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS, 'один раз');
   test.setTimeout(240_000);
   await win.evaluate((u) => navigate(u), `${base}/article.html`);
   await win.waitForTimeout(1500);

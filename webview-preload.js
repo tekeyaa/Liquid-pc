@@ -1268,6 +1268,16 @@ document.addEventListener('pointerover', (e) => {
 }, { passive: true, capture: true });
 document.addEventListener('pointerdown', (e) => preconnect(e.target.closest && e.target.closest('a[href]')), { passive: true, capture: true });
 
+// ---------- нажатия — для разрешения всплывающих окон ----------
+// Браузер открывает окно сайта, только если человек недавно нажимал мышь или клавишу. Сообщаем о нажатиях сами:
+// раньше для этого основной процесс получал каждое событие ввода, включая движение мыши и прокрутку
+{
+  let lastAct = 0;
+  const act = (e) => { if (!e.isTrusted) return; const now = Date.now(); if (now - lastAct < 400) return; lastAct = now; try { ipcRenderer.send('user:act'); } catch {} };
+  window.addEventListener('pointerdown', act, { capture: true, passive: true });
+  window.addEventListener('keydown', act, { capture: true, passive: true });
+}
+
 // ---------- боковые кнопки мыши: назад / вперёд (Electron сам их не обрабатывает) ----------
 for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
   window.addEventListener(ev, (e) => {

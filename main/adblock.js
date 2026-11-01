@@ -4,16 +4,17 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-// Собрать движок в служебном процессе (см. adblock-build.js). Не получилось — null, тогда соберём здесь, как раньше
-function buildAside(text) {
+// Собрать движок в служебном процессе (см. adblock-build.js): { same, hash } если списки не изменились, { buf, hash } — новый движок.
+// Не получилось — null, тогда соберём здесь, как раньше
+function buildAside(parts, oldHash) {
   return new Promise((done) => {
     let child;
     try { child = require('electron').utilityProcess.fork(path.join(__dirname, 'adblock-build.js'), [], { serviceName: 'Liquid — сборка блокировщика' }); }
     catch (e) { console.warn('adblock build process', e.message); done(null); return; }
     const t = setTimeout(() => { try { child.kill(); } catch {} done(null); }, 60e3);
-    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(new Uint8Array(m.buf)); else { console.warn('adblock build', m && m.error); done(null); } });
+    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(m.same ? { same: true, hash: m.hash } : { buf: new Uint8Array(m.buf), hash: m.hash }); else { console.warn('adblock build', m && m.error); done(null); } });
     child.once('exit', () => { clearTimeout(t); done(null); });
-    child.postMessage({ text, exceptions: EXCEPTIONS });
+    child.postMessage({ parts, exceptions: EXCEPTIONS, oldHash });
   });
 }
 
@@ -76,17 +77,22 @@ class AdBlock {
           if (missing.length) console.info(`[adblock] собираю без ${missing.length} списков (не скачались): ${missing.join(', ')}`);
           const net = got.filter((g) => g.text && g.from !== 'кэш').length;
           this.lastNet = net === got.length;
-          const text = got.map((g) => g.text).join('\n');
-          // списки не изменились с прошлой сборки — пересобирать незачем (раньше пересобирали каждый раз)
-          const hash = crypto.createHash('sha256').update(text).update(EXCEPTIONS.join('\n')).digest('hex');
+          // списки не изменились с прошлой сборки — пересобирать незачем; сравнивает и собирает служебный процесс
           const hashFile = this.cacheFile + '.sha256';
-          let old = ''; try { old = fs.readFileSync(hashFile, 'utf8'); } catch {}
-          if (this.blocker && old === hash) { console.info(`[adblock] списки не изменились (${net} из ${got.length} из сети) — пересборка не нужна`); return; }
+          let old = ''; try { old = await fs.promises.readFile(hashFile, 'utf8'); } catch {}
           const t0 = Date.now();
-          const buf = await buildAside(text);
+          const r = await buildAside(got.map((g) => g.text), this.blocker ? old : '');
+          if (r && r.same) { console.info(`[adblock] списки не изменились (${net} из ${got.length} из сети) — пересборка не нужна`); return; }
+          let hash = r && r.hash;
+          const buf = r && r.buf;
           built = buf;
           if (buf) fresh = ElectronBlocker.deserialize(buf);
-          else { fresh = ElectronBlocker.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true }); withExceptions(lib, fresh); }
+          else {
+            const text = got.map((g) => g.text).join('\n');
+            hash = crypto.createHash('sha256').update(text).update(EXCEPTIONS.join('\n')).digest('hex');
+            if (this.blocker && old === hash) { console.info('[adblock] списки не изменились — пересборка не нужна'); return; }
+            fresh = ElectronBlocker.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true }); withExceptions(lib, fresh);
+          }
           if (!missing.length) fs.promises.writeFile(hashFile, hash).catch(() => {}); // неполная сборка — пересоберём, когда скачается всё
           console.info(`[adblock] сборка за ${Date.now() - t0} мс ${buf ? 'в отдельном процессе' : 'в основном процессе'}`);
           console.info(`[adblock] списки обновлены: ${net} из ${got.length} из сети${got.some((g) => g.from === 'зеркало') ? ' (часть через зеркало)' : ''}${net < got.length - missing.length ? ', остальные из сохранённой копии' : ''}${missing.length ? `, ${missing.length} не скачались — попробую через полчаса` : ''}`);
