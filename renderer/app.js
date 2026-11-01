@@ -663,6 +663,9 @@ function closePops() {
 $('#scrim').onclick = closePops;
 
 // ---------- VPN ----------
+// Окно VPN: состояние, серверы (нажал — подключился), куда идёт открытый сайт, скорость.
+// Серверов может быть много: ключи по одному, несколько сразу или подписка https://… от VPN-сервиса
+const vpnOpen = () => $('#vpnPop').classList.contains('open');
 function renderVpn(s) {
   settings._vpnOn = s.on;
   const btn = $('#vpnBtn');
@@ -672,39 +675,143 @@ function renderVpn(s) {
   pop.classList.toggle('on', s.on);
   pop.classList.toggle('busy', !!s.busy);
   btn.querySelector('.lbl').textContent = s.on ? (s.country || 'VPN') : 'VPN';
+  btn.title = s.on ? `VPN: ${s.name}${s.ping ? ' · ' + s.ping + ' мс' : ''}` : 'VPN выключен';
   $('#vpnTitle').textContent = s.busy ? 'Подключаю…' : s.on ? 'Подключён' : 'Выключен';
   $('#vpnSub').textContent = s.on
-    ? `${s.name}${s.country ? ' · ' + s.country : ''}${s.ip ? ' · ' + s.ip : ''}`
-    : settings.hasVpnKey ? `Сохранён ключ: ${settings.vpnName || 'без имени'}` : 'Вставь ключ ниже';
+    ? `${s.flag ? s.flag + ' ' : ''}${s.name}${s.ip ? ' · ' + s.ip : ''}${s.ping ? ' · ' + s.ping + ' мс' : ''}`
+    : settings.hasVpnKey ? `Готов: ${settings.vpnName || 'сервер'}` : 'Вставь ключ или ссылку подписки ниже';
   $('#vpnConnect').textContent = s.on ? 'Отключить' : 'Подключить';
   $('#vpnConnect').disabled = !!s.busy;
+  $('#vpnSpeed').hidden = !s.on;
+  if (!s.on) $('#vpnSpeedOut').hidden = true;
+  if (vpnOpen()) { renderServers(); renderVpnSite(); }
 }
 
-async function vpnToggle(keyFromField) {
+let vpnServers = { list: [], subs: [] };
+const pingCls = (p) => (p == null ? '' : p < 0 ? 'bad' : p < 150 ? 'good' : p < 400 ? 'mid' : 'bad');
+async function renderServers(data) {
+  if (data && data.list) vpnServers = data; else { try { vpnServers = await L.vpn.servers(); } catch {} }
+  const { list, subs } = vpnServers;
+  const box = $('#vpnList');
+  box.replaceChildren(...list.map((x) => {
+    const r = document.createElement('div');
+    r.className = 'vs-row' + (x.on ? ' on' : '') + (x.cur ? ' cur' : '');
+    r.dataset.id = x.id;
+    r.title = x.on ? 'Подключён к этому серверу' : 'Подключиться к этому серверу';
+    const f = Object.assign(document.createElement('span'), { className: 'vs-flag', textContent: x.flag || '🌐' });
+    const n = document.createElement('span'); n.className = 'vs-name';
+    n.append(Object.assign(document.createElement('span'), { textContent: x.name }), Object.assign(document.createElement('small'), { textContent: [x.proto, x.sub ? 'подписка ' + x.sub : '', x.host].filter(Boolean).join(' · ') }));
+    const p = Object.assign(document.createElement('span'), { className: 'vs-ping ' + pingCls(x.ping), textContent: x.ping == null ? '' : x.ping < 0 ? 'нет ответа' : x.ping + ' мс' });
+    const del = Object.assign(document.createElement('button'), { className: 'vs-x', textContent: '×', title: 'Удалить сервер' });
+    r.append(f, n, p, del);
+    return r;
+  }));
+  box.hidden = !list.length;
+  $('#vpnListTools').hidden = !list.length;
+  $('#vpnBest').checked = settings.vpnBest !== false;
+  $('#vpnSubsUpd').hidden = !subs.length;
+  $('#vpnKeyLbl').textContent = list.length ? 'Добавить ещё: ключ, несколько ключей или подписка' : 'Ключ, несколько ключей или ссылка подписки';
+}
+
+// куда идёт открытый сайт — и кнопка, чтобы поменять
+const ROUTE_WHY = {
+  builtin: 'через VPN — в списке известных заблокированных', community: 'через VPN — в общем списке заблокированных',
+  learned: 'через VPN — не открывался напрямую, браузер запомнил', custom: 'через VPN — ты добавил его сам', all: 'через VPN — весь трафик',
+  dpi: 'напрямую, через обход замедления', exclude: 'напрямую — ты так выбрал', russian: 'напрямую — российский сайт',
+  'vpn-off': 'в списке для VPN, но VPN выключен', '': 'напрямую — не в списке заблокированных',
+};
+let vpnSiteHost = '';
+async function renderVpnSite() {
+  let host = ''; try { if (active && /^https?:/.test(active.url)) host = new URL(active.url).hostname.replace(/^www\./, ''); } catch {}
+  vpnSiteHost = host;
+  $('#vpnSite').hidden = !host;
+  if (!host) return;
+  const r = await L.vpn.route(host);
+  if (host !== vpnSiteHost) return;
+  $('#vpnSiteHost').textContent = host;
+  $('#vpnSiteWhy').textContent = ROUTE_WHY[r.why] ?? (r.via === 'vpn' ? 'через VPN' : 'напрямую');
+  $('#vpnSite').classList.toggle('via-vpn', r.via === 'vpn');
+  const toVpn = r.via !== 'vpn' && r.why !== 'vpn-off';
+  $('#vpnSiteBtn').textContent = toVpn ? 'Через VPN' : 'Напрямую';
+  $('#vpnSiteBtn').dataset.via = toVpn ? 'vpn' : 'direct';
+}
+$('#vpnSiteBtn').onclick = async () => {
+  const host = vpnSiteHost, via = $('#vpnSiteBtn').dataset.via;
+  if (!host) return;
+  await L.vpn.site(host, via);
+  settings = await L.settings.get();
+  await renderVpnSite();
+  window.renderVpnExtras && window.renderVpnExtras();
+  toast(via === 'vpn' ? `${host} теперь через VPN${settings._vpnOn ? '' : ' (когда VPN включён)'}` : `${host} теперь напрямую`);
+  active?.wv?.reload();
+};
+
+async function vpnToggle(text) {
   $('#vpnErr').classList.remove('show');
   const st = await L.vpn.state();
-  if (st.on && !keyFromField) { renderVpn((await L.vpn.disconnect()).state); toast('VPN выключен'); return; }
-  const key = keyFromField || undefined;
-  if (!key && !settings.hasVpnKey) { $('#vpnKey').focus(); showVpnErr('Сначала вставь ключ'); return; }
-  const r = await L.vpn.connect(key);
+  if (st.on && !text) { renderVpn((await L.vpn.disconnect()).state); toast('VPN выключен'); return; }
+  if (!text && !settings.hasVpnKey) { $('#vpnKey').focus(); showVpnErr('Сначала вставь ключ или ссылку подписки'); return; }
+  await vpnConnectTo(text || undefined);
+}
+async function vpnConnectTo(arg) {
+  $('#vpnErr').classList.remove('show');
+  const r = await L.vpn.connect(arg);
+  settings = await L.settings.get();
   if (r.ok) {
-    settings = await L.settings.get();
-    $('#vpnKey').value = '';
+    if (typeof arg === 'string') $('#vpnKey').value = '';
     renderVpn(r.state);
-    toast(`VPN включён${r.state.country ? ' · ' + r.state.country : ''}`);
-    active?.wv.reload();
-  } else showVpnErr(r.error);
+    toast(`VPN включён: ${r.state.flag ? r.state.flag + ' ' : ''}${r.state.name}${r.state.ping ? ' · ' + r.state.ping + ' мс' : ''}`);
+    if (active && /^https?:/.test(active.url)) active.wv?.reload();
+  } else { showVpnErr(r.error); renderServers(); }
 }
 function showVpnErr(t) { const e = $('#vpnErr'); e.textContent = t; e.classList.add('show'); }
 
-$('#vpnBtn').onclick = () => { openPop('#vpnPop'); renderVpnFromState(); };
+$('#vpnBtn').onclick = () => { openPop('#vpnPop'); renderVpnFromState(); renderServers(); renderVpnSite(); };
 $('#vpnOrb').onclick = () => vpnToggle($('#vpnKey').value.trim());
 $('#vpnConnect').onclick = () => vpnToggle($('#vpnKey').value.trim());
+$('#vpnAdd').onclick = async () => {
+  const t = $('#vpnKey').value.trim();
+  if (!t) { $('#vpnKey').focus(); return; }
+  $('#vpnErr').classList.remove('show');
+  $('#vpnAdd').disabled = true;
+  const r = await L.vpn.add(t);
+  $('#vpnAdd').disabled = false;
+  if (!r.ok) { showVpnErr(r.error); return; }
+  $('#vpnKey').value = '';
+  settings = await L.settings.get();
+  renderServers(r); renderVpnFromState();
+  toast(`Серверов в списке: ${r.list.length}`);
+  L.vpn.ping().then(renderServers).catch(() => {});
+};
+$('#vpnList').addEventListener('click', async (e) => {
+  const row = e.target.closest('.vs-row'); if (!row) return;
+  if (e.target.closest('.vs-x')) { renderServers(await L.vpn.remove(row.dataset.id)); settings = await L.settings.get(); renderVpnFromState(); return; }
+  if (row.classList.contains('on')) return;
+  await vpnConnectTo({ id: row.dataset.id });
+});
+$('#vpnPing').onclick = async () => { $('#vpnPing').disabled = true; renderServers(await L.vpn.ping()); $('#vpnPing').disabled = false; };
+$('#vpnSubsUpd').onclick = async () => {
+  $('#vpnSubsUpd').disabled = true;
+  const r = await L.vpn.subsUpdate();
+  $('#vpnSubsUpd').disabled = false;
+  if (r.ok) { renderServers(r); toast('Подписка обновлена'); } else showVpnErr(r.error);
+};
+$('#vpnBest').onchange = async (e) => { settings = await L.settings.set({ vpnBest: e.target.checked }); };
+$('#vpnSpeed').onclick = async () => {
+  const out = $('#vpnSpeedOut');
+  out.hidden = false; out.textContent = 'Проверяю скорость через VPN… (до 10 секунд)';
+  $('#vpnSpeed').disabled = true;
+  const r = await L.vpn.speed();
+  $('#vpnSpeed').disabled = false;
+  if (!r.ok) { out.textContent = 'Не получилось: ' + r.error; return; }
+  out.replaceChildren('Скорость ', Object.assign(document.createElement('b'), { textContent: `${String(r.mbps).replace('.', ',')} Мбит/с` }), ` · пинг ${r.ping} мс`);
+};
 $('#vpnForget').onclick = async () => {
+  if (!confirm('Удалить все серверы и подписки VPN?')) return;
   await L.vpn.disconnect();
   settings = await L.settings.set({ forgetVpn: true });
-  renderVpnFromState();
-  toast('Ключ удалён');
+  renderVpnFromState(); renderServers();
+  toast('Серверы VPN удалены');
 };
 $('#vpnAuto').onchange = async (e) => { settings = await L.settings.set({ vpnAuto: e.target.checked }); };
 async function renderVpnFromState() { renderVpn(await L.vpn.state()); }

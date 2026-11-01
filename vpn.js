@@ -149,7 +149,7 @@ async function parseKey(raw, fetcher) {
         outbound: { protocol: 'socks', settings: { servers: [{ address: u.hostname, port: Number(u.port || 1080), users: [auth] }] } },
       };
     }
-    return { kind: 'proxy', name: u.hostname, rules: `${proto}://${u.hostname}:${u.port || (proto === 'socks5' ? 1080 : 8080)}`, auth };
+    return { kind: 'proxy', name: dec(u.hash.slice(1)) || u.hostname, rules: `${proto}://${u.hostname}:${u.port || (proto === 'socks5' ? 1080 : 8080)}`, auth };
   }
 
   if (scheme === 'hysteria2' || scheme === 'hy2' || scheme === 'tuic' || scheme === 'wireguard') {

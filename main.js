@@ -4,7 +4,8 @@ const fs = require('fs');
 const { parseKey, Xray, DPI_CONFIG } = require('./vpn');
 const { spawn } = require('child_process');
 const { AdBlock } = require('./main/adblock');
-const { SmartVpn, DPI_SITES } = require('./main/smartvpn');
+const { SmartVpn, DPI_SITES, NEVER_VPN, parseBlockList } = require('./main/smartvpn');
+const { splitInput, decodeSub, keyId, tcpPing, endpoint, flag, explain } = require('./main/vpnlist');
 const { Extensions, POPULAR } = require('./main/extensions');
 const { translateBatch } = require('./main/translate');
 const { GameMode } = require('./main/gamemode');
@@ -218,7 +219,8 @@ function dec(b) {
 function publicSettings() {
   const s = loadSettings();
   return {
-    hasVpnKey: !!s.vpnKey, vpnName: s.vpnName || '',
+    hasVpnKey: (Array.isArray(s.vpnServers) ? s.vpnServers.length : 0) > 0 || !!s.vpnKey, vpnName: s.vpnName || '',
+    vpnBest: s.vpnBest !== false, vpnRuDirect: s.vpnRuDirect !== false, vpnExclude: s.vpnExclude || [], blockList: s.blockList !== false, blockInfo,
     hasClaudeKey: !!s.claudeKey, model: s.model || 'claude-sonnet-5-5',
     search: s.search || 'google', vpnAuto: !!s.vpnAuto, guard: s.guard !== false, fps: s.fps === '60' ? '60' : 'auto', claudeMode: s.claudeMode || (s.claudeKey ? 'api' : 'web'),
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
@@ -519,7 +521,9 @@ function syncSmartLists() {
   const s = loadSettings();
   smart.learned = new Set(s.learned || []);
   smart.custom = new Set((s.vpnSites || []).map((x) => SmartVpn.baseDomain(x)).filter(Boolean));
-  smart.custom.add('1.1.1.1');
+  smart.exclude = new Set((s.vpnExclude || []).map((x) => String(x).toLowerCase()).filter(Boolean));
+  smart.mode = s.vpnMode === 'all' ? 'all' : 'smart';
+  smart.ruDirect = s.vpnRuDirect !== false;
 }
 
 // WebRTC: при VPN звонки не должны выдавать настоящий IP — но только на сайтах, которые идут через VPN,
@@ -527,8 +531,7 @@ function syncSmartLists() {
 function applyRtcPolicy(wc, url) {
   try {
     let host = ''; try { host = new URL(url || wc.getURL()).hostname; } catch {}
-    const mode = loadSettings().vpnMode || 'smart';
-    const routed = !!proxyRules && (mode === 'all' || (host && smart.matches(host)));
+    const routed = !!proxyRules && !!host && smart.route(host, true).via === 'vpn';
     wc.setWebRTCIPHandlingPolicy(routed ? 'disable_non_proxied_udp' : 'default');
   } catch {}
 }
@@ -603,10 +606,12 @@ function setupPopup(w, openerHost) {
 async function applyProxy({ sessions = allSessions(), close = true } = {}) {
   const mode = loadSettings().vpnMode || 'smart';
   smart.vpnOn = !!proxyRules;
+  // «весь трафик» тоже через PAC, если российские сайты идут напрямую или есть сайты-исключения
+  const pacAll = mode === 'all' && (smart.ruDirect || smart.exclude.size > 0);
   if (iconSes && !sessions.includes(iconSes)) sessions = [...sessions, iconSes]; // значки стартовой — тоже через VPN
   for (const sess of sessions) {
     if (!proxyRules && !smart.dpi) await sess.setProxy({ mode: 'direct' });
-    else if (!proxyRules || mode === 'smart') await sess.setProxy({ mode: 'pac_script', pacScript: smart.url() }); // без VPN PAC ведёт только обход замедления
+    else if (!proxyRules || mode === 'smart' || pacAll) await sess.setProxy({ mode: 'pac_script', pacScript: smart.url() }); // без VPN PAC ведёт только обход замедления
     else await sess.setProxy({ proxyRules, proxyBypassRules: '<local>' });
     if (close) await sess.closeAllConnections();
   }
@@ -614,45 +619,185 @@ async function applyProxy({ sessions = allSessions(), close = true } = {}) {
   for (const wc of webContents.getAllWebContents()) { try { if (wc.getType() !== 'backgroundPage') applyRtcPolicy(wc); } catch {} }
 }
 
-async function vpnConnect(rawKey) {
-  const s = loadSettings();
-  const key = rawKey ? rawKey.trim() : dec(s.vpnKey);
-  if (!key) throw new Error('Сначала вставь ключ');
-  vpnState = { ...vpnState, busy: true }; sendVpn();
-  try {
-    const cfg = await parseKey(key, (u) => net.fetch(u).then((r) => r.text()));
-    proxyAuth = null;
-    if (cfg.kind === 'xray') {
-      const port = await xray.start(cfg.outbound);
-      proxyRules = `socks5://127.0.0.1:${port}`;
-      smart.proxy = `SOCKS5 127.0.0.1:${port}; SOCKS 127.0.0.1:${port}`;
-    } else {
-      xray.stop();
-      proxyRules = cfg.rules;
-      proxyAuth = cfg.auth;
-      const u = new URL(cfg.rules);
-      const kw = u.protocol === 'https:' ? 'HTTPS' : u.protocol.startsWith('socks') ? 'SOCKS5' : 'PROXY';
-      smart.proxy = `${kw} ${u.host}`;
-    }
-    syncSmartLists();
-    await applyProxy();
-    const info = await checkIp();
-    if (!info) {
-      await vpnDisconnect(true);
-      throw new Error('Сервер не отвечает. Проверь ключ или попробуй другой.' + (xray.log ? '\n' + xray.log.trim().split('\n').pop() : ''));
-    }
-    if (rawKey) { const s2 = loadSettings(); s2.vpnKey = enc(key); s2.vpnName = cfg.name; saveSettings(s2); }
-    vpnState = { on: true, name: cfg.name, ip: info.ip, country: info.country, busy: false, mode: loadSettings().vpnMode || 'smart' };
-    sendVpn();
-    return vpnState;
-  } catch (e) {
-    vpnState = { ...vpnState, busy: false }; sendVpn();
-    diag.log('error', 'vpn', e.message, xray?.log ? 'xray: ' + xray.log.trim().split('\n').slice(-3).join(' / ') : '');
-    throw e;
+// ---------- серверы VPN: список, подписки, выбор самого быстрого, контроль связи ----------
+// Серверов может быть много: ключи по одному, несколько сразу или подписка (ссылка, которую дают VPN-сервисы).
+// Подключаемся к самому быстрому из отвечающих; если сервер перестал отвечать — сами переходим на следующий.
+const pings = new Map(); // id сервера -> пинг, мс (-1 — не отвечает)
+let vpnWanted = false;   // человек хочет, чтобы VPN был включён (тогда при обрыве переподключаемся сами)
+let vpnBusy = null;      // идёт подключение — второе не начинаем
+const health = { t: 0, retry: 0, busy: false };
+
+function servers(s) {
+  // старый формат (до 1.16): один ключ → список из одного сервера
+  if (!Array.isArray(s.vpnServers)) {
+    s.vpnServers = [];
+    const k = dec(s.vpnKey || '');
+    if (k) { const id = keyId(k); s.vpnServers.push({ id, key: s.vpnKey, name: s.vpnName || 'Сервер' }); s.vpnCur = id; }
+    saveSettings(s);
   }
+  return s.vpnServers;
+}
+const fetchText = (u) => directFetch(u).then((r) => r.text());
+async function directFetch(url, ms = 10000, headers) {
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await probeSession().fetch(url, { signal: ctrl.signal, cache: 'no-store', headers }); } finally { clearTimeout(t); }
+}
+// запрос гарантированно через VPN (в любом режиме) — для проверки связи, IP и скорости
+let vpnProbeSes = null, vpnProbeRules = '';
+async function viaVpnFetch(url, opts = {}, ms = 8000) {
+  if (!proxyRules) throw new Error('VPN выключен');
+  if (!vpnProbeSes) vpnProbeSes = session.fromPartition('liquid-vpnprobe', { cache: false });
+  if (vpnProbeRules !== proxyRules) { await vpnProbeSes.setProxy({ proxyRules, proxyBypassRules: '<local>' }); await vpnProbeSes.closeAllConnections(); vpnProbeRules = proxyRules; }
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await vpnProbeSes.fetch(url, { ...opts, signal: ctrl.signal, cache: 'no-store' }); } finally { clearTimeout(t); }
+}
+// подписку панели отдают в формате для v2rayN — так и представляемся; не открылась напрямую — пробуем через VPN
+async function fetchSub(url) {
+  const H = { 'user-agent': 'v2rayN/7.0' };
+  let err;
+  try { const r = await directFetch(url, 12000, H); if (r.ok) return await r.text(); err = new Error('HTTP ' + r.status); } catch (e) { err = e; }
+  if (proxyRules) { try { const r = await viaVpnFetch(url, { headers: H }, 15000); if (r.ok) return await r.text(); } catch (e) { err = e; } }
+  throw new Error('Подписка не скачалась: ' + (err?.message || 'нет ответа'));
 }
 
-async function vpnDisconnect(silent) {
+// вставили текст: ключи и подписки → в список серверов. Возвращает id добавленных
+async function vpnAdd(text) {
+  const { keys, subs } = splitInput(text);
+  if (!keys.length && !subs.length) throw new Error('Не понимаю, что это. Вставь ключ (vless://, vmess://, trojan://, ss://…), несколько ключей или ссылку подписки https://…');
+  const s = loadSettings(); const list = servers(s); s.vpnSubs = s.vpnSubs || [];
+  const added = [];
+  const put = async (key, sub) => {
+    let cfg;
+    try { cfg = await parseKey(key, fetchText); }
+    catch (e) { if (keys.length === 1 && !subs.length) throw e; return; } // один кривой ключ — сразу говорим, в подписке — пропускаем
+    const id = keyId(key), ep = endpoint(cfg);
+    const item = { id, key: enc(key), name: String(cfg.name || ep.host || 'Сервер').slice(0, 80), host: ep.host, port: ep.port, proto: key.split('://')[0].toLowerCase(), ...(sub ? { sub } : {}) };
+    const i = list.findIndex((x) => x.id === id);
+    if (i >= 0) list[i] = { ...list[i], ...item }; else list.push(item);
+    added.push(id);
+  };
+  for (const k of keys) await put(k);
+  for (const url of subs) {
+    const ks = decodeSub(await fetchSub(url));
+    if (!ks.length) throw new Error('В подписке не нашлось ключей. Проверь ссылку — она должна быть «для v2ray / v2rayN / Hiddify».');
+    const sid = keyId(url);
+    for (let j = list.length - 1; j >= 0; j--) if (list[j].sub === sid) list.splice(j, 1); // серверы подписки — заново целиком
+    for (const k of ks.slice(0, 300)) await put(k, sid);
+    let name = ''; try { name = new URL(url).hostname; } catch {}
+    const sub = { id: sid, url: enc(url), name, at: Date.now(), n: ks.length };
+    const si = s.vpnSubs.findIndex((x) => x.id === sid);
+    if (si >= 0) s.vpnSubs[si] = sub; else s.vpnSubs.push(sub);
+  }
+  if (!added.length) throw new Error('Ни один ключ не подошёл');
+  s.vpnServers = list; saveSettings(s);
+  diag.log('info', 'vpn', `Добавлено серверов: ${added.length}${subs.length ? ' (из подписки)' : ''}`);
+  return added;
+}
+// подписки обновляем раз в сутки (там меняются серверы и ключи)
+async function vpnSubsUpdate(force) {
+  const s = loadSettings();
+  let n = 0;
+  for (const sub of s.vpnSubs || []) {
+    if (!force && Date.now() - (sub.at || 0) < 24 * 3600e3) continue;
+    try { await vpnAdd(dec(sub.url)); n++; } catch (e) { diag.log('warn', 'vpn', `Подписка ${sub.name}: ${e.message}`); }
+  }
+  return n;
+}
+
+async function pingAll(list) {
+  await Promise.all(list.map(async (x) => pings.set(x.id, x.host ? await tcpPing(x.host, x.port, 2500) : -1)));
+}
+const rank = (x) => { const p = pings.get(x.id); return p == null ? 5e5 : p < 0 ? 1e9 : p; };
+const byPing = (list) => [...list].sort((a, b) => rank(a) - rank(b));
+
+async function checkIp() {
+  try {
+    const t0 = Date.now();
+    const txt = await (await viaVpnFetch('https://1.1.1.1/cdn-cgi/trace')).text();
+    const m = Object.fromEntries(txt.trim().split('\n').map((l) => l.split('=')));
+    return { ip: m.ip || '', country: m.loc || '', ms: Date.now() - t0 };
+  } catch { return null; }
+}
+
+// запустить один сервер и проверить, что через него есть интернет
+async function connectOne(srv) {
+  const key = dec(srv.key);
+  if (!key) throw new Error('Ключ этого сервера не читается — добавь его заново');
+  const cfg = await parseKey(key, fetchText);
+  proxyAuth = null;
+  if (cfg.kind === 'xray') {
+    const port = await xray.start(cfg.outbound);
+    proxyRules = `socks5://127.0.0.1:${port}`;
+    smart.proxy = `SOCKS5 127.0.0.1:${port}; SOCKS 127.0.0.1:${port}`;
+  } else {
+    xray.stop();
+    proxyRules = cfg.rules; proxyAuth = cfg.auth;
+    const u = new URL(cfg.rules);
+    smart.proxy = `${u.protocol === 'https:' ? 'HTTPS' : u.protocol.startsWith('socks') ? 'SOCKS5' : 'PROXY'} ${u.host}`;
+  }
+  syncSmartLists();
+  await applyProxy();
+  const info = await checkIp();
+  if (!info) {
+    const log = xray.log;
+    xray.stop(); proxyRules = ''; proxyAuth = null; await applyProxy();
+    throw new Error(explain('нет ответа', log));
+  }
+  return info;
+}
+
+// подключиться к первому отвечающему серверу из order (не больше tries попыток)
+async function connectFrom(order, tries) {
+  let lastErr;
+  for (const srv of order.slice(0, tries)) {
+    try {
+      const info = await connectOne(srv);
+      pings.set(srv.id, info.ms);
+      const s = loadSettings(); const list = servers(s);
+      const it = list.find((x) => x.id === srv.id); if (it) it.cc = info.country;
+      s.vpnCur = srv.id; s.vpnKey = srv.key; s.vpnName = srv.name; saveSettings(s);
+      vpnState = { on: true, id: srv.id, name: srv.name, ip: info.ip, country: info.country, flag: flag(info.country), ping: info.ms, busy: false, mode: s.vpnMode || 'smart' };
+      vpnWanted = true; startHealth();
+      return vpnState;
+    } catch (e) {
+      lastErr = e; pings.set(srv.id, -1);
+      diag.log('warn', 'vpn', `${srv.name}: ${e.message}`, xray?.log ? 'xray: ' + xray.log.trim().split('\n').slice(-2).join(' / ') : '');
+    }
+  }
+  throw lastErr || new Error('Нет серверов');
+}
+
+// opts: строка (вставленный ключ / ключи / подписка) | { id } (выбранный сервер) | ничего (текущий или самый быстрый)
+function vpnConnect(opts) {
+  if (vpnBusy) return vpnBusy;
+  vpnBusy = (async () => {
+    vpnState = { ...vpnState, busy: true }; sendVpn();
+    try {
+      let only = null;
+      if (typeof opts === 'string' && opts.trim()) only = await vpnAdd(opts);
+      else if (opts && opts.id) only = [opts.id];
+      const s = loadSettings(); const list = servers(s);
+      if (!list.length) throw new Error('Сначала вставь ключ или ссылку подписки');
+      let cand = only ? list.filter((x) => only.includes(x.id)) : list;
+      const manual = !!(opts && opts.id);
+      if (!manual && s.vpnBest !== false && cand.length > 1) { await pingAll(cand); cand = byPing(cand); }
+      else if (!manual && !only) { const cur = cand.find((x) => x.id === s.vpnCur); if (cur) cand = [cur, ...byPing(cand.filter((x) => x !== cur))]; }
+      const st = await connectFrom(cand, manual ? 1 : 4);
+      sendVpn();
+      return st;
+    } catch (e) {
+      vpnState = { on: false, name: '', ip: '', country: '', busy: false };
+      sendVpn();
+      diag.log('error', 'vpn', e.message);
+      throw new Error(explain(e.message, ''));
+    } finally { vpnBusy = null; }
+  })();
+  return vpnBusy;
+}
+
+async function vpnDisconnect(silent, byUser = true) {
+  if (byUser) vpnWanted = false;
+  clearInterval(health.t); health.t = 0;
   xray.stop();
   proxyAuth = null;
   proxyRules = '';
@@ -660,6 +805,101 @@ async function vpnDisconnect(silent) {
   vpnState = { on: false, name: '', ip: '', country: '', busy: false };
   if (!silent) sendVpn();
   return vpnState;
+}
+
+// Связь проверяем раз в 45 секунд (и после сна компьютера). Одна неудача — не повод: проверяем ещё раз.
+// Сервер молчит, а интернет есть — переподключаемся к нему же или переходим на следующий по пингу
+function startHealth() { clearInterval(health.t); health.t = setInterval(() => vpnHealth(), 45e3); health.t.unref?.(); }
+async function vpnHealth() {
+  if (!vpnWanted || vpnBusy || health.busy) return;
+  health.busy = true;
+  try {
+    if (vpnState.on) {
+      let ok = await checkIp();
+      if (!ok) { await new Promise((r) => setTimeout(r, TEST ? 200 : 3000)); ok = vpnState.on ? await checkIp() : null; }
+      if (!vpnState.on || !vpnWanted) return;
+      if (ok) { if (Math.abs((vpnState.ping || 0) - ok.ms) > 20 || ok.ip !== vpnState.ip) { vpnState = { ...vpnState, ping: ok.ms, ip: ok.ip, country: ok.country, flag: flag(ok.country) }; sendVpn(); } return; }
+    }
+    if (!net.isOnline() || !(await directWorks())) { diag.log('info', 'vpn', 'Нет интернета — VPN подождёт, когда он появится'); return; }
+    await vpnFailover(vpnState.on ? 'не отвечает' : '');
+  } finally { health.busy = false; }
+}
+async function vpnFailover(why) {
+  const wasId = vpnState.id || loadSettings().vpnCur, was = vpnState.name || '';
+  if (why) diag.log('warn', 'vpn', `Сервер «${was}» ${why} — переподключаюсь`);
+  const s = loadSettings(); const list = servers(s);
+  await pingAll(list);
+  const same = list.find((x) => x.id === wasId);
+  const order = [...(same ? [same] : []), ...byPing(list.filter((x) => x.id !== wasId && rank(x) < 1e9))];
+  vpnState = { ...vpnState, busy: true }; sendVpn();
+  try {
+    vpnBusy = connectFrom(order, 4);
+    const st = await vpnBusy;
+    health.retry = 0;
+    sendVpn();
+    broadcast('toast', { text: st.id === wasId ? `VPN переподключён: ${st.name}` : `VPN: «${was || 'сервер'}» перестал отвечать — переключил на «${st.name}»` });
+  } catch (e) {
+    await vpnDisconnect(false, false);
+    // ни один сервер не ответил: сайты пока напрямую; пробуем снова через 1, 2, 4… минут, пока человек не выключит VPN
+    const wait = Math.min(10, 2 ** health.retry++) * 60e3;
+    broadcast('toast', { text: `VPN: ни один сервер не отвечает (${e.message.replace(/\.$/, '')}). Сайты пока открываются напрямую — попробую снова через ${wait / 60e3} мин.`, error: true });
+    clearTimeout(health.again); health.again = setTimeout(() => vpnHealth(), wait);
+  } finally { vpnBusy = null; }
+}
+
+// проверка скорости через VPN: пинг и скачивание ~8 секунд
+async function vpnSpeed() {
+  if (!proxyRules) throw new Error('VPN выключен');
+  const p = await checkIp();
+  if (!p) throw new Error('Сервер не отвечает');
+  const r = await viaVpnFetch('https://speed.cloudflare.com/__down?bytes=50000000', {}, 15000);
+  const reader = r.body.getReader();
+  const t0 = Date.now(); let bytes = 0;
+  for (;;) {
+    const step = await Promise.race([reader.read(), new Promise((res) => setTimeout(() => res({ stall: true }), 5000))]);
+    if (step.stall || step.done) break;
+    bytes += step.value.length;
+    if (Date.now() - t0 > 8000) break;
+  }
+  try { reader.cancel(); } catch {}
+  const sec = Math.max(0.2, (Date.now() - t0) / 1000);
+  return { mbps: Math.round((bytes * 8) / sec / 1e5) / 10, ping: p.ms, mb: Math.round(bytes / 1e5) / 10 };
+}
+
+// ---------- общий список заблокированных в России сайтов ----------
+// Умный режим пускает через VPN не только ~80 известных сайтов, но и весь открытый список itdoginfo/allow-domains
+// (~1100 сайтов, его постоянно обновляют). Скачиваем раз в сутки, напрямую или через VPN; держим копию на диске
+const BLOCKLIST_URLS = TEST && process.env.LIQUID_BLOCKLIST_URL ? [process.env.LIQUID_BLOCKLIST_URL]
+  : ['https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst', 'https://cdn.jsdelivr.net/gh/itdoginfo/allow-domains@main/Russia/inside-raw.lst'];
+const blockFile = () => path.join(app.getPath('userData'), 'blocklist-ru.txt');
+let blockInfo = { n: 0, at: 0, error: '' };
+async function loadBlockList() {
+  if (loadSettings().blockList === false) return;
+  try {
+    const [txt, st] = await Promise.all([fs.promises.readFile(blockFile(), 'utf8'), fs.promises.stat(blockFile())]);
+    smart.community = parseBlockList(txt); blockInfo = { n: smart.community.size, at: st.mtimeMs, error: '' };
+  } catch {}
+}
+async function updateBlockList(force) {
+  if (loadSettings().blockList === false) { smart.community = new Set(); blockInfo = { n: 0, at: 0, error: '' }; if (vpnState.on) await applyProxy({ close: false }); return blockInfo; }
+  if (!force && blockInfo.n && Date.now() - blockInfo.at < 20 * 3600e3) return blockInfo;
+  for (const u of BLOCKLIST_URLS) for (const via of ['direct', 'vpn']) {
+    if (via === 'vpn' && !proxyRules) continue;
+    try {
+      const r = via === 'direct' ? await directFetch(u, 15000) : await viaVpnFetch(u, {}, 15000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const txt = await r.text();
+      const set = parseBlockList(txt);
+      if (set.size < (TEST ? 1 : 100)) throw new Error('список подозрительно короткий');
+      smart.community = set; blockInfo = { n: set.size, at: Date.now(), error: '' };
+      fs.promises.writeFile(blockFile(), txt).catch(() => {});
+      if (vpnState.on) await applyProxy({ close: false });
+      diag.log('info', 'vpn', `Список заблокированных сайтов обновлён: ${set.size}`);
+      return blockInfo;
+    } catch (e) { blockInfo = { ...blockInfo, error: e.message }; }
+  }
+  diag.log('warn', 'vpn', 'Список заблокированных сайтов не обновился: ' + blockInfo.error);
+  return blockInfo;
 }
 
 // --- обход замедления без VPN ---
@@ -686,9 +926,6 @@ async function stopDpi() {
 
 // --- чему «умный» VPN может учиться ---
 // российские сайты, банки и госуслуги никогда не уводим за границу — они могут перестать пускать
-const NEVER_VPN = ['gosuslugi.ru', 'nalog.gov.ru', 'mos.ru', 'sberbank.ru', 'sber.ru', 'tbank.ru', 'tinkoff.ru', 'vtb.ru', 'alfabank.ru', 'gazprombank.ru',
-  'raiffeisen.ru', 'pochtabank.ru', 'sovcombank.ru', 'otpbank.ru', 'rshb.ru', 'mts.ru', 'megafon.ru', 'beeline.ru', 'tele2.ru', 'rostelecom.ru', 'yandex.ru',
-  'ya.ru', 'vk.com', 'vk.ru', 'mail.ru', 'ok.ru', 'ozon.ru', 'wildberries.ru', 'avito.ru', 'kinopoisk.ru', 'rzd.ru', 'pochta.ru', 'nspk.ru', 'gov.ru', 'max.ru'];
 function learnable(host) {
   const h = String(host || '').toLowerCase().replace(/\.$/, '');
   if (!h || h === 'localhost' || /^[\d.]+$/.test(h) || h.includes(':')) return false;
@@ -761,9 +998,8 @@ async function netDiagnose(url) {
   if (!/^https?:$/.test(u.protocol)) return { verdict: 'Проверяются только сайты (http и https).', checks: [] };
   const host = u.hostname, checks = [];
   const add = (status, title, text) => checks.push({ status, title, text });
-  const mode = loadSettings().vpnMode || 'smart';
-  const routed = vpnState.on && (mode === 'all' || smart.matches(host));
-  const viaDpi = !routed && !!smart.dpi && DPI_SITES.some((d) => host === d || host.endsWith('.' + d));
+  const rt = smart.route(host, vpnState.on);
+  const routed = rt.via === 'vpn', viaDpi = rt.via === 'dpi';
   // всё независимое — одновременно
   const [online, sys, doh, direct, inLiquid] = await Promise.all([
     directWorks(),
@@ -808,10 +1044,10 @@ async function vpnUnblock(url) {
   try { host = new URL(url).hostname; } catch { return { ok: false } }
   const s = loadSettings();
   if (s.autoVpn === false) return { ok: false, reason: 'off' };
-  if (!s.vpnKey) return { ok: false, reason: 'nokey' };
+  if (!servers(s).length) return { ok: false, reason: 'nokey' };
   const base = SmartVpn.baseDomain(host);
-  const mode = s.vpnMode || 'smart';
-  if (vpnState.on && (mode === 'all' || smart.matches(host))) return { ok: false, reason: 'already' };
+  if (SmartVpn.inSet(host, smart.exclude)) return { ok: false, reason: 'excluded' }; // человек сам сказал «напрямую»
+  if (vpnState.on && smart.route(host, true).via === 'vpn') return { ok: false, reason: 'already' };
   if (!learnable(host)) return { ok: false, reason: 'local' };
   if (!(await resolves(host))) { diag.log('info', 'vpn', 'Не учу: такого сайта нет (опечатка?)'); return { ok: false, reason: 'nxdomain' }; }
   if (!net.isOnline() || !(await directWorks()) || (await directReachable('https://' + host + '/'))) {
@@ -1194,13 +1430,21 @@ function registerIpc() {
       s.adAllow = [...set];
       if (adblock) adblock.allow = set;
     }
-    if (patch.forgetVpn) { s.vpnKey = ''; s.vpnName = ''; }
+    if (patch.forgetVpn) { s.vpnKey = ''; s.vpnName = ''; s.vpnServers = []; s.vpnSubs = []; s.vpnCur = ''; }
+    if ('vpnBest' in patch) s.vpnBest = !!patch.vpnBest;
+    if ('vpnRuDirect' in patch) s.vpnRuDirect = !!patch.vpnRuDirect;
+    if ('blockList' in patch) s.blockList = !!patch.blockList;
+    if ('vpnExcludeRemove' in patch) s.vpnExclude = (s.vpnExclude || []).filter((d) => d !== patch.vpnExcludeRemove);
     if ('antiDpi' in patch) s.antiDpi = !!patch.antiDpi;
     if ('dns' in patch) s.dns = patch.dns in DNS || patch.dns === 'off' ? patch.dns : 'auto';
     saveSettings(s);
     if ('dns' in patch) { applyDns(); for (const x of allSessions()) x.closeAllConnections().catch(() => {}); }
     if ('antiDpi' in patch) { dpiRestarts = 0; return (s.antiDpi ? startDpi() : stopDpi()).then(() => publicSettings()); }
-    if ('vpnMode' in patch || 'vpnSites' in patch || patch.forgetLearned || patch.learnedRemove) { syncSmartLists(); if (vpnState.on) applyProxy({ close: 'vpnMode' in patch }).then(sendVpn); }
+    if ('blockList' in patch) updateBlockList(true).then(() => broadcast('vpn:state', vpnState));
+    if ('vpnMode' in patch || 'vpnSites' in patch || 'vpnRuDirect' in patch || 'vpnExcludeRemove' in patch || patch.forgetLearned || patch.learnedRemove) {
+      syncSmartLists();
+      if (vpnState.on) { vpnState = { ...vpnState, mode: s.vpnMode || 'smart' }; applyProxy({ close: 'vpnMode' in patch || 'vpnRuDirect' in patch }).then(sendVpn); }
+    }
     return publicSettings();
   });
   // «Разрешения сайтов»: камера, микрофон, уведомления, буфер, всплывающие окна
@@ -1376,6 +1620,44 @@ function registerIpc() {
     try { return { ok: true, state: await vpnConnect(key) }; } catch (e) { return { ok: false, error: e.message }; }
   });
   ipcMain.handle('vpn:disconnect', async () => ({ ok: true, state: await vpnDisconnect() }));
+  // список серверов для окна VPN: имя, протокол, пинг, страна, из подписки ли
+  const serverList = () => {
+    const s = loadSettings();
+    const subs = Object.fromEntries((s.vpnSubs || []).map((x) => [x.id, x.name]));
+    return {
+      list: servers(s).map((x) => ({ id: x.id, name: x.name, proto: x.proto || '', host: x.host || '', ping: pings.has(x.id) ? pings.get(x.id) : null, flag: flag(x.cc), cur: x.id === s.vpnCur, on: vpnState.on && vpnState.id === x.id, sub: x.sub ? subs[x.sub] || 'подписка' : '' })),
+      subs: (s.vpnSubs || []).map((x) => ({ id: x.id, name: x.name, n: x.n, at: x.at })),
+    };
+  };
+  ipcMain.handle('vpn:servers', () => serverList());
+  ipcMain.handle('vpn:ping', async () => { await pingAll(servers(loadSettings())); return serverList(); });
+  ipcMain.handle('vpn:add', async (_e, text) => { try { await vpnAdd(String(text || '')); return { ok: true, ...serverList() }; } catch (e) { return { ok: false, error: e.message }; } });
+  ipcMain.handle('vpn:remove', async (_e, id) => {
+    const s = loadSettings(); s.vpnServers = servers(s).filter((x) => x.id !== id);
+    if (s.vpnCur === id) { s.vpnCur = s.vpnServers[0]?.id || ''; s.vpnKey = s.vpnServers[0]?.key || ''; s.vpnName = s.vpnServers[0]?.name || ''; }
+    const used = new Set(s.vpnServers.map((x) => x.sub).filter(Boolean)); s.vpnSubs = (s.vpnSubs || []).filter((x) => used.has(x.id));
+    saveSettings(s);
+    if (vpnState.on && vpnState.id === id) await vpnDisconnect();
+    return serverList();
+  });
+  ipcMain.handle('vpn:subsUpdate', async () => { try { const n = await vpnSubsUpdate(true); return { ok: true, n, ...serverList() }; } catch (e) { return { ok: false, error: e.message }; } });
+  ipcMain.handle('vpn:speed', async () => { try { return { ok: true, ...(await vpnSpeed()) }; } catch (e) { return { ok: false, error: e.message }; } });
+  // куда идёт сайт (для окна VPN): через VPN, обход замедления или напрямую — и почему
+  ipcMain.handle('vpn:route', (_e, host) => ({ ...smart.route(String(host || ''), vpnState.on), base: SmartVpn.baseDomain(host), mode: smart.mode }));
+  // «этот сайт — через VPN / напрямую»: в свой список или в исключения
+  ipcMain.handle('vpn:site', async (_e, { host, via }) => {
+    const base = SmartVpn.baseDomain(host); if (!base) return null;
+    const s = loadSettings();
+    const sites = new Set((s.vpnSites || []).map((x) => SmartVpn.baseDomain(x))), ex = new Set(s.vpnExclude || []);
+    if (via === 'vpn') { sites.add(base); ex.delete(base); }
+    else { ex.add(base); sites.delete(base); s.learned = (s.learned || []).filter((d) => d !== base); }
+    s.vpnSites = [...sites]; s.vpnExclude = [...ex].slice(-500);
+    saveSettings(s); syncSmartLists();
+    await applyProxy({ close: true }); // открытые соединения сайта шли старой дорогой — переоткрываем
+    return { ...smart.route(host, vpnState.on), base, mode: smart.mode };
+  });
+  ipcMain.handle('vpn:blocklist', async () => updateBlockList(true));
+  if (TEST) global.__lqVpnHealth = () => vpnHealth();
   ipcMain.handle('vpn:state', () => vpnState);
   // окно ждёт автозапуска VPN перед тем, как открыть вкладки (не дольше 20 секунд)
   ipcMain.handle('boot:ready', () => bootReady.then(() => true));
@@ -1828,7 +2110,8 @@ app.whenReady().then(async () => {
   xray.onExit = (code) => {
     if (!vpnState.on) return;
     diag.log('error', 'vpn', `xray остановился (код ${code})`, xray.log ? xray.log.trim().split('\n').slice(-3).join(' / ') : '');
-    vpnDisconnect().then(() => broadcast('toast', { text: 'VPN отключился: xray остановился. Сайты пока открываются напрямую — включи VPN заново.', error: true }));
+    // не выключаем VPN, а переподключаемся: к тому же серверу или к следующему, который отвечает
+    if (!vpnBusy) vpnFailover('остановился (xray)');
   };
 
   exts = new Extensions(app.getPath('userData'));
@@ -1844,7 +2127,14 @@ app.whenReady().then(async () => {
   }).catch(() => {});
   registerIpc();
   // VPN при запуске назначаем до окна: иначе вкладки спросят vpn:startup раньше и откроются напрямую
-  if (st0.vpnAuto && st0.vpnKey) {
+  // список заблокированных сайтов: копия с диска сразу, свежий — через 15 секунд после запуска и дальше раз в сутки
+  loadBlockList().then(() => { if (vpnState.on) applyProxy({ close: false }); });
+  setTimeout(() => updateBlockList(false), TEST ? 2000 : 15000);
+  setInterval(() => { updateBlockList(false); vpnSubsUpdate(false).catch(() => {}); }, 6 * 3600e3).unref?.();
+  // после сна компьютера соединения VPN обычно мёртвые — сразу проверяем связь
+  const { powerMonitor } = require('electron');
+  for (const ev of ['resume', 'unlock-screen']) powerMonitor.on(ev, () => setTimeout(() => vpnHealth(), 4000));
+  if (st0.vpnAuto && (st0.vpnKey || (st0.vpnServers || []).length)) {
     vpnStartup = bootReady.then(() => vpnConnect()).catch((e) => {
       const say = () => broadcast('toast', { text: 'VPN: ' + e.message, error: true });
       if (win && win.webContents.isLoading()) win.webContents.once('did-finish-load', say); else say();

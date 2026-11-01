@@ -5,6 +5,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
+const net = require('net');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
@@ -36,6 +37,24 @@ function startBroker() {
   return new Promise((ok) => mqttBroker.on('listening', () => { brokerUrl = `ws://127.0.0.1:${mqttBroker.address().port}/mqtt`; ok(); }));
 }
 const hits = { hang: 0 };
+
+// Настоящий прокси-сервер (HTTP CONNECT) для проверки VPN: браузер подключается к нему как к серверу VPN,
+// а тест видит, какие соединения через него прошли, и может его «уронить»
+function startProxy() {
+  const p = { hits: [], socks: new Set() };
+  p.server = http.createServer((req, res) => { res.writeHead(405); res.end(); });
+  p.server.on('connect', (req, sock, head) => {
+    p.hits.push(req.url);
+    const [h, port] = req.url.split(':');
+    const up = net.connect(Number(port) || 443, h, () => { sock.write('HTTP/1.1 200 Connection Established\r\n\r\n'); if (head && head.length) up.write(head); up.pipe(sock); sock.pipe(up); });
+    p.socks.add(sock); p.socks.add(up);
+    const kill = () => { sock.destroy(); up.destroy(); };
+    up.on('error', kill); sock.on('error', kill); up.on('close', kill); sock.on('close', kill);
+  });
+  p.stop = () => { p.server.close(); for (const x of p.socks) x.destroy(); };
+  return new Promise((ok) => p.server.listen(0, '127.0.0.1', () => { p.port = p.server.address().port; ok(p); }));
+}
+const freePort = () => new Promise((ok) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const pt = s.address().port; s.close(() => ok(pt)); }); });
 const claudeReqs = []; // что браузер отправлял подставному Claude
 
 // маленький сайт для тестов: страницы и видео из tests/site (с поддержкой Range — видео без неё не перематывается)
@@ -47,6 +66,9 @@ function startServer() {
         { tStartMs: 0, segs: [{ utf8: 'Привет, это вступление' }] }, { tStartMs: 12000, segs: [{ utf8: 'про вкладки' }] },
         { tStartMs: 35000, segs: [{ utf8: 'теперь про видео' }] }, { tStartMs: 95000, segs: [{ utf8: 'и выводы' }] }] })); return; }
       if (p === '/v1/messages') return fakeClaude(req, res);
+      // подписка VPN (как у панелей 3x-ui / Marzban: base64 со списком ключей) и общий список заблокированных сайтов
+      if (p === '/sub') { res.writeHead(200, { 'content-type': 'text/plain' }); res.end(Buffer.from('socks5://127.0.0.1:9#Из подписки 1\nvless://1d6b8f2e-0000-4000-8000-000000000001@203.0.113.7:443?security=reality&sni=example.com&pbk=AbCdEf&sid=01&type=tcp&fp=chrome#Из подписки 2\n').toString('base64')); return; }
+      if (p === '/blocklist') { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('blocked-e2e.test\n.zz-e2e\n'); return; }
       // страница, которая начинает грузиться и зависает пустой (как сайт, которому мешает провайдер)
       if (p === '/hang') { hits.hang++; res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.write('<!doctype html><html><head><title>hang</title></head><body>'); return; }
       // «замедление провайдера»: первые 16 КБ отдаются, дальше данные перестают идти
@@ -132,7 +154,7 @@ test.beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(ROOT, 'test-results', 'userdata-'));
   app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_WATCH_BROKERS: brokerUrl },
+    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_WATCH_BROKERS: brokerUrl, LIQUID_BLOCKLIST_URL: `${base}/blocklist` },
   });
   win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
@@ -604,6 +626,83 @@ test('размер интерфейса: всё крупнее, меню и на
   // обратно 100%
   await win.evaluate(() => window.setUiScale(1));
   expect(await win.evaluate(() => window.uiScale())).toBe(1);
+});
+
+// ---------------- 1.16: VPN ----------------
+test('VPN: несколько серверов, самый быстрый, маршруты, автопереключение', async () => {
+  test.setTimeout(120_000);
+  await win.evaluate(() => closePops());
+  const A = await startProxy(), B = await startProxy(), dead = await freePort();
+  const resolve = (u) => app.evaluate(({ session }, x) => session.fromPartition('persist:liquid').resolveProxy(x), u);
+  try {
+    // два ключа сразу (один сервер не отвечает) — оба в списке
+    let r = await win.evaluate((t) => L.vpn.add(t), `http://127.0.0.1:${dead}#Мёртвый\nhttp://127.0.0.1:${A.port}#Сервер А`);
+    expect(r.ok, r.error).toBe(true);
+    expect(r.list.map((x) => x.name)).toEqual(expect.arrayContaining(['Мёртвый', 'Сервер А']));
+    // подключение само выбирает отвечающий сервер, и трафик правда идёт через него
+    const st = await win.evaluate(() => L.vpn.connect());
+    expect(st.ok, st.error).toBe(true);
+    expect(st.state.name).toBe('Сервер А');
+    expect(st.state.country).toMatch(/^[A-Z]{2}$/);
+    expect(A.hits.some((h) => h.startsWith('1.1.1.1:'))).toBe(true);
+    // окно VPN: список серверов и строка про открытый сайт
+    await win.evaluate((u) => navigate(u), `${base}/article.html`);
+    await win.locator('#vpnBtn').click();
+    await expect(win.locator('#vpnList .vs-row')).toHaveCount(2);
+    await expect(win.locator('#vpnList .vs-row.on')).toContainText('Сервер А');
+    await win.evaluate(() => closePops());
+    // умный режим: заблокированные — через VPN, остальное и российское — напрямую; общий список тоже работает
+    expect(await resolve('https://www.youtube.com/')).toBe(`PROXY 127.0.0.1:${A.port}`);
+    expect(await resolve('https://example.com/')).toBe('DIRECT');
+    await expect.poll(() => resolve('https://www.blocked-e2e.test/'), { timeout: 15_000 }).toBe(`PROXY 127.0.0.1:${A.port}`);
+    expect(await resolve('https://shop.zz-e2e/')).toBe(`PROXY 127.0.0.1:${A.port}`); // «.zz-e2e» в списке — вся зона
+    expect((await win.evaluate(() => L.vpn.route('www.blocked-e2e.test'))).why).toBe('community');
+    // весь трафик: российские сайты напрямую (можно выключить)
+    await win.evaluate(() => L.settings.set({ vpnMode: 'all' }));
+    await expect.poll(() => resolve('https://example.com/')).toBe(`PROXY 127.0.0.1:${A.port}`);
+    expect(await resolve('https://ya.ru/')).toBe('DIRECT');
+    expect(await resolve('https://online.sberbank.ru/')).toBe('DIRECT');
+    await win.evaluate(() => L.settings.set({ vpnRuDirect: false }));
+    await expect.poll(() => resolve('https://ya.ru/')).toBe(`PROXY 127.0.0.1:${A.port}`);
+    await win.evaluate(() => L.settings.set({ vpnRuDirect: true, vpnMode: 'smart' }));
+    // сайт «напрямую» по кнопке и обратно
+    await win.evaluate(() => L.vpn.site('www.youtube.com', 'direct'));
+    expect(await resolve('https://www.youtube.com/')).toBe('DIRECT');
+    expect((await win.evaluate(() => L.vpn.route('m.youtube.com'))).why).toBe('exclude');
+    await win.evaluate(() => L.vpn.site('youtube.com', 'vpn'));
+    expect(await resolve('https://www.youtube.com/')).toBe(`PROXY 127.0.0.1:${A.port}`);
+    // сервер «умер» — браузер сам переходит на другой
+    r = await win.evaluate((t) => L.vpn.add(t), `http://127.0.0.1:${B.port}#Сервер Б`);
+    expect(r.ok, r.error).toBe(true);
+    A.stop();
+    await app.evaluate(() => global.__lqVpnHealth());
+    await expect.poll(() => win.evaluate(() => L.vpn.state().then((s) => s.on && s.name)), { timeout: 30_000 }).toBe('Сервер Б');
+    expect(await resolve('https://www.youtube.com/')).toBe(`PROXY 127.0.0.1:${B.port}`);
+    await expect(win.locator('#toast')).toContainText('переключил', { timeout: 5000 });
+    // проверка скорости не падает (до интернета — через прокси Б)
+    const sp = await win.evaluate(() => L.vpn.speed());
+    expect(sp.ok ? sp.ping > 0 : typeof sp.error === 'string').toBe(true);
+  } finally {
+    await win.evaluate(() => L.vpn.disconnect()).catch(() => {});
+    await win.evaluate(() => L.settings.set({ forgetVpn: true, vpnMode: 'smart' })).catch(() => {});
+    A.stop(); B.stop();
+  }
+  expect(await resolve('https://www.youtube.com/')).toBe('DIRECT');
+});
+
+test('VPN: подписка — серверы из ссылки', async () => {
+  const r = await win.evaluate((u) => L.vpn.add(u), `${base}/sub?token=abc`);
+  expect(r.ok, r.error).toBe(true);
+  expect(r.list.map((x) => x.name)).toEqual(['Из подписки 1', 'Из подписки 2']);
+  expect(r.list[1].proto).toBe('vless');
+  expect(r.list.every((x) => x.sub === '127.0.0.1')).toBe(true);
+  expect(r.subs[0].n).toBe(2);
+  // кривой ключ — понятная ошибка
+  const bad = await win.evaluate(() => L.vpn.add('привет'));
+  expect(bad.ok).toBe(false);
+  expect(bad.error).toMatch(/ключ|подписк/i);
+  await win.evaluate(() => L.settings.set({ forgetVpn: true }));
+  expect((await win.evaluate(() => L.vpn.servers())).list).toHaveLength(0);
 });
 
 test('заминки основного процесса (для сведения)', async () => {

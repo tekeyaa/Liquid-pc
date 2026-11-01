@@ -521,13 +521,31 @@
 
   // ================= Настройки: VPN, производительность, вкладки =================
   const MODE_HINT = {
-    smart: 'Через VPN идут только заблокированные и замедленные сайты. Банки, Госуслуги и российские сервисы — напрямую и быстро.',
-    all: 'Весь трафик браузера идёт через VPN.',
+    smart: () => `Через VPN идут только заблокированные сайты: известные${settings.blockList !== false && settings.blockInfo?.n ? `, общий список (${settings.blockInfo.n})` : ''} и те, что браузер выучил сам. Остальное — напрямую и быстро.`,
+    all: () => settings.vpnRuDirect !== false ? 'Весь трафик идёт через VPN, кроме российских сайтов.' : 'Весь трафик браузера идёт через VPN — и российские сайты тоже.',
   };
+  const ago = (t) => { const h = (Date.now() - t) / 3600e3; return h < 1 ? 'только что' : h < 24 ? `${Math.round(h)} ч назад` : `${Math.round(h / 24)} дн. назад`; };
   function renderVpnExtras() {
     const m = settings.vpnMode || 'smart';
     $('#vpnMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === m));
-    $('#vpnModeHint').textContent = MODE_HINT[m];
+    $('#vpnModeHint').textContent = MODE_HINT[m]();
+    $('#vpnRuRow').hidden = m !== 'all';
+    $('#vpnRuDirect').checked = settings.vpnRuDirect !== false;
+    $('#blockList').checked = settings.blockList !== false;
+    const bi = settings.blockInfo || {};
+    $('#blockInfo').textContent = settings.blockList === false ? 'Выключен — через VPN только ~80 известных сайтов и выученные'
+      : bi.n ? `${bi.n} сайтов (itdoginfo/allow-domains), обновлён ${ago(bi.at)}${bi.error ? ' · последнее обновление не удалось' : ''}` : bi.error ? 'Не скачался: ' + bi.error : 'Скачивается…';
+    const ex = (settings.vpnExclude || []).slice().sort();
+    const exBox = $('#excludeInfo'); exBox.replaceChildren();
+    if (ex.length) {
+      exBox.append(document.createTextNode('Всегда напрямую: '));
+      ex.forEach((d) => {
+        const chip = document.createElement('span'); chip.className = 'chip-x'; chip.textContent = d + ' ';
+        const x = document.createElement('button'); x.textContent = '×'; x.title = 'Убрать из исключений';
+        x.onclick = async () => { settings = await L.settings.set({ vpnExcludeRemove: d }); renderVpnExtras(); };
+        chip.appendChild(x); exBox.appendChild(chip);
+      });
+    }
     $('#autoVpn').checked = settings.autoVpn !== false;
     $('#antiDpi').checked = settings.antiDpi !== false;
     $('#antiDpiState').textContent = settings.antiDpi === false ? 'Выключен' : settings.antiDpiOn ? 'Работает: Twitch, YouTube, Discord — напрямую, без сервера' : 'Не запустился — подробности в «Настройки → Отладка»';
@@ -554,6 +572,9 @@
     toast(b.dataset.v === 'smart' ? 'Умный VPN: только заблокированные сайты' : 'VPN для всего трафика');
   });
   $('#autoVpn').onchange = async (e) => { settings = await L.settings.set({ autoVpn: e.target.checked }); };
+  $('#vpnRuDirect').onchange = async (e) => { settings = await L.settings.set({ vpnRuDirect: e.target.checked }); renderVpnExtras(); toast(e.target.checked ? 'Российские сайты — напрямую' : 'Российские сайты тоже через VPN'); };
+  $('#blockList').onchange = async (e) => { settings = await L.settings.set({ blockList: e.target.checked }); renderVpnExtras(); setTimeout(async () => { settings = await L.settings.get(); renderVpnExtras(); }, 4000); };
+  window.renderVpnExtras = renderVpnExtras;
   $('#antiDpi').onchange = async (e) => {
     settings = await L.settings.set({ antiDpi: e.target.checked });
     renderVpnExtras();

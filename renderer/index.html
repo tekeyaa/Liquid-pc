@@ -154,25 +154,44 @@
   <div id="vpnPop" class="pop glass">
     <div class="vpn-hero">
       <button id="vpnOrb" class="orb-btn" title="Вкл / выкл"><span class="ring"></span><svg viewBox="0 0 24 24"><path d="M12 3v8M7 6.2a7.5 7.5 0 1 0 10 0"/></svg></button>
-      <div>
+      <div class="vpn-hero-t">
         <div id="vpnTitle" class="big">Выключен</div>
         <div id="vpnSub" class="muted">Вставь ключ ниже</div>
       </div>
+      <button id="vpnSpeed" class="btn ghost sm" title="Проверить скорость и пинг через VPN" hidden>Скорость</button>
+    </div>
+    <div id="vpnSpeedOut" class="vpn-speed muted sm" hidden></div>
+    <!-- куда идёт открытый сайт и переключатель «через VPN / напрямую» -->
+    <div id="vpnSite" class="vpn-site" hidden>
+      <div class="vs-t"><b id="vpnSiteHost"></b><span id="vpnSiteWhy" class="muted sm"></span></div>
+      <button id="vpnSiteBtn" class="btn ghost sm"></button>
+    </div>
+    <!-- серверы: нажми — подключиться к нему -->
+    <div id="vpnList" class="vpn-list"></div>
+    <div id="vpnListTools" class="vpn-tools" hidden>
+      <label class="vpn-best"><input type="checkbox" id="vpnBest" class="switch" /><span>Сам выбирать самый быстрый</span></label>
+      <button id="vpnPing" class="btn ghost sm" title="Проверить, какие серверы отвечают и как быстро">Пинг</button>
+      <button id="vpnSubsUpd" class="btn ghost sm" title="Скачать подписку заново: новые серверы и ключи" hidden>Обновить</button>
+      <button id="vpnForget" class="btn ghost sm" title="Удалить все серверы и подписки">Удалить все</button>
     </div>
     <label class="field">
-      <span>Ключ</span>
-      <textarea id="vpnKey" rows="3" spellcheck="false" placeholder="vless://…  vmess://…  trojan://…  ss://…  ssconf://…"></textarea>
+      <span id="vpnKeyLbl">Ключ, несколько ключей или ссылка подписки</span>
+      <textarea id="vpnKey" rows="2" spellcheck="false" placeholder="vless://…  vmess://…  trojan://…  ss://…  или https://… (подписка)"></textarea>
     </label>
     <div class="row">
       <button id="vpnConnect" class="btn primary">Подключить</button>
-      <button id="vpnForget" class="btn ghost">Забыть ключ</button>
+      <button id="vpnAdd" class="btn ghost" title="Добавить в список серверов, не подключаясь">В список</button>
     </div>
     <div class="seg2" id="vpnMode">
       <button data-v="smart">Умный</button>
       <button data-v="all">Весь трафик</button>
     </div>
     <div id="vpnModeHint" class="muted sm" style="margin:6px 2px 0"></div>
-    <label class="switch-row">
+    <label class="switch-row" id="vpnRuRow" style="margin-top:10px">
+      <span>Российские сайты — напрямую<small class="muted sm" style="display:block;margin-top:2px">Банки, Госуслуги, VK, Яндекс и всё на .ru не ломаются из-за иностранного IP</small></span>
+      <input type="checkbox" id="vpnRuDirect" class="switch" />
+    </label>
+    <label class="switch-row" style="margin-top:10px">
       <span>Включать при запуске</span>
       <input type="checkbox" id="vpnAuto" class="switch" />
     </label>
@@ -185,9 +204,14 @@
       <input type="checkbox" id="antiDpi" class="switch" />
     </label>
     <details class="vpn-more">
-      <summary>Сайты через VPN</summary>
-      <div class="muted sm" style="margin:8px 0 6px">В умном режиме через VPN идут YouTube, Twitch, Discord, Instagram, X, Claude, ChatGPT и ещё ~80 сайтов, плюс те, что браузер выучил сам. Добавь свои — по одному в строке:</div>
+      <summary>Какие сайты идут через VPN</summary>
+      <label class="switch-row" style="margin-top:10px">
+        <span>Общий список заблокированных сайтов<small id="blockInfo" class="muted sm" style="display:block;margin-top:2px"></small></span>
+        <input type="checkbox" id="blockList" class="switch" />
+      </label>
+      <div class="muted sm" style="margin:10px 0 6px">Свои сайты через VPN — по одному на строку:</div>
       <textarea id="vpnSites" rows="3" spellcheck="false" placeholder="example.com"></textarea>
+      <div id="excludeInfo" class="muted sm" style="margin-top:8px"></div>
       <div class="row" style="margin-top:8px">
         <span id="learnedInfo" class="muted sm" style="flex:1;align-self:center"></span>
         <button id="forgetLearned" class="btn ghost sm" style="height:30px">Сбросить выученные</button>
