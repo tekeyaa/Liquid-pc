@@ -71,8 +71,14 @@ class WatchRoom {
     this.links = new Map(); // url брокера -> { mq, retry, timer }
     this.seen = new Map();  // номер сообщения -> время (защита от дублей)
   }
-  get topic() { return 'liquid-watch/v1/' + crypto.createHash('sha256').update('topic:' + this.code).digest('hex').slice(0, 32); }
-  get key() { return crypto.createHash('sha256').update('liquid-watch:' + this.code).digest(); }
+  // тема и ключ зависят только от кода — считаем один раз на комнату, а не на каждое сообщение
+  get topic() { if (this._tk !== this.code) this.derive(); return this._topic; }
+  get key() { if (this._tk !== this.code) this.derive(); return this._key; }
+  derive() {
+    this._tk = this.code;
+    this._topic = 'liquid-watch/v1/' + crypto.createHash('sha256').update('topic:' + this.code).digest('hex').slice(0, 32);
+    this._key = crypto.createHash('sha256').update('liquid-watch:' + this.code).digest();
+  }
   seal(obj) {
     const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', this.key, iv);
     const ct = Buffer.concat([c.update(JSON.stringify(obj), 'utf8'), c.final()]);

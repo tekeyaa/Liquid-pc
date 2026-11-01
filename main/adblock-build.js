@@ -10,7 +10,7 @@ process.parentPort.once('message', (e) => {
     const hash = require('crypto').createHash('sha256').update(text).update((exceptions || []).join('\n')).digest('hex');
     if (oldHash && oldHash === hash) { process.parentPort.postMessage({ ok: true, same: true, hash }); setTimeout(() => process.exit(0), 100); return; }
     const { FiltersEngine, CosmeticFilter } = require('@ghostery/adblocker');
-    const engine = FiltersEngine.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true });
+    const engine = FiltersEngine.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true, integrityCheck: false });
     const extra = (exceptions || []).map((l) => CosmeticFilter.parse(l)).filter(Boolean);
     if (extra.length) engine.update({ newCosmeticFilters: extra });
     process.parentPort.postMessage({ ok: true, buf: engine.serialize(), hash });

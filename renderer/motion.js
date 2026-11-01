@@ -86,7 +86,7 @@
 
   // вкладки
   const tabs = document.getElementById('tabs');
-  if (tabs) makeGlider(tabs, (b) => b.querySelector('.tab.active:not(.closing)'), 'tab-glider');
+  if (tabs) window.tabGlider = makeGlider(tabs, (b) => b.querySelector('.tab.active:not(.closing)'), 'tab-glider');
 
   // разделы настроек
   const nav = document.getElementById('setNav');

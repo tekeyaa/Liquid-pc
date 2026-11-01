@@ -571,8 +571,7 @@ body.game .tab .spin { animation-play-state: paused; }
 #gameBtn svg { width: 18px; height: 18px; }
 #gameBtn.on { color: #4ade80; }
 #setPop.settings { background: linear-gradient(180deg, rgba(36,34,48,.94), rgba(20,18,28,.96)); }
-body.popped #scrim { background: rgba(0,0,0,0); transition: background .25s; }
-body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.35); }
+
 
 /* ---------- журнал ошибок ---------- */
 #menuBtn { position: relative; }
@@ -704,8 +703,12 @@ body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.35); }
 /* окно настроек: фон за ним мягко темнеет и размывается */
 /* размытие всего окна (вместе со страницей) пересчитывалось на каждом кадре открытия — кадры по 50–290 мс.
    Теперь фон просто мягко темнеет, а само окно настроек — плотное, без размытия под собой */
-body.popped:has(#setPop.open) #scrim { background: rgba(0,0,0,.42); transition: background .28s var(--ease); }
-@starting-style { body.popped #scrim { background: rgba(0,0,0,0); } }
+/* затемнение — прозрачностью готового слоя (видеокарта), а не перекраской фона всего окна на каждом кадре */
+#scrim::before { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,.42); opacity: 0; transition: opacity .28s var(--ease); will-change: opacity; }
+body.popped:has(#setPop.open) #scrim::before { opacity: 1; }
+@starting-style { body.popped:has(#setPop.open) #scrim::before { opacity: 0; } }
+/* большие окошки двигаются готовым слоем: без перерисовки содержимого на каждом кадре пружины */
+.pop.open, #setPop.settings { will-change: transform, opacity; }
 #setPop.settings { backdrop-filter: none; background: linear-gradient(180deg, rgb(36,34,48), rgb(21,19,29)); }
 @keyframes secIn { from { opacity: 0; transform: translate3d(0, 10px, 0); } }
 .set-sec.on { animation: secIn .38s var(--ease); }
@@ -843,3 +846,6 @@ body.tab-tearing #views { outline: 2px dashed rgba(255,255,255,.22); outline-off
 /* Размер интерфейса (Настройки → Оформление): увеличиваем панели браузера, меню и окошки, а не сайты */
 :root { --ui: 1; }
 #tabsrow, #bar, #side, .pop, .ctx, #toast, #update { zoom: var(--ui); }
+/* перетаскиваемая вкладка едет за мышью сама со своим фоном; общая подсветка активной ждёт, пока её отпустят */
+#tabs .tab.dragging.active { background: linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.07)); border-color: var(--stroke); }
+body.tab-dragging .tab-glider { opacity: 0; transition: opacity .12s; }

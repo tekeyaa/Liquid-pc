@@ -94,18 +94,19 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
   fav.src = favicon || 'favicon.svg';
   fav.onerror = () => { fav.src = 'favicon.svg'; };
 
+  unfreezeTabWidths();
   const startUrl = url ? toUrl(url) : newtabUrl();
   const tab = { id, wv: null, el, fav, title: title || 'Новая вкладка', url: startUrl, favicon, loading: false, wcId: null, lastActive: Date.now(), page: {}, ads: 0 };
   if (after && tabs.includes(after)) tabs.splice(tabs.indexOf(after) + 1, 0, tab); else tabs.push(tab);
 
   el.addEventListener('mousedown', (e) => {
-    if (e.button === 1) { e.preventDefault(); closeTab(tab); return; }
+    if (e.button === 1) { e.preventDefault(); freezeTabWidths(); closeTab(tab); return; }
     if (e.button === 0 && !e.target.closest('.x')) activate(tab);
   });
   el.addEventListener('pointerdown', (e) => { if (e.button === 0 && !e.target.closest('.x')) tabDrag(tab, e); });
   el.addEventListener('dragstart', (e) => e.preventDefault()); // значок — картинка: без этого браузер начинал свой перенос картинки и обрывал наш
   el.addEventListener('contextmenu', (e) => { e.preventDefault(); tabMenu(tab, e.clientX, e.clientY); });
-  el.querySelector('.x').addEventListener('click', (e) => { e.stopPropagation(); closeTab(tab); });
+  el.querySelector('.x').addEventListener('click', (e) => { e.stopPropagation(); freezeTabWidths(); closeTab(tab); });
 
   flipTabs(() => { if (after && tabs.includes(after) && after.el.nextSibling) $('#tabs').insertBefore(el, after.el.nextSibling); else $('#tabs').appendChild(el); });
   window.onTabCreated && window.onTabCreated(tab, { after }); // пространства и группы (features4.js)
@@ -334,8 +335,10 @@ function closeTab(tab, opts) {
     Object.assign(el.style, { position: 'absolute', left: x + 'px', top: y + 'px', width: w + 'px' });
     el.classList.add('closing');
   });
-  if (tab.wv) tab.wv.style.visibility = 'hidden';
-  setTimeout(() => { tab.el.remove(); tab.wv?.remove(); fitTabs(); }, 300);
+  if (tab.wv) { tab.wv.style.visibility = 'hidden'; try { tab.wv.setAudioMuted(true); } catch {} }
+  // разбор webview — тяжёлая операция; делаем её, когда окно свободно, а не во время анимации закрытия
+  setTimeout(() => { tab.el.remove(); fitTabs(); }, 300);
+  if (tab.wv) { const wv = tab.wv; (window.requestIdleCallback || setTimeout)(() => wv.remove(), { timeout: 1500 }); }
   if (active === tab) {
     active = null;
     // следующая вкладка — из того же пространства (features4.js), иначе соседняя
@@ -360,18 +363,39 @@ function moveTabNear(tab, target, before) {
   tabs.splice(tabs.indexOf(tab), 1);
   tabs.splice(tabs.indexOf(target) + (before ? 0 : 1), 0, tab);
 }
+// Закрываешь вкладки крестиком подряд — оставшиеся не меняют ширину, пока мышь над полосой (как в Chrome):
+// следующий крестик оказывается под курсором. Ушла мышь с полосы — вкладки плавно занимают место
+let tabsFrozen = false;
+function freezeTabWidths() {
+  if (tabsFrozen) return;
+  tabsFrozen = true;
+  for (const t of tabs) t.el.style.flex = `0 0 ${t.el.offsetWidth}px`;
+}
+function unfreezeTabWidths() {
+  if (!tabsFrozen) return;
+  tabsFrozen = false;
+  flipTabs(() => { for (const t of tabs) t.el.style.flex = ''; });
+  window.tabGlider && window.tabGlider.kick();
+}
+$('#tabsrow').addEventListener('pointerleave', unfreezeTabWidths);
+window.addEventListener('resize', unfreezeTabWidths);
+
 function tabDrag(tab, e) {
-  const el = tab.el, sx = e.clientX, sy = e.clientY, pid = e.pointerId;
+  const el = tab.el, sx = e.clientX, sy = e.clientY, pid = e.pointerId, x0 = el.offsetLeft;
   let moving = false, moved = false;
   try { el.setPointerCapture(pid); } catch {} // мышь продолжаем слышать и за пределами окна
   const move = (ev) => {
     if (!moving) {
       if (Math.abs(ev.clientX - sx) < 6 && Math.abs(ev.clientY - sy) < 6) return;
       moving = true; el.classList.add('dragging'); document.body.classList.add('tab-dragging');
+      el.style.transition = 'opacity .2s'; // вкладка едет за мышью без запаздывания
     }
     const out = tearOutAt(ev) && !L.incognito;
     el.classList.toggle('tear', out);
     document.body.classList.toggle('tab-tearing', out);
+    // вкладка под пальцем: сдвиг от её места в ряду до курсора (в пределах полосы)
+    const box = $('#tabs'), want = Math.max(0, Math.min(box.clientWidth - el.offsetWidth, x0 + ev.clientX - sx));
+    el.style.transform = out ? '' : `translate3d(${(want - el.offsetLeft).toFixed(1)}px, -1px, 0) scale(1.03)`;
     if (out) return;
     // сосед под курсором: та же группа и пространство, середину перешли — меняемся местами
     for (const t of tabs) {
@@ -388,6 +412,7 @@ function tabDrag(tab, e) {
     el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up);
     try { el.releasePointerCapture(pid); } catch {}
     el.classList.remove('dragging', 'tear'); document.body.classList.remove('tab-dragging', 'tab-tearing');
+    el.style.transition = ''; el.style.transform = ''; // мягко встаёт на своё место в ряду (переход из CSS)
     if (!moving) return;
     if (ev.type === 'pointerup' && tearOutAt(ev)) { tearOffTab(tab, ev.screenX, ev.screenY); return; }
     if (moved) saveSession();

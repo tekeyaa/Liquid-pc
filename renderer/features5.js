@@ -105,9 +105,10 @@
   L.watch.onMsg((m) => {
     if (!W.code) return;
     const who = m.name || 'Гость';
+    const known = !!m.from && W.people.has(m.from);
     if (m.from) W.people.set(m.from, { name: who, seen: Date.now() });
     if (m.type === 'hello') {
-      chatLine('', `${who} зашёл в комнату`);
+      if (!known) chatLine('', `${who} зашёл в комнату`); // «привет» приходит и через каждый брокер, и после переподключения
       send({ type: 'here' }); // отвечаем, чтобы новичок увидел нас в списке
       if (W.tab?.wv) try { W.tab.wv.send('liquid', { type: 'wtPoll' }); } catch {} // и сразу — где у нас видео
     } else if (m.type === 'bye') { W.people.delete(m.from); chatLine('', `${who} вышел`); }
@@ -125,7 +126,7 @@
     }
     render();
   });
-  L.watch.onStatus((s) => { W.state = s.state; if (s.broker) W.broker = s.broker; render(); if (s.state === 'online' && W.code) send({ type: 'hello' }); });
+  L.watch.onStatus((s) => { const was = W.state; W.state = s.state; if (s.broker) W.broker = s.broker; render(); if (s.state === 'online' && was !== 'online' && W.code) send({ type: 'hello' }); });
 
   function chatLine(name, text) {
     W.chat.push({ name, text, at: Date.now() });
@@ -133,22 +134,39 @@
     if (!$('#watchPop').classList.contains('open') && name) { W.unread++; toast(`${name}: ${text}`); }
     render();
   }
-  function render() {
+  // Перерисовка — не чаще раза за кадр: сообщения от друзей приходят пачками (каждое раньше перестраивало чат)
+  let renderRaf = 0;
+  function render() { if (!renderRaf) renderRaf = requestAnimationFrame(renderNow); }
+  const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; }; // одинаковый текст не трогаем — без лишней перерисовки
+  let shown = 0, shownFirst = null; // сколько сообщений чата уже на экране
+  function renderNow() {
+    renderRaf = 0;
     const inRoom = !!W.code;
     // окошко закрыто — перерисовывать его незачем (раньше чат и список перестраивались каждые 5 секунд)
     if (!$('#watchPop').classList.contains('open')) { document.body.classList.toggle('watching', inRoom); return; }
     $('#wtJoin').hidden = inRoom; $('#wtRoom').hidden = !inRoom;
-    $('#wtName').value = myName;
+    if (document.activeElement !== $('#wtName')) $('#wtName').value = myName;
     if (inRoom) {
-      $('#wtCode').textContent = W.code;
-      $('#wtStatus').textContent = W.state === 'online' ? `на связи${W.broker ? ' · ' + W.broker : ''}` : W.state === 'connecting' ? 'подключаюсь…' : 'нет связи, пробую снова';
+      setText($('#wtCode'), W.code);
+      setText($('#wtStatus'), W.state === 'online' ? `на связи${W.broker ? ' · ' + W.broker : ''}` : W.state === 'connecting' ? 'подключаюсь…' : 'нет связи, пробую снова');
       $('#wtStatus').className = 'wt-status ' + W.state;
       const ppl = [...W.people.values()].map((p) => p.name);
-      $('#wtPeople').textContent = ppl.length ? 'В комнате: вы, ' + ppl.join(', ') : 'Пока только вы — отправьте код другу';
-      $('#wtTab').textContent = W.tab ? `Вкладка: ${W.tab.title || hostOf(tabUrl(W.tab))}` : '';
+      setText($('#wtPeople'), ppl.length ? 'В комнате: вы, ' + ppl.join(', ') : 'Пока только вы — отправьте код другу');
+      setText($('#wtTab'), W.tab ? `Вкладка: ${W.tab.title || hostOf(tabUrl(W.tab))}` : '');
+      // чат: дописываем только новые сообщения; если старые обрезались или комната сменилась — собираем заново
       const box = $('#wtChat');
-      box.innerHTML = W.chat.map((c) => (c.name ? `<div class="wt-msg"><b>${esc(c.name)}</b> ${esc(c.text)}</div>` : `<div class="wt-sys">${esc(c.text)}</div>`)).join('');
-      box.scrollTop = box.scrollHeight;
+      if (W.chat[0] !== shownFirst || shown > W.chat.length) { box.textContent = ''; shown = 0; shownFirst = W.chat[0] || null; }
+      if (shown < W.chat.length) {
+        const frag = document.createDocumentFragment();
+        for (const c of W.chat.slice(shown)) {
+          const d = document.createElement('div');
+          if (c.name) { d.className = 'wt-msg'; const b = document.createElement('b'); b.textContent = c.name; d.append(b, ' ' + c.text); }
+          else { d.className = 'wt-sys'; d.textContent = c.text; }
+          frag.appendChild(d);
+        }
+        box.appendChild(frag); shown = W.chat.length;
+        box.scrollTop = box.scrollHeight;
+      }
     }
     document.body.classList.toggle('watching', inRoom);
   }

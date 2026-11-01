@@ -80,7 +80,12 @@
       if (t.includes(q)) s += 30;
       return s ? s + bonus : 0;
     };
-    for (const b of bookmarks) { const s = score(b.url, b.title, 50); if (s) out.push({ url: b.url, title: b.title, s, kind: 'закладка' }); }
+    // уже открытые вкладки — первыми: «Перейти на вкладку» вместо второй копии сайта (как в Chrome)
+    for (const t of tabs) {
+      if (t === active || !/^https?:/.test(t.url || '')) continue;
+      const s = score(t.url, t.title, 70); if (s) out.push({ url: t.url, title: t.title, s, kind: 'открыта — перейти', tab: t });
+    }
+    for (const b of bookmarks) { if (out.some((o) => o.url === b.url)) continue; const s = score(b.url, b.title, 50); if (s) out.push({ url: b.url, title: b.title, s, kind: 'закладка' }); }
     for (const [url, e] of Object.entries(history)) {
       if (out.some((o) => o.url === url)) continue;
       const s = score(url, e.t, Math.min(40, e.v * 4) + (Date.now() - e.at < 864e5 * 3 ? 10 : 0));
@@ -131,6 +136,7 @@
     const it = sug.items[i];
     hideSuggest();
     if (!it) return;
+    if (it.tab && tabs.includes(it.tab)) { $('#url').blur(); syncChrome(); activate(it.tab); return; }
     if (it.search) navigate(it.search); else navigate(it.url);
     $('#url').blur();
   }

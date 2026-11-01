@@ -35,8 +35,10 @@ function withExceptions(lib, engine) {
 
 class AdBlock {
   constructor(userData) {
-    this.cacheFile = path.join(userData, 'adblock-engine-ru2.bin'); // новое имя: в кэше русские списки и наши исключения
-    try { fs.rmSync(path.join(userData, 'adblock-engine-ru.bin'), { force: true }); } catch {}
+    // ru3: движок без контрольной суммы — её проверка (crc32 нескольких МБ) занимала основной процесс на каждом запуске
+    // и после каждого обновления списков. Повреждённый файл всё равно не загрузится, и движок соберётся заново
+    this.cacheFile = path.join(userData, 'adblock-engine-ru3.bin');
+    for (const old of ['adblock-engine-ru.bin', 'adblock-engine-ru2.bin', 'adblock-engine-ru2.bin.sha256']) fs.promises.rm(path.join(userData, old), { force: true }).catch(() => {});
     this.blocker = null;
     this.sessions = new Set();
     this.allow = new Set(); // сайты, где блокировщик выключен
@@ -91,7 +93,7 @@ class AdBlock {
             const text = got.map((g) => g.text).join('\n');
             hash = crypto.createHash('sha256').update(text).update(EXCEPTIONS.join('\n')).digest('hex');
             if (this.blocker && old === hash) { console.info('[adblock] списки не изменились — пересборка не нужна'); return; }
-            fresh = ElectronBlocker.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true }); withExceptions(lib, fresh);
+            fresh = ElectronBlocker.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true, integrityCheck: false }); withExceptions(lib, fresh);
           }
           if (!missing.length) fs.promises.writeFile(hashFile, hash).catch(() => {}); // неполная сборка — пересоберём, когда скачается всё
           console.info(`[adblock] сборка за ${Date.now() - t0} мс ${buf ? 'в отдельном процессе' : 'в основном процессе'}`);
