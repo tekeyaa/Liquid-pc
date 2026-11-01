@@ -652,32 +652,32 @@ test('VPN: несколько серверов, самый быстрый, ма�
     await expect(win.locator('#vpnList .vs-row.on')).toContainText('Сервер А');
     await win.evaluate(() => closePops());
     // умный режим: заблокированные — через VPN, остальное и российское — напрямую; общий список тоже работает
-    expect(await resolve('https://www.youtube.com/')).toBe(`PROXY 127.0.0.1:${A.port}`);
-    expect(await resolve('https://example.com/')).toBe('DIRECT');
+    await expect.poll(() => resolve('https://www.youtube.com/'), { timeout: 10_000 }).toBe(`PROXY 127.0.0.1:${A.port}`);
+    await expect.poll(() => resolve('https://example.com/'), { timeout: 10_000 }).toBe('DIRECT');
     await expect.poll(() => resolve('https://www.blocked-e2e.test/'), { timeout: 15_000 }).toBe(`PROXY 127.0.0.1:${A.port}`);
-    expect(await resolve('https://shop.zz-e2e/')).toBe(`PROXY 127.0.0.1:${A.port}`); // «.zz-e2e» в списке — вся зона
+    await expect.poll(() => resolve('https://shop.zz-e2e/'), { timeout: 10_000 }).toBe(`PROXY 127.0.0.1:${A.port}`); // «.zz-e2e» в списке — вся зона
     expect((await win.evaluate(() => L.vpn.route('www.blocked-e2e.test'))).why).toBe('community');
     // весь трафик: российские сайты напрямую (можно выключить)
     await win.evaluate(() => L.settings.set({ vpnMode: 'all' }));
     await expect.poll(() => resolve('https://example.com/')).toBe(`PROXY 127.0.0.1:${A.port}`);
-    expect(await resolve('https://ya.ru/')).toBe('DIRECT');
-    expect(await resolve('https://online.sberbank.ru/')).toBe('DIRECT');
+    await expect.poll(() => resolve('https://ya.ru/'), { timeout: 10_000 }).toBe('DIRECT');
+    await expect.poll(() => resolve('https://online.sberbank.ru/'), { timeout: 10_000 }).toBe('DIRECT');
     await win.evaluate(() => L.settings.set({ vpnRuDirect: false }));
     await expect.poll(() => resolve('https://ya.ru/')).toBe(`PROXY 127.0.0.1:${A.port}`);
     await win.evaluate(() => L.settings.set({ vpnRuDirect: true, vpnMode: 'smart' }));
     // сайт «напрямую» по кнопке и обратно
     await win.evaluate(() => L.vpn.site('www.youtube.com', 'direct'));
-    expect(await resolve('https://www.youtube.com/')).toBe('DIRECT');
+    await expect.poll(() => resolve('https://www.youtube.com/'), { timeout: 10_000 }).toBe('DIRECT');
     expect((await win.evaluate(() => L.vpn.route('m.youtube.com'))).why).toBe('exclude');
     await win.evaluate(() => L.vpn.site('youtube.com', 'vpn'));
-    expect(await resolve('https://www.youtube.com/')).toBe(`PROXY 127.0.0.1:${A.port}`);
+    await expect.poll(() => resolve('https://www.youtube.com/'), { timeout: 10_000 }).toBe(`PROXY 127.0.0.1:${A.port}`);
     // сервер «умер» — браузер сам переходит на другой
     r = await win.evaluate((t) => L.vpn.add(t), `http://127.0.0.1:${B.port}#Сервер Б`);
     expect(r.ok, r.error).toBe(true);
     A.stop();
     await app.evaluate(() => global.__lqVpnHealth());
     await expect.poll(() => win.evaluate(() => L.vpn.state().then((s) => s.on && s.name)), { timeout: 30_000 }).toBe('Сервер Б');
-    expect(await resolve('https://www.youtube.com/')).toBe(`PROXY 127.0.0.1:${B.port}`);
+    await expect.poll(() => resolve('https://www.youtube.com/'), { timeout: 10_000 }).toBe(`PROXY 127.0.0.1:${B.port}`);
     await expect(win.locator('#toast')).toContainText('переключил', { timeout: 5000 });
     // проверка скорости не падает (до интернета — через прокси Б)
     const sp = await win.evaluate(() => L.vpn.speed());
@@ -687,7 +687,7 @@ test('VPN: несколько серверов, самый быстрый, ма�
     await win.evaluate(() => L.settings.set({ forgetVpn: true, vpnMode: 'smart' })).catch(() => {});
     A.stop(); B.stop();
   }
-  expect(await resolve('https://www.youtube.com/')).toBe('DIRECT');
+  await expect.poll(() => resolve('https://www.youtube.com/'), { timeout: 10_000 }).toBe('DIRECT');
 });
 
 test('VPN: подписка — серверы из ссылки', async () => {

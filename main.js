@@ -891,9 +891,11 @@ async function updateBlockList(force) {
       const txt = await r.text();
       const set = parseBlockList(txt);
       if (set.size < (TEST ? 1 : 100)) throw new Error('список подозрительно короткий');
+      // список не изменился — правила браузера не трогаем (перечитывание прокси обрывает запросы, которые идут прямо сейчас)
+      const same = set.size === smart.community.size && [...set].every((d) => smart.community.has(d));
       smart.community = set; blockInfo = { n: set.size, at: Date.now(), error: '' };
       fs.promises.writeFile(blockFile(), txt).catch(() => {});
-      if (vpnState.on) await applyProxy({ close: false });
+      if (vpnState.on && !same) await applyProxy({ close: false });
       diag.log('info', 'vpn', `Список заблокированных сайтов обновлён: ${set.size}`);
       return blockInfo;
     } catch (e) { blockInfo = { ...blockInfo, error: e.message }; }
