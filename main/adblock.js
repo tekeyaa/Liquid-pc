@@ -37,7 +37,9 @@ class AdBlock {
   constructor(userData) {
     // ru3: движок без контрольной суммы — её проверка (crc32 нескольких МБ) занимала основной процесс на каждом запуске
     // и после каждого обновления списков. Повреждённый файл всё равно не загрузится, и движок соберётся заново
-    this.cacheFile = path.join(userData, 'adblock-engine-ru3.bin');
+    // ru4: без RU AdList (ломал Авито и Кинопоиск) — новое имя, чтобы старый движок с ним не прожил ещё сутки
+    this.cacheFile = path.join(userData, 'adblock-engine-ru4.bin');
+    for (const old of ['adblock-engine-ru3.bin', 'adblock-engine-ru3.bin.sha256']) fs.promises.rm(path.join(userData, old), { force: true }).catch(() => {});
     for (const old of ['adblock-engine-ru.bin', 'adblock-engine-ru2.bin', 'adblock-engine-ru2.bin.sha256']) fs.promises.rm(path.join(userData, old), { force: true }).catch(() => {});
     this.blocker = null;
     this.sessions = new Set();
@@ -68,7 +70,9 @@ class AdBlock {
       let built = null;
       try {
         // реклама Яндекса, ЖЖ, VK и других русских сайтов есть только в русских списках
-        const RU = ['https://filters.adtidy.org/extension/ublock/filters/1.txt', 'https://easylist-downloads.adblockplus.org/advblock.txt'];
+        // RU AdList (advblock.txt) убран в 1.22: с нашим движком он ломал Авито и Кинопоиск (стили и скрипты сайтов),
+        // а русскую рекламу и так режет AdGuard Russian
+        const RU = ['https://filters.adtidy.org/extension/ublock/filters/1.txt'];
         const base = lib.adsAndTrackingLists || lib.fullLists;
         let fresh;
         if (base) {

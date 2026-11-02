@@ -1112,6 +1112,18 @@ class SuperRes {
     this.level = 'mid'; this.hdr = false; this.alive = true; this.ow = 0; this.oh = 0; this.crop = [0, 0, 1, 1];
     this.frames = 0; this.lastT = -1; this.dirty = true; this.bad = 0; this.retestAt = 0; this.idle = 0;
     this.c.style.visibility = 'hidden';
+    // Видеокарта может сбросить холст (WebGL context lost): много холстов на странице (Liquid Player открыли-закрыли,
+    // сменили качество), сброс драйвера. Сброшенный холст Chromium рисует белым квадратом поверх видео — прячем его,
+    // пишем в журнал и пересоздаём слой; три сброса подряд на одном видео — оставляем обычное видео
+    this.c.addEventListener('webglcontextlost', (e) => {
+      if (!this.alive) return; // это мы сами освободили холст
+      e.preventDefault();
+      this.c.style.visibility = 'hidden';
+      const n = (vt.lostN.get(this.v) || 0) + 1; vt.lostN.set(this.v, n);
+      console.warn(`[liquid] Liquid RTX: видеокарта сбросила холст слоя (${n}-й раз) — ${n <= 3 ? 'пересоздаю' : 'показываю обычное видео'}`);
+      const v0 = this.v; this.destroy();
+      if (n <= 3) setTimeout(srSync, 800); else vt.skip.set(v0, 'lost');
+    });
     v.insertAdjacentElement('afterend', this.c);
     this.ro = new ResizeObserver(() => this.place()); this.ro.observe(v);
     this.posT = setInterval(() => { if (!document.hidden) this.place(); }, 700); // свёрнутую вкладку не пересчитываем
@@ -1267,6 +1279,7 @@ class SuperRes {
   destroy() { if (!this.alive) return; this.alive = false; clearInterval(this.posT); clearInterval(this.perfT); clearTimeout(this.uiT); this.ro.disconnect(); this.c.remove(); this.eng.destroy(); vt.srMap.delete(this.v); }
 }
 vt.srMap = new Map();
+vt.lostN = new WeakMap(); // сколько раз видеокарта сбрасывала холст слоя на этом видео
 vt.skip = new WeakMap(); // видео, которые не улучшаем: 'drm' — защищённое, 'ui' — улучшение закрыло бы кнопки плеера
 // Кнопки и подписи плеера поверх видео (YouTube Shorts и др.). Наш слой и фильтр поднимают видео в порядке
 // отрисовки, и элементы плеера, у которых нет своего слоя, оказываются под ним — интерфейс «пропадает».
@@ -1992,6 +2005,18 @@ async function ytBest() {
   const best = yq.list.find((x) => x !== 'auto');
   if (best && best !== yq.cur) lpSetQuality(best);
 }
+// Проверка «страница загрузилась, но сломана» — для журнала: такие поломки не дают ошибок (блокировщик отрезал
+// стили или скрипты сайта, сайт не дорисовался). Через 6 с после загрузки: стили, которые не загрузились,
+// и страница без текста и картинок
+if (!IS_FRAME && /^https?:$/.test(location.protocol)) window.addEventListener('load', () => setTimeout(() => {
+  try {
+    const bad = [...document.querySelectorAll('link[rel~="stylesheet"]')].filter((l) => l.href && !l.disabled && !l.sheet);
+    if (bad.length) console.warn(`[liquid] ${location.hostname}: не загрузились стили сайта (${bad.length}): ${bad.slice(0, 3).map((l) => { try { const u = new URL(l.href); return u.hostname + u.pathname.slice(0, 50); } catch { return l.href.slice(0, 60); } }).join(', ')} — страница может выглядеть сломанной (блокировщик или сеть)`);
+    const text = ((document.body && document.body.innerText) || '').trim().length;
+    if (document.body && text < 20 && document.querySelectorAll('img,video,canvas,svg,iframe').length < 3) console.warn(`[liquid] ${location.hostname}: страница загрузилась, но пустая — скорее всего, не загрузились скрипты сайта (блокировщик или сеть)`);
+  } catch {}
+}, 6000), { once: true });
+
 // Подсветка под видео: окно браузера подстраивается под цвета ролика (как «атмосфера» на YouTube).
 // Раз в полсекунды кадр уменьшается до 32×18 на видеокарте (без копии 4K-кадра в память), считаем цвет углов
 // и всего кадра. Только верхняя страница, только большое видео на экране; на паузе подсветка остаётся
@@ -2143,6 +2168,8 @@ function lpOpen(v, fromFs) {
   lpBuild(); if (!lp.host) return;
   // свежий холст на каждое открытие: у закрытого плеера контекст видеокарты освобождён, второй раз его не получить
   const cv = document.createElement('canvas'); lp.cv.replaceWith(cv); lp.cv = cv;
+  // холст плеера сброшен видеокартой — не оставляем белый экран: закрываем плеер, остаётся видео сайта
+  cv.addEventListener('webglcontextlost', (e) => { if (!lp.open || lp.cv !== cv) return; e.preventDefault(); console.warn('[liquid] Liquid Player: видеокарта сбросила холст — закрываю плеер'); lpClose(); });
   try { lp.eng = new RtxEngine(lp.cv); } catch (e) { toHost({ type: 'videoErr', error: 'нет WebGL — Liquid Player не может рисовать видео' }); return; }
   lp.v = v; lp.open = true; lp.fromFs = !!fromFs; lp.perf = new RtxPerf(); lp.used = ''; lp.slow = false; lp.last = -1; lp.dirty = true; lp.frames = 0; lp.split = 0;
   lp.root.querySelector('.err').classList.remove('on');
