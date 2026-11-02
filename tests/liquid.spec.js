@@ -267,7 +267,7 @@ test('Liquid Player: свой плеер на весь экран рисует �
   await inTabGesture(`document.dispatchEvent(new CustomEvent('liquid:player'))`);
   await expect.poll(() => inTab(`!!document.querySelector('lq-player')`)).toBe(true);
   await expect.poll(() => inTab(`document.fullscreenElement ? document.fullscreenElement.tagName : ''`)).toBe('LQ-PLAYER');
-  if (caps.gl2) await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 40_000 }).toMatch(caps.fbf ? /^(pro|net)$/ : /^r2$/);
+  if (caps.gl2) await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 40_000 }).toMatch(caps.fbf ? /^(pro|net|anime)$/ : /^r2$/);
   // видео сайта продолжает идти под нашим плеером
   const t0 = await inTab(`document.getElementById('v').currentTime`);
   await win.waitForTimeout(1200);

@@ -946,14 +946,15 @@ class RtxEngine {
     if (!this.gl2) return null;
     if (this.cap >= 3 && this.fbf) {
       const order = content === 'anime' ? ['anime', 'net'] : this.cap >= 4 ? ['pro', 'net'] : ['net'];
-      let i = 0;
-      for (; i < order.length; i++) {
-        const n = order[i]; this.loadNet(n);
+      // лучшая готовая из списка; пока лучшая собирается — рисует следующая готовая (а не FSR)
+      let wait = false;
+      for (const n of order) {
+        this.loadNet(n);
         const N = this.nets[n];
-        if (N === undefined) return null;                 // веса ещё идут из main
         if (N && this.netReady(N)) return N;
-        if (N && !N.bad) return null;                     // собирается
+        if (N === undefined || (N && !N.bad)) wait = true; // веса ещё идут из main или шейдер собирается
       }
+      if (wait) return null;
     }
     if (this.cap >= 1) {
       const want = level === 'max' && this.cap >= 2 ? 'r3' : 'r2';
