@@ -8,7 +8,9 @@ const { spawn, execFile } = require('child_process');
 
 const PY_VER = '3.12.10';
 const PY_URL = `https://www.python.org/ftp/python/${PY_VER}/python-${PY_VER}-embed-amd64.zip`;
-const PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
+// pip — готовый wheel (это zip) закреплённой версии: распаковываем прямо в site-packages. get-pip.py не берём:
+// его новые версии отказываются ставить pip во встроенный Python на Windows («To modify pip, please run…»)
+const PIP_URL = 'https://files.pythonhosted.org/packages/py3/p/pip/pip-24.3.1-py3-none-any.whl';
 const SETUP_V = '1'; // поменять — поставится заново
 const NETS = { pro: 'liquid-rtx-pro.json', lite: 'liquid-rtx.json', anime: 'liquid-rtx-anime.json' };
 
@@ -76,8 +78,10 @@ class RtxTrain {
     if (!pth) throw new Error('не тот архив Python');
     fs.writeFileSync(path.join(pyDir, pth), fs.readFileSync(path.join(pyDir, pth), 'utf8').replace(/^#\s*import site/m, 'import site') + '\nLib\\site-packages\n');
     this.set('setup', 'Ставлю pip…', 5);
-    const gp = path.join(this.dir, 'get-pip.py');
-    await this.retry(async () => { await this.download(PIP_URL, gp, 'pip'); await this.run(this.py, [gp, '--no-warn-script-location']); });
+    const site = path.join(pyDir, 'Lib', 'site-packages'); fs.mkdirSync(site, { recursive: true });
+    const whl = path.join(this.dir, 'pip.whl');
+    await this.retry(async () => { await this.download(PIP_URL, whl, 'pip'); await this.run('tar', ['-xf', whl, '-C', site]); await this.run(this.py, ['-m', 'pip', '--version']); });
+    fs.rmSync(whl, { force: true });
     this.set('setup', 'Скачиваю PyTorch (~2,5 ГБ, один раз)…', 10);
     await this.retry(() => this.run(this.py, ['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', 'torch', '--index-url', this.torchIndex], (l) => {
       const m = l.match(/Downloading (\S+?)-[\d.]+.*\(([\d.]+ [kMG]B)\)/); if (m) this.set('setup', `Скачиваю ${m[1]} (${m[2]})…`);
