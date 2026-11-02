@@ -155,12 +155,21 @@
 
   // ================= Подсветка под видео =================
   // цвета приходят от вкладки (webview-preload.js), показываем цвета открытой вкладки
+  let ambCur = '', ambLayer = 0, ambAt = 0, ambT = 0;
   function ambApply(tab) {
     const c = settings.ambient !== false && tab && tab.amb;
-    if (!c) { document.body.classList.remove('amb'); return; }
-    const r = document.documentElement.style;
-    c.forEach((x, i) => r.setProperty('--a' + i, `rgb(${x[0]}, ${x[1]}, ${x[2]})`));
+    if (!c) { document.body.classList.remove('amb'); ambCur = ''; return; }
     document.body.classList.add('amb');
+    const key = c.join(';');
+    if (key === ambCur) return;
+    // не чаще раза в 1,6 с (пока идёт прошлый переход) — последние цвета применятся следом
+    const wait = ambAt + 1600 - Date.now();
+    if (wait > 0) { clearTimeout(ambT); ambT = setTimeout(() => ambApply(active), wait); return; }
+    ambCur = key; ambAt = Date.now();
+    const L2 = document.querySelectorAll('#amb i'); if (L2.length < 2) return;
+    const next = L2[ambLayer ^= 1], prev = L2[ambLayer ^ 1];
+    c.forEach((x, i) => next.style.setProperty('--a' + i, `rgb(${x[0]}, ${x[1]}, ${x[2]})`));
+    requestAnimationFrame(() => { next.classList.add('on'); prev.classList.remove('on'); });
   }
   const prevActAmb = window.onTabActivated;
   window.onTabActivated = (tab) => { if (prevActAmb) prevActAmb(tab); ambApply(tab); };

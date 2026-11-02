@@ -423,7 +423,7 @@ test('подсветка под видео: окно окрашивается в
   await openUrl(`${base}/video.html`);
   await expect.poll(() => vt('v.currentTime').catch(() => 0), { timeout: 15_000 }).toBeGreaterThan(0.3);
   await expect.poll(() => win.evaluate(() => document.body.classList.contains('amb')), { timeout: 15_000 }).toBe(true);
-  expect(await win.evaluate(() => document.documentElement.style.getPropertyValue('--a0'))).toMatch(/^rgb\(/);
+  await expect.poll(() => win.evaluate(() => { const l = document.querySelector('#amb i.on'); return l ? l.style.getPropertyValue('--a0') : ''; })).toMatch(/^rgb\(/);
   // выключили в настройках — подсветка гаснет
   await win.evaluate(() => { const s = document.getElementById('ambient'); s.checked = false; s.dispatchEvent(new Event('change')); });
   await expect.poll(() => win.evaluate(() => document.body.classList.contains('amb'))).toBe(false);

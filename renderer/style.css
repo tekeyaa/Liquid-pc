@@ -35,21 +35,18 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
     radial-gradient(30vw 30vw at 80% 105%, rgba(236,72,153,.28), transparent 60%),
     var(--bg); }
 #bg i { display: none; }
-/* подсветка под видео: цвета углов кадра (webview-preload.js), плавно перетекают — @property даёт переход цвета */
-@property --a0 { syntax: '<color>'; inherits: true; initial-value: #07070d; }
-@property --a1 { syntax: '<color>'; inherits: true; initial-value: #07070d; }
-@property --a2 { syntax: '<color>'; inherits: true; initial-value: #07070d; }
-@property --a3 { syntax: '<color>'; inherits: true; initial-value: #07070d; }
-@property --a4 { syntax: '<color>'; inherits: true; initial-value: #07070d; }
-#amb { position: fixed; inset: 0; z-index: 0; opacity: 0; pointer-events: none;
-  transition: opacity 1.2s var(--ease), --a0 1.4s linear, --a1 1.4s linear, --a2 1.4s linear, --a3 1.4s linear, --a4 1.4s linear;
+/* подсветка под видео: цвета углов кадра (webview-preload.js). Два слоя по очереди: новые цвета рисуются в скрытый
+   слой один раз, дальше только плавная смена прозрачности — её делает видеокарта, окно не перерисовывается */
+#amb { position: fixed; inset: 0; z-index: 0; opacity: 0; pointer-events: none; transition: opacity 1.2s var(--ease); }
+body.amb #amb { opacity: 1; }
+#amb i { position: absolute; inset: 0; opacity: 0; transition: opacity 1.6s linear; will-change: opacity;
   background:
     radial-gradient(75vw 70vh at 0% 0%, var(--a1), transparent 72%),
     radial-gradient(75vw 70vh at 100% 0%, var(--a2), transparent 72%),
     radial-gradient(75vw 80vh at 0% 100%, var(--a3), transparent 72%),
     radial-gradient(75vw 80vh at 100% 100%, var(--a4), transparent 72%),
     color-mix(in srgb, var(--a0) 70%, #000); }
-body.amb #amb { opacity: 1; }
+#amb i.on { opacity: 1; }
 
 /* ---------- стекло ---------- */
 .glass {
