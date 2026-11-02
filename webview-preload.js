@@ -852,6 +852,13 @@ class RtxEngine {
     this.ravu = {}; this.ravuReq = {}; this.nets = {}; this.netReq = {}; this.nb = null;
     // смешивание с прошлым кадром (temporal) проверено и выключено: на медленном движении по текстуре давало шлейф
     this.cap = 4; this.used = ''; this.ow = 0; this.oh = 0; this.cfl = 1; this.temporal = 0;
+    // Видеокарты нет — рисует процессор (SwiftShader, llvmpipe, «Базовый видеоадаптер»): шейдеры большой сети Pro
+    // там собираются минуту и на это время подвешивают отрисовку всего браузера. Тогда — не выше лёгкой сети
+    try {
+      const ri = gl.getExtension('WEBGL_debug_renderer_info');
+      const name = String(gl.getParameter(ri ? ri.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || '');
+      if (/swiftshader|llvmpipe|softpipe|basic render|microsoft basic/i.test(name)) { this.soft = true; this.cap = 3; }
+    } catch {}
     this.mem = { out: 0, net: 0 }; this.netFrames = 0; this.cfEps = 0.0004;
   }
   tex(filter) {
