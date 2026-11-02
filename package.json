@@ -21,6 +21,8 @@
       "preload.js",
       "webview-preload.js",
       "main/**/*",
+      "tools/rtx/gpu/train_gpu.py",
+      "tools/rtx/gpu/rtxfmt.py",
       "vpn.js",
       "renderer/**/*"
     ],

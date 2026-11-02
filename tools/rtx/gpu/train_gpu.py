@@ -27,13 +27,14 @@ ap.add_argument('--lr', type=float, default=None, help='шаг обучения 
 ap.add_argument('--scratch', action='store_true')
 ap.add_argument('--init', default=None, help='с каких весов начать (json)')
 ap.add_argument('--resume', default=None, help='продолжить с .pt')
+ap.add_argument('--allow-cpu', action='store_true', help=argparse.SUPPRESS)   # только для проверки на машине без видеокарты
 ap.add_argument('--percept', type=float, default=0.0, help='вес «на глаз» (VGG), напр. 0.02: детальнее, но PSNR ниже — смотреть глазами')
 a = ap.parse_args()
 F, H, fname = NETS[a.net]
 os.makedirs(os.path.join(APPD, 'rtx'), exist_ok=True)
 OUT = a.out or os.path.join(APPD, 'rtx', fname)
-if not torch.cuda.is_available(): sys.exit('PyTorch не видит видеокарту (CUDA). Поставь torch с сайта pytorch.org для CUDA — см. README.')
-dev = torch.device('cuda')
+if not torch.cuda.is_available() and not a.allow_cpu: sys.exit('PyTorch не видит видеокарту (CUDA): обнови драйвер NVIDIA.')
+dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.backends.cudnn.benchmark = True
 L = H + 2; M = L + 1; dims = [1] + [F] * (L - 1) + [4]
 
@@ -162,11 +163,11 @@ try:
     for it in range(it0 + 1, a.steps + 1):
         for g in opt.param_groups: g['lr'] = lr0 * 0.5 * (1 + math.cos(math.pi * it / a.steps)) + 1e-6
         x, y = batch(a.batch)
-        with torch.autocast('cuda', dtype=torch.bfloat16):
+        with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == 'cuda'):
             o = net(x, P)
         loss = torch.sqrt((o - y) ** 2 + 1e-6).mean()
         if vgg is not None:
-            with torch.autocast('cuda', dtype=torch.bfloat16):
+            with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == 'cuda'):
                 loss = loss + a.percept * Fn.l1_loss(feat(o), feat(y))
         opt.zero_grad(set_to_none=True); loss.backward(); opt.step()
         run = loss.item() if run is None else 0.99 * run + 0.01 * loss.item()

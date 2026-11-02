@@ -30,8 +30,10 @@ const rtxNet = (n) => {
 };
 const os = require('os');
 const { RtxLearn } = require('./main/rtx-learn');
+const { RtxTrain } = require('./main/rtx-train');
 let game = null;
 let rtxLearn = null; // режим обучения Liquid RTX (main/rtx-learn.js)
+let rtxTrain = null; // обучение по кнопке: свой Python + PyTorch (main/rtx-train.js)
 
 // Автотесты (tests/): отдельная папка данных, чтобы тест не трогал настоящие настройки, вкладки и входы,
 // и программная отрисовка WebGL — у серверов GitHub нет видеокарты. Обычный запуск это не затрагивает.
@@ -1529,6 +1531,9 @@ function registerIpc() {
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
   ipcMain.handle('rtxlearn:add', (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
+  ipcMain.handle('rtxtrain:start', (_e, net) => (rtxTrain ? rtxTrain.start(String(net || 'pro')) : false));
+  ipcMain.handle('rtxtrain:stop', () => { if (rtxTrain) rtxTrain.stop(); });
+  ipcMain.handle('rtxtrain:state', () => (rtxTrain ? rtxTrain.state() : null));
   ipcMain.handle('rtxlearn:open', () => { if (!rtxLearn) return; fs.mkdirSync(rtxLearn.dir, { recursive: true }); shell.openPath(rtxLearn.dir); });
   ipcMain.handle('search:suggest', async (e, q) => {
     q = String(q || '').trim().slice(0, 120);
@@ -2123,6 +2128,10 @@ app.whenReady().then(async () => {
   adblock = new AdBlock(app.getPath('userData'));
   rtxLearn = new RtxLearn({ dir: path.join(app.getPath('userData'), 'rtx-learn'), partition: PARTITION, BrowserWindow, webContents, settings: loadSettings,
     log: (lv, src, msg) => diag.log(lv, src, msg), urlFor: TEST && process.env.LIQUID_LEARN_URL ? (id) => process.env.LIQUID_LEARN_URL.replace('{id}', id) : null });
+  rtxTrain = new RtxTrain({ dir: path.join(app.getPath('userData'), 'rtx-train'), scripts: path.join(__dirname, 'tools', 'rtx', 'gpu'), weights: path.join(__dirname, 'main', 'rtx'),
+    data: path.join(app.getPath('userData'), 'rtx-learn', 'data'), out: path.join(app.getPath('userData'), 'rtx'),
+    log: (lv, src, msg) => diag.log(lv, src, msg), onDone: () => rtxNetCache.clear() }); // новые веса — новым вкладкам
+  rtxLearn.pause = () => !!rtxTrain.busy; // пока учится — кадры не собираем (одна видеокарта)
   if (TEST && (process.env.LIQUID_PERF_NOADBLOCK || process.env.LIQUID_PERF_NOHOOKS)) adblock.init = async () => false; // замер скорости без блокировщика
   const st0 = loadSettings();
   adblock.enabled = st0.adblock !== false;
@@ -2221,7 +2230,7 @@ app.whenReady().then(async () => {
 
 });
 
-app.on('before-quit', () => { rtxLearn?.close(); if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); for (const r of watchRooms.values()) r.leave(true); try { globalShortcut.unregisterAll(); } catch {} });
+app.on('before-quit', () => { rtxLearn?.close(); rtxTrain?.stop(); if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); for (const r of watchRooms.values()) r.leave(true); try { globalShortcut.unregisterAll(); } catch {} });
 app.on('window-all-closed', () => { if (xray) xray.stop(); app.quit(); });
 
 // Одна копия приложения

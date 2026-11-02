@@ -277,13 +277,19 @@
     const s = await L.rtxLearn.status().catch(() => null); if (!s) return;
     const full = s.bytes >= s.budget;
     $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов готово ${s.done}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
-      (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место кончилось — можно учить (3-train.bat) или дать больше места' : '');
+      (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место кончилось — можно обучать или дать больше места' : '');
+    const t = await L.rtxLearn.trainState().catch(() => null); if (!t) return;
+    $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainNet').disabled = t.running;
+    $('#rtxTrainStat').textContent = t.msg || (t.ready ? 'Python и PyTorch уже стоят. Обучение — 30–60 минут, видео в это время может подтормаживать.'
+      : 'Нужна видеокарта NVIDIA. В первый раз браузер сам скачает Python и PyTorch (~3 ГБ). Обучение — 30–60 минут, видео в это время может подтормаживать.');
   }
-  setInterval(() => { if ($('#rtxLearnBox') && !$('#rtxLearnBox').hidden && $('#rtxLearnBox').offsetParent) learnStat(); }, 4000);
+  setInterval(() => { if ($('#rtxLearnBox') && !$('#rtxLearnBox').hidden && $('#rtxLearnBox').offsetParent) learnStat(); }, 2000);
   $('#rtxLearn').onchange = async (e) => { settings = await L.settings.set({ rtxLearn: e.target.checked }); renderSr(); pushVideoPrefs(); };
   $('#rtxLearnGb').onchange = async (e) => { settings = await L.settings.set({ rtxLearnGb: Number(e.target.value) }); renderSr(); };
   $('#rtxLinksAdd').onclick = async () => { const n = await L.rtxLearn.add($('#rtxLinks').value); $('#rtxLinks').value = ''; learnStat(); if (window.toast) window.toast(n ? `В очередь: ${n}` : 'Новых ссылок YouTube не нашлось'); };
   $('#rtxLearnOpen').onclick = () => L.rtxLearn.open();
+  $('#rtxTrainGo').onclick = async () => { await L.rtxLearn.train($('#rtxTrainNet').value); learnStat(); };
+  $('#rtxTrainStop').onclick = async () => { await L.rtxLearn.trainStop(); setTimeout(learnStat, 800); };
   $('#srLevel').addEventListener('click', async (e) => { const b = e.target.closest('button'); if (!b) return; settings = await L.settings.set({ superRes: b.dataset.v }); renderSr(); pushVideoPrefs(); });
   $('#srHdr').onchange = async (e) => { settings = await L.settings.set({ srHdr: e.target.checked }); pushVideoPrefs(); };
   $('#vidBar').onchange = async (e) => { settings = await L.settings.set({ vidBar: e.target.checked }); pushVideoPrefs(); };

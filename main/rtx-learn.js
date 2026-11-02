@@ -119,7 +119,7 @@ class RtxLearn {
     return this.webContents.getAllWebContents().some((wc) => wc !== this.wc && !wc.isDestroyed() && wc.isCurrentlyAudible && wc.isCurrentlyAudible());
   }
   tick() {
-    if (this.busy || !this.on() || this.watching() || this.bytes() >= this.budget()) return;
+    if (this.busy || !this.on() || (this.pause && this.pause()) || this.watching() || this.bytes() >= this.budget()) return;
     const it = this.q.find((x) => x.st === 'new'); if (!it) return;
     this.busy = this.run(it).catch((e) => { it.why = String(e && e.message || e).slice(0, 160); if (/^прервано/.test(it.why) || this.stopped) return; it.tries++; if (it.tries >= 3) it.st = 'fail'; })
       .finally(() => { this.close(); this.busy = null; this.cur = ''; this.save(); });
@@ -146,7 +146,7 @@ class RtxLearn {
     const HR = [], LR = [], CID = []; let k8 = 0;
     for (let i = 0; i < ts.length; i++) {
       stop();
-      const r = await ex(`__lqLearn.grabHi(${i})`);
+      const r = await ex(`__lqLearn.grabHi(${i})`, 240000); // до 5 перемоток по 25 с (8K грузится дольше)
       if (r.err) { this.log('warn', 'Liquid RTX обучение', r.err); if (/вдвое/.test(r.err)) { it.st = 'skip'; it.why = r.err; return; } continue; }
       if (r.k === 4) k8 = 1;
       for (const p of r.pairs) { HR.push(Buffer.from(p.hr, 'base64')); LR.push(Buffer.from(p.lr, 'base64')); CID.push(i); }

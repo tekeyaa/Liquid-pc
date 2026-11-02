@@ -78,3 +78,16 @@ jobs:
           name: test-results
           path: test-results/
           retention-days: 7
+
+  # кнопка «Обучить» Liquid RTX: свой Python + PyTorch ставятся с нуля и учат на пробных данных (без видеокарты — на процессоре)
+  rtx-train:
+    if: github.ref != 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Обучение Liquid RTX из браузера
+        run: node tests/rtx-train.js

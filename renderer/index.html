@@ -316,8 +316,14 @@
               <button id="rtxLinksAdd" class="btn ghost sm" style="height:30px">В очередь</button>
               <span class="muted sm" style="margin-left:auto">Место под данные</span>
               <select id="rtxLearnGb" style="width:auto;padding:5px 8px"><option value="0.5">0,5 ГБ</option><option value="1">1 ГБ</option><option value="2">2 ГБ</option><option value="5">5 ГБ</option><option value="10">10 ГБ</option></select>
-              <button id="rtxLearnOpen" class="btn ghost sm" style="height:30px" title="Папка с собранными кадрами — её берёт 3-train.bat">Папка</button>
+              <button id="rtxLearnOpen" class="btn ghost sm" style="height:30px" title="Папка с собранными кадрами">Папка</button>
             </div>
+            <div class="row" style="margin-top:12px;gap:8px;align-items:center">
+              <select id="rtxTrainNet" style="width:auto;padding:5px 8px"><option value="pro">Сеть для видео</option><option value="anime">Сеть для аниме</option></select>
+              <button id="rtxTrainGo" class="btn primary sm" style="height:30px">Обучить</button>
+              <button id="rtxTrainStop" class="btn ghost sm" style="height:30px" hidden>Стоп</button>
+            </div>
+            <div id="rtxTrainStat" class="muted sm" style="margin-top:6px;line-height:1.5"></div>
           </div>
           <h4>Панель на видео</h4>
           <label class="switch-row"><span>Показывать панель при наведении на видео</span><input type="checkbox" id="vidBar" class="switch" /></label>
