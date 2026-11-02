@@ -75,6 +75,24 @@ function buildNodes(html) {
 }
 function setHTML(target, html) { target.replaceChildren(buildNodes(html)); }
 
+// ---------- 0. YouTube: 4K в 60 кадров ----------
+// YouTube отдаёт 60 кадров, только если браузер на вопрос «потянешь плавно?» (mediaCapabilities.decodingInfo) говорит «да».
+// Chromium отвечает по своей статистике пропущенных кадров в профиле — стоит ей хоть раз записать «не плавно»
+// (например, пока Liquid RTX собирал шейдеры), и YouTube навсегда режет 4K до 30 кадров. Для поддерживаемых форматов
+// отвечаем «плавно» — как и есть на любой видеокарте, которая этот формат декодирует
+if (/(^|\.)youtube\.com$/.test(location.hostname)) {
+  const fix = () => {
+    try {
+      const P = MediaCapabilities.prototype, orig = P.decodingInfo;
+      if (orig.__lq) return;
+      const f = function (cfg) { return orig.call(this, cfg).then((r) => (r && r.supported ? Object.assign({}, r, { smooth: true, powerEfficient: true }) : r)); };
+      f.__lq = true; P.decodingInfo = f;
+    } catch {}
+  };
+  if (contextBridge.executeInMainWorld) contextBridge.executeInMainWorld({ func: fix });
+  else webFrame.executeJavaScript(`(${fix.toString()})()`);
+}
+
 // ---------- 1. Google: «этот браузер может быть небезопасным» ----------
 const AUTH = /^(accounts\.google\.com|accounts\.youtube\.com|myaccount\.google\.com)$/;
 if (AUTH.test(location.hostname)) {
@@ -545,6 +563,7 @@ function videoCmd(m) {
     if (m.remember != null) vt.remember = !!m.remember;
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
+    if (m.amb != null) vt.amb = !!m.amb;
     if (m.srContent) vt.srContent = m.srContent;
     if (m.learn != null) vt.learn = !!m.learn;
     if (m.sr != null) { vt.sr = m.sr; vt.srHdr = !!m.srHdr; srSync(); if (lp.open) { lp.dirty = true; lpRender(); } }
@@ -1973,6 +1992,40 @@ async function ytBest() {
   const best = yq.list.find((x) => x !== 'auto');
   if (best && best !== yq.cur) lpSetQuality(best);
 }
+// Подсветка под видео: окно браузера подстраивается под цвета ролика (как «атмосфера» на YouTube).
+// Раз в полсекунды кадр уменьшается до 32×18 на видеокарте (без копии 4K-кадра в память), считаем цвет углов
+// и всего кадра. Только верхняя страница, только большое видео на экране; на паузе подсветка остаётся
+vt.amb = true;
+if (!IS_FRAME) toHost({ type: 'ambient', c: null }); // новая страница — прежняя подсветка вкладки больше не её
+let ambCv = null, ambKey = '', ambOn = false;
+const ambBad = new WeakSet();
+const ambTone = ([r, g, b]) => {   // ярче цвет, но не светлее середины — белый текст вкладок должен читаться
+  const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const k = Math.min(1.25, 95 / Math.max(y, 1));
+  return [r, g, b].map((c) => Math.round(Math.max(0, Math.min(255, (y + (c - y) * 1.35) * k)) / 4) * 4);
+};
+if (!IS_FRAME) setInterval(() => {
+  let v = vt.amb && !document.hidden ? mainVideo() : null;
+  if (v && (v.readyState < 2 || ambBad.has(v) || !v.videoWidth)) v = null;
+  if (v) {
+    const r = v.getBoundingClientRect();
+    const vis = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+    if (vis < innerWidth * innerHeight * 0.18) v = null;
+  }
+  if (!v) { if (ambOn) { ambOn = false; ambKey = ''; toHost({ type: 'ambient', c: null }); } return; }
+  if (v.paused) return; // на паузе — оставляем как было (и не включаем, если ещё не играло)
+  try {
+    if (!ambCv) { ambCv = document.createElement('canvas'); ambCv.width = 32; ambCv.height = 18; }
+    const cx = ambCv.getContext('2d');
+    cx.drawImage(v, 0, 0, 32, 18);
+    const d = cx.getImageData(0, 0, 32, 18).data;
+    const q = (x0, y0, x1, y1) => { let r = 0, g = 0, b = 0, n = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * 32 + x) * 4; r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; } return [r / n, g / n, b / n]; };
+    const c = [q(0, 0, 32, 18), q(0, 0, 13, 8), q(19, 0, 32, 8), q(0, 10, 13, 18), q(19, 10, 32, 18)].map(ambTone);
+    const key = c.join(';');
+    if (key !== ambKey) { ambKey = key; ambOn = true; toHost({ type: 'ambient', c }); }
+  } catch { ambBad.add(v); } // видео с чужого сайта без разрешения (CORS) — кадр не прочитать, подсветки не будет
+}, 500);
+
 // Режим обучения Liquid RTX: у ролика есть 1080p и 4K/8K — в очередь. Кадры нарежет фоновое окно браузера,
 // когда ни одна вкладка не играет звук (main/rtx-learn.js). Проверка раз в 7 с, только при включённом режиме
 const learnSeen = new Set();

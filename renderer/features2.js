@@ -153,9 +153,22 @@
     }
   };
 
+  // ================= Подсветка под видео =================
+  // цвета приходят от вкладки (webview-preload.js), показываем цвета открытой вкладки
+  function ambApply(tab) {
+    const c = settings.ambient !== false && tab && tab.amb;
+    if (!c) { document.body.classList.remove('amb'); return; }
+    const r = document.documentElement.style;
+    c.forEach((x, i) => r.setProperty('--a' + i, `rgb(${x[0]}, ${x[1]}, ${x[2]})`));
+    document.body.classList.add('amb');
+  }
+  const prevActAmb = window.onTabActivated;
+  window.onTabActivated = (tab) => { if (prevActAmb) prevActAmb(tab); ambApply(tab); };
+
   // ================= Сообщения со страниц =================
   const prevOnPage = window.onPageMsg;
   window.onPageMsg = (tab, m) => {
+    if (m.type === 'ambient') { tab.amb = m.c; if (tab === active) ambApply(tab); return; }
     if (m.type === 'reader') {
       tab.reading = m.state === 'on';
       if (m.state === 'none') toast('Не нашёл на странице статью для режима чтения');
@@ -258,7 +271,7 @@
   $('#gameMode').onchange = async (e) => { settings = await L.settings.set({ gameMode: e.target.checked }); };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, srContent: settings.srContent || 'auto', learn: !!settings.rtxLearn }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, srContent: settings.srContent || 'auto', learn: !!settings.rtxLearn, amb: settings.ambient !== false }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
@@ -266,6 +279,7 @@
     $('#vidBar').checked = settings.vidBar !== false;
     $('#lpAuto').checked = settings.lpAuto !== false;
     $('#srContent').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.srContent || 'auto')));
+    $('#ambient').checked = settings.ambient !== false;
     $('#rtxLearn').checked = !!settings.rtxLearn; $('#rtxLearnBox').hidden = !settings.rtxLearn;
     $('#rtxLearnGb').value = String(settings.rtxLearnGb || 1);
     learnStat();
@@ -284,6 +298,7 @@
       : 'Нужна видеокарта NVIDIA. В первый раз браузер сам скачает Python и PyTorch (~3 ГБ). Обучение — 30–60 минут, видео в это время может подтормаживать.');
   }
   setInterval(() => { if ($('#rtxLearnBox') && !$('#rtxLearnBox').hidden && $('#rtxLearnBox').offsetParent) learnStat(); }, 2000);
+  $('#ambient').onchange = async (e) => { settings = await L.settings.set({ ambient: e.target.checked }); pushVideoPrefs(); ambApply(active); };
   $('#rtxLearn').onchange = async (e) => { settings = await L.settings.set({ rtxLearn: e.target.checked }); renderSr(); pushVideoPrefs(); };
   $('#rtxLearnGb').onchange = async (e) => { settings = await L.settings.set({ rtxLearnGb: Number(e.target.value) }); renderSr(); };
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
