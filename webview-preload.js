@@ -1053,7 +1053,7 @@ class RtxPerf {
 // Раз в 4 с уменьшаем кадр до 160×90 и считаем долю «ровных» точек (без тёмных — ночь и полосы не в счёт).
 // Проверка на фото и рисунках: у съёмки 0,4–15 %, у рисованного 33–86 %. Решение меняем после 3 одинаковых ответов подряд.
 vt.srContent = 'auto';
-vt.animeNet = false; // сеть для рисованного ещё не обучена — до неё всё считаем «видео» и кадры не разглядываем
+vt.animeNet = true; // своя сеть для рисованного (main/rtx/liquid-rtx-anime.json)
 function contentOf(v) {
   if (!vt.animeNet) return 'video';
   if (vt.srContent === 'video' || vt.srContent === 'anime') return vt.srContent;
