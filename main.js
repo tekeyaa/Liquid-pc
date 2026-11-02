@@ -18,7 +18,14 @@ const RTX_FILES = { lite: 'liquid-rtx.json', pro: 'liquid-rtx-pro.json', anime: 
 const rtxNetCache = new Map();
 const rtxNet = (n) => {
   const f = RTX_FILES[n] || RTX_FILES.lite;
-  if (!rtxNetCache.has(f)) rtxNetCache.set(f, fs.promises.readFile(path.join(__dirname, 'main', 'rtx', f), 'utf8').then(JSON.parse).catch(() => null));
+  // свои веса (обученные tools/rtx/gpu) — в %APPDATA%\Liquid\rtx\ — важнее встроенных
+  const read = (p) => fs.promises.readFile(p, 'utf8').then(JSON.parse);
+  const sane = (j) => j && Array.isArray(j.dims) && Array.isArray(j.layers) && j.layers.length === j.dims.length - 1 && j.dims[0] === 1 && j.dims[j.dims.length - 1] === 4
+    && j.layers.every((l, i) => Array.isArray(l.w) && l.w.length === 9 * j.dims[i] && l.w.every((r) => Array.isArray(r) && r.length === j.dims[i + 1]) && Array.isArray(l.b) && l.b.length === j.dims[i + 1]);
+  if (!rtxNetCache.has(f)) rtxNetCache.set(f, read(path.join(app.getPath('userData'), 'rtx', f))
+    .then((j) => { if (!sane(j)) throw new Error('не тот формат'); console.log(`[liquid] Liquid RTX: свои веса ${f}`); return j; })
+    .catch((e) => { if (e.code !== 'ENOENT') console.warn(`[liquid] Liquid RTX: свои веса ${f} не подошли (${e.message}), беру встроенные`); return read(path.join(__dirname, 'main', 'rtx', f)); })
+    .catch(() => null));
   return rtxNetCache.get(f);
 };
 const os = require('os');
