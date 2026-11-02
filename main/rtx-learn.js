@@ -74,6 +74,25 @@ window.__lqLearn = {
 };
 return true; })()`;
 
+// Скрипт страницы плейлиста: id роликов из ytInitialData и продолжений (как при прокрутке)
+const PLAYLIST = `(async () => {
+const ids = new Set(); let token = null;
+const walk = (o) => { if (!o || typeof o !== 'object') return;
+  if (o.playlistVideoRenderer && o.playlistVideoRenderer.videoId) ids.add(o.playlistVideoRenderer.videoId);
+  if (o.continuationCommand && o.continuationCommand.token) token = o.continuationCommand.token;
+  for (const k in o) walk(o[k]); };
+for (let i = 0; i < 50 && !window.ytInitialData; i++) await new Promise((r) => setTimeout(r, 200));
+walk(window.ytInitialData);
+const key = window.ytcfg && ytcfg.get('INNERTUBE_API_KEY'), ctx = window.ytcfg && ytcfg.get('INNERTUBE_CONTEXT');
+for (let page = 0; token && key && ctx && page < 20 && ids.size < 1000; page++) {
+  const t = token; token = null;
+  const r = await fetch('/youtubei/v1/browse?prettyPrint=false&key=' + key, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: ctx, continuation: t }) });
+  if (!r.ok) break; walk(await r.json());
+}
+if (!ids.size) document.querySelectorAll('a[href*="watch?v="]').forEach((a) => { const m = a.href.match(/v=([\\w-]{11})/); if (m) ids.add(m[1]); });
+return [...ids];
+})()`;
+
 // .npy (numpy) без зависимостей
 function npy(dtype, shape, buf) {
   let h = `{'descr': '${dtype}', 'fortran_order': False, 'shape': (${shape.join(', ')}${shape.length === 1 ? ',' : ''}), }`;
@@ -106,9 +125,28 @@ class RtxLearn {
     if (this.q.some((x) => x.id === id)) return false;
     this.q.push({ id, title: String(title || '').slice(0, 120), from: from || 'link', st: 'new', tries: 0, at: Date.now() });
     if (this.q.length > 2000) this.q = this.q.filter((x) => x.st === 'new').slice(-2000);
-    this.save(); setTimeout(() => this.tick(), 3000); return true;
+    this.save(); const t = setTimeout(() => this.tick(), 3000); if (t.unref) t.unref(); return true;
   }
-  addText(text) { let n = 0; for (const s of String(text).split(/[\s,]+/)) if (this.add(s, '', 'link')) n++; return n; }
+  // ссылки по одной; ссылка на плейлист (…list=…) разворачивается во все его ролики
+  async addText(text) {
+    let n = 0;
+    for (const s of String(text).split(/[\s,]+/)) {
+      if (this.add(s, '', 'link')) n++;
+      const m = s.match(/[?&]list=([\w-]{10,})/);
+      if (m && !/^(RD|UL|LL|WL)/.test(m[1])) for (const id of await this.playlist(m[1]).catch((e) => { this.log('warn', 'Liquid RTX обучение', `плейлист: ${e.message}`); return []; })) if (this.add(id, '', 'playlist')) n++;
+    }
+    return n;
+  }
+  // ролики плейлиста: страница плейлиста в скрытом окне (с твоим входом в YouTube), дальше — тем же запросом,
+  // что делает сам YouTube при прокрутке (youtubei/v1/browse с продолжением), до 1000 роликов
+  async playlist(list) {
+    const w = new this.BrowserWindow({ show: false, width: 800, height: 600, webPreferences: { partition: this.partition, contextIsolation: true, sandbox: true, nodeIntegration: false } });
+    w.webContents.__lqLearn = true; w.webContents.setAudioMuted(true); w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    try {
+      await w.loadURL(this.urlFor('').replace(/watch\?v=.*$/, '') + 'playlist?list=' + list);
+      return await Promise.race([w.webContents.executeJavaScript(PLAYLIST, true), new Promise((_, no) => setTimeout(() => no(new Error('YouTube не ответил')), 120000))]);
+    } finally { try { w.destroy(); } catch {} }
+  }
   status() {
     const cnt = (st) => this.q.filter((x) => x.st === st).length;
     return { on: this.on(), queued: cnt('new'), done: cnt('done'), skipped: cnt('skip') + cnt('fail'), pairs: this.q.reduce((s, x) => s + (x.pairs || 0), 0),

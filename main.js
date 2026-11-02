@@ -1530,7 +1530,7 @@ function registerIpc() {
   // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
-  ipcMain.handle('rtxlearn:add', (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
+  ipcMain.handle('rtxlearn:add', async (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
   ipcMain.handle('rtxtrain:start', (_e, net) => (rtxTrain ? rtxTrain.start(String(net || 'pro')) : false));
   ipcMain.handle('rtxtrain:stop', () => { if (rtxTrain) rtxTrain.stop(); });
   ipcMain.handle('rtxtrain:state', () => (rtxTrain ? rtxTrain.state() : null));
