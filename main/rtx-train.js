@@ -84,7 +84,7 @@ class RtxTrain {
     fs.rmSync(whl, { force: true });
     this.set('setup', 'Скачиваю PyTorch (~2,5 ГБ, один раз)…', 10);
     await this.retry(() => this.run(this.py, ['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', 'torch', '--index-url', this.torchIndex], (l) => {
-      const m = l.match(/Downloading (\S+?)-[\d.]+.*\(([\d.]+ [kMG]B)\)/); if (m) this.set('setup', `Скачиваю ${m[1]} (${m[2]})…`);
+      const m = l.match(/Downloading (\S+?)-[\d.]+.*\(([\d.]+ [kMG]B)\)/); if (m) this.set('setup', `Скачиваю ${m[1].split('/').pop()} (${m[2]})…`);
       if (/^Installing collected/.test(l)) this.set('setup', 'Устанавливаю PyTorch…', 80);
     }));
     await this.retry(() => this.run(this.py, ['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', 'numpy']));
