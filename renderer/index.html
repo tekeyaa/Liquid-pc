@@ -322,10 +322,12 @@
             </div>
             <div class="row" style="margin-top:12px;gap:8px;align-items:center">
               <select id="rtxTrainNet" style="width:auto;padding:5px 8px"><option value="pro">Сеть для видео</option><option value="anime">Сеть для аниме</option></select>
+              <select id="rtxTrainHours" style="width:auto;padding:5px 8px" title="Сколько учить"><option value="0">~40 минут</option><option value="3">3 часа</option><option value="6">6 часов</option><option value="12">12 часов</option></select>
               <button id="rtxTrainGo" class="btn primary sm" style="height:30px">Обучить</button>
               <button id="rtxTrainStop" class="btn ghost sm" style="height:30px" hidden>Стоп</button>
             </div>
             <div id="rtxTrainStat" class="muted sm" style="margin-top:6px;line-height:1.5"></div>
+            <label class="switch-row" style="margin-top:6px"><span>Учить автоматически, когда место под данные заполнится<small class="muted sm" style="display:block;margin-top:2px">Сеть для видео, на выбранное время. Начнётся, когда не играет видео.</small></span><input type="checkbox" id="rtxAutoTrain" class="switch" /></label>
           </div>
           <h4>Панель на видео</h4>
           <label class="switch-row"><span>Показывать панель при наведении на видео</span><input type="checkbox" id="vidBar" class="switch" /></label>

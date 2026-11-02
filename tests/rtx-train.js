@@ -38,6 +38,11 @@ async function go(extra) {
   await go(['--allow-cpu', '--steps', '20', '--batch', '4']);                  // дообучение встроенной сети (ставит Python и PyTorch)
   if (!T.ready()) { console.error('::error::Python/PyTorch не отмечены как готовые'); process.exit(1); }
   await go(['--allow-cpu', '--steps', '30', '--batch', '4', '--scratch']);     // с нуля — файл весов пишется всегда
+  const t1 = Date.now();
+  await go(['--allow-cpu', '--hours', '0.005', '--batch', '4']);              // по времени (кнопки 3/6/12 часов): ~18 с
+  const dt = (Date.now() - t1) / 1000;
+  if (dt < 15 || dt > 120) { console.error(`::error::обучение по времени шло ${dt.toFixed(0)} с вместо ~18`); process.exit(1); }
+  console.log(`по времени: ${dt.toFixed(0)} с`);
   const f = path.join(out, 'liquid-rtx-pro.json');
   const j = JSON.parse(fs.readFileSync(f, 'utf8'));
   if (!sane(j) || j.F !== 24 || j.H !== 5) { console.error('::error::веса не того формата'); process.exit(1); }

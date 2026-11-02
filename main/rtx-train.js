@@ -98,7 +98,9 @@ class RtxTrain {
     for (const f of Object.values(NETS)) { const src = path.join(this.weights, f); if (fs.existsSync(src)) fs.writeFileSync(path.join(d, f), fs.readFileSync(src)); }
     return d;
   }
-  start(net = 'pro', extra = []) {
+  start(net = 'pro', extra = [], hours = 0) {
+    hours = [3, 6, 12].includes(Number(hours)) ? Number(hours) : 0;
+    if (hours) extra = [...extra, '--hours', String(hours)]; // учить заданное время, а не ~40 минут
     if (this.busy) return false;
     if (!NETS[net]) net = 'pro';
     this.stopping = false; this.result = null;
@@ -113,7 +115,8 @@ class RtxTrain {
       await this.run(this.py, ['-u', path.join(d, 'train_gpu.py'), '--net', net, '--data', this.data, '--out', path.join(this.out, NETS[net]), ...extra], (l) => {
         let m;
         if ((m = l.match(/сеть в начале ([\d.]+)/))) v0 = +m[1];
-        if ((m = l.match(/^(\d+)\/(\d+) потери.*?осталось ~(\d+) мин/))) this.set('train', `Обучение: ${Math.round(m[1] / m[2] * 100)}%, осталось ~${m[3]} мин` + (best ? ` · лучше на ${(best - v0).toFixed(2).replace('.', ',')} дБ` : ''), m[1] / m[2] * 100);
+        const left = (min) => (min >= 90 ? `${Math.floor(min / 60)} ч ${min % 60} мин` : `${min} мин`);
+        if ((m = l.match(/^(\d+)\/(\d+) потери.*?осталось ~(\d+) мин/))) this.set('train', `Обучение${hours ? ` (${hours} ч)` : ''}: ${Math.round(m[1] / m[2] * 100)}%, осталось ~${left(+m[3])}` + (best ? ` · лучше на ${(best - v0).toFixed(2).replace('.', ',')} дБ` : ''), m[1] / m[2] * 100);
         if ((m = l.match(/проверка ([\d.]+) дБ/)) && v0 != null) best = Math.max(best || v0, +m[1]);
         if (/^В .* пока нет данных/.test(l)) this.set('train', l);
       });

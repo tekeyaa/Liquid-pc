@@ -21,7 +21,7 @@ contextBridge.exposeInMainWorld('liquid', {
     status: () => ipcRenderer.invoke('rtxlearn:status'),
     add: (text) => ipcRenderer.invoke('rtxlearn:add', text),
     open: () => ipcRenderer.invoke('rtxlearn:open'),
-    train: (net) => ipcRenderer.invoke('rtxtrain:start', net),
+    train: (net, hours) => ipcRenderer.invoke('rtxtrain:start', net, hours),
     trainStop: () => ipcRenderer.invoke('rtxtrain:stop'),
     trainState: () => ipcRenderer.invoke('rtxtrain:state'),
   },

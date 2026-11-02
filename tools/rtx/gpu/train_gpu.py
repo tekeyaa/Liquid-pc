@@ -22,6 +22,7 @@ APPD = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'Liquid'
 ap.add_argument('--data', nargs='+', default=[os.path.join(APPD, 'rtx-learn', 'data')])
 ap.add_argument('--out', default=None)
 ap.add_argument('--steps', type=int, default=100000)
+ap.add_argument('--hours', type=float, default=0, help='учить столько часов (вместо числа шагов): шаг обучения плавно спадает к концу срока')
 ap.add_argument('--batch', type=int, default=64)
 ap.add_argument('--patch', type=int, default=48, help='кусок кадра (LR) на один пример')
 ap.add_argument('--lr', type=float, default=None, help='шаг обучения (по умолчанию 2e-4 дообучение, 1e-3 с нуля)')
@@ -160,9 +161,13 @@ def save_pt(it):
 
 
 t0 = time.time(); run = None; it = it0
+TOTAL = a.hours * 3600
+def frac():  # какая часть обучения пройдена: по времени (--hours) или по шагам
+    return min(1.0, (time.time() - t0) / TOTAL) if TOTAL else min(1.0, it / a.steps)
 try:
-    for it in range(it0 + 1, a.steps + 1):
-        for g in opt.param_groups: g['lr'] = lr0 * 0.5 * (1 + math.cos(math.pi * it / a.steps)) + 1e-6
+    while frac() < 1:
+        it += 1
+        for g in opt.param_groups: g['lr'] = lr0 * 0.5 * (1 + math.cos(math.pi * frac())) + 1e-6
         x, y = batch(a.batch)
         with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == 'cuda'):
             o = net(x, P)
@@ -173,8 +178,10 @@ try:
         opt.zero_grad(set_to_none=True); loss.backward(); opt.step()
         run = loss.item() if run is None else 0.99 * run + 0.01 * loss.item()
         if it % 500 == 0:
-            eta = (time.time() - t0) / (it - it0) * (a.steps - it)
-            msg = f'{it}/{a.steps} потери {run:.5f}  осталось ~{eta / 60:.0f} мин'
+            el = time.time() - t0
+            if TOTAL: eta = max(0, TOTAL - el); tot = int(it / max(frac(), 1e-6))
+            else: eta = el / (it - it0) * (a.steps - it); tot = a.steps
+            msg = f'{it}/{tot} потери {run:.5f}  осталось ~{eta / 60:.0f} мин'
             if it % 2000 == 0:
                 v = validate()[0]
                 msg += f'  проверка {v:.2f} дБ (было {v0[0]:.2f})'

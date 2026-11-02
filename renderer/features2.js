@@ -291,6 +291,8 @@
     $('#ambient').checked = settings.ambient !== false;
     $('#rtxLearn').checked = !!settings.rtxLearn; $('#rtxLearnBox').hidden = !settings.rtxLearn;
     $('#rtxLearnGb').value = String(settings.rtxLearnGb || 1);
+    $('#rtxTrainHours').value = String(settings.rtxTrainHours || 0);
+    $('#rtxAutoTrain').checked = !!settings.rtxAutoTrain;
     learnStat();
   }
   // режим обучения Liquid RTX: очередь роликов и сколько уже собрано
@@ -302,7 +304,7 @@
     $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов готово ${s.done}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
       (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место кончилось — можно обучать или дать больше места' : '');
     const t = await L.rtxLearn.trainState().catch(() => null); if (!t) return;
-    $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainNet').disabled = t.running;
+    $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainNet').disabled = t.running; $('#rtxTrainHours').disabled = t.running;
     $('#rtxTrainStat').textContent = t.msg || (t.ready ? 'Python и PyTorch уже стоят. Обучение — 30–60 минут, видео в это время может подтормаживать.'
       : 'Нужна видеокарта NVIDIA. В первый раз браузер сам скачает Python и PyTorch (~3 ГБ). Обучение — 30–60 минут, видео в это время может подтормаживать.');
   }
@@ -313,7 +315,9 @@
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
     const n = await L.rtxLearn.add(txt); $('#rtxLinks').value = ''; learnStat(); if (window.toast) window.toast(n ? `В очередь: ${n}` : 'Новых ссылок YouTube не нашлось'); };
   $('#rtxLearnOpen').onclick = () => L.rtxLearn.open();
-  $('#rtxTrainGo').onclick = async () => { await L.rtxLearn.train($('#rtxTrainNet').value); learnStat(); };
+  $('#rtxTrainGo').onclick = async () => { await L.rtxLearn.train($('#rtxTrainNet').value, Number($('#rtxTrainHours').value)); learnStat(); };
+  $('#rtxTrainHours').onchange = async (e) => { settings = await L.settings.set({ rtxTrainHours: Number(e.target.value) }); };
+  $('#rtxAutoTrain').onchange = async (e) => { settings = await L.settings.set({ rtxAutoTrain: e.target.checked }); };
   $('#rtxTrainStop').onclick = async () => { await L.rtxLearn.trainStop(); setTimeout(learnStat, 800); };
   $('#srLevel').addEventListener('click', async (e) => { const b = e.target.closest('button'); if (!b) return; settings = await L.settings.set({ superRes: b.dataset.v }); renderSr(); pushVideoPrefs(); });
   $('#srHdr').onchange = async (e) => { settings = await L.settings.set({ srHdr: e.target.checked }); pushVideoPrefs(); };

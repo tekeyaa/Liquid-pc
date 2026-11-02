@@ -248,7 +248,7 @@ function publicSettings() {
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
-    ambient: s.ambient !== false, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
+    ambient: s.ambient !== false, rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
@@ -1457,6 +1457,8 @@ function registerIpc() {
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
     if ('ambient' in patch) s.ambient = !!patch.ambient;
+    if ('rtxAutoTrain' in patch) s.rtxAutoTrain = !!patch.rtxAutoTrain;
+    if ('rtxTrainHours' in patch) s.rtxTrainHours = [3, 6, 12].includes(Number(patch.rtxTrainHours)) ? Number(patch.rtxTrainHours) : 0;
     if ('rtxLearn' in patch) { s.rtxLearn = !!patch.rtxLearn; if (!s.rtxLearn && rtxLearn) rtxLearn.close(); }
     if ('rtxLearnGb' in patch) s.rtxLearnGb = Math.min(50, Math.max(0.2, Number(patch.rtxLearnGb) || 1));
     if ('srContent' in patch) s.srContent = ['auto', 'video', 'anime'].includes(patch.srContent) ? patch.srContent : 'auto';
@@ -1532,7 +1534,7 @@ function registerIpc() {
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
   ipcMain.handle('rtxlearn:add', async (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
-  ipcMain.handle('rtxtrain:start', (_e, net) => (rtxTrain ? rtxTrain.start(String(net || 'pro')) : false));
+  ipcMain.handle('rtxtrain:start', (_e, net, hours) => (rtxTrain ? rtxTrain.start(String(net || 'pro'), [], Number(hours) || 0) : false));
   ipcMain.handle('rtxtrain:stop', () => { if (rtxTrain) rtxTrain.stop(); });
   ipcMain.handle('rtxtrain:state', () => (rtxTrain ? rtxTrain.state() : null));
   ipcMain.handle('rtxlearn:open', () => { if (!rtxLearn) return; fs.mkdirSync(rtxLearn.dir, { recursive: true }); shell.openPath(rtxLearn.dir); });
@@ -2133,6 +2135,17 @@ app.whenReady().then(async () => {
     data: path.join(app.getPath('userData'), 'rtx-learn', 'data'), out: path.join(app.getPath('userData'), 'rtx'),
     log: (lv, src, msg) => diag.log(lv, src, msg), onDone: () => rtxNetCache.clear() }); // новые веса — новым вкладкам
   rtxLearn.pause = () => !!rtxTrain.busy; // пока учится — кадры не собираем (одна видеокарта)
+  // автообучение: место под данные заполнилось — учим сами (когда никто не смотрит видео и кадры не нарезаются).
+  // Учим один раз на каждый новый набор: пока данные те же (размер и число роликов), повторно не начинаем
+  setInterval(() => {
+    const st = loadSettings();
+    if (!st.rtxAutoTrain || !st.rtxLearn || rtxTrain.busy || rtxLearn.busy || rtxLearn.watching()) return;
+    const s = rtxLearn.status(); if (s.bytes < s.budget) return;
+    const key = `${s.bytes}:${s.done}`; if (st.rtxAutoKey === key) return;
+    st.rtxAutoKey = key; saveSettings(st);
+    diag.log('info', 'Liquid RTX обучение', `место под данные заполнено — автообучение${st.rtxTrainHours ? ` на ${st.rtxTrainHours} ч` : ''}`);
+    rtxTrain.start('pro', [], st.rtxTrainHours || 0);
+  }, 60_000).unref?.();
   if (TEST && (process.env.LIQUID_PERF_NOADBLOCK || process.env.LIQUID_PERF_NOHOOKS)) adblock.init = async () => false; // замер скорости без блокировщика
   const st0 = loadSettings();
   adblock.enabled = st0.adblock !== false;
