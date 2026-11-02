@@ -1534,7 +1534,7 @@ function registerIpc() {
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
   ipcMain.handle('rtxlearn:add', async (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
-  ipcMain.handle('rtxtrain:start', (_e, net, hours) => (rtxTrain ? rtxTrain.start(String(net || 'pro'), [], Number(hours) || 0) : false));
+  ipcMain.handle('rtxtrain:start', (_e, net, hours) => (rtxTrain ? rtxTrain.start(String(net || 'pro'), [], [3, 6, 12].includes(Number(hours)) ? Number(hours) : 0) : false));
   ipcMain.handle('rtxtrain:stop', () => { if (rtxTrain) rtxTrain.stop(); });
   ipcMain.handle('rtxtrain:state', () => (rtxTrain ? rtxTrain.state() : null));
   ipcMain.handle('rtxlearn:open', () => { if (!rtxLearn) return; fs.mkdirSync(rtxLearn.dir, { recursive: true }); shell.openPath(rtxLearn.dir); });

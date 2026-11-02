@@ -27,9 +27,9 @@ const T = new RtxTrain({ dir: path.join(root, 'train'), scripts: path.join(__dir
   data, out, torchIndex: 'https://download.pytorch.org/whl/cpu', log: (...a) => console.log(...a) });
 const sane = (j) => j && Array.isArray(j.dims) && Array.isArray(j.layers) && j.layers.length === j.dims.length - 1 && j.dims[0] === 1 && j.dims[j.dims.length - 1] === 4
   && j.layers.every((l, i) => l.w.length === 9 * j.dims[i] && l.w.every((r) => r.length === j.dims[i + 1]) && l.b.length === j.dims[i + 1]);
-async function go(extra) {
+async function go(extra, hours) {
   const t0 = Date.now(); let last = '';
-  T.start('pro', extra);
+  T.start('pro', extra, hours);
   while (T.busy) { await new Promise((r) => setTimeout(r, 1000)); const m = T.state().msg; if (m !== last) { console.log(`[${((Date.now() - t0) / 1000).toFixed(0)}с] ${m}`); last = m; } }
   const st = T.state(); console.log('итог:', st.phase, st.msg, '| последняя строка:', T.lastLine);
   if (st.phase !== 'done') { console.log(T.lastTail || ''); console.error('::error::обучение не дошло до конца:', st.msg); process.exit(1); }
@@ -38,11 +38,14 @@ async function go(extra) {
   await go(['--allow-cpu', '--steps', '20', '--batch', '4']);                  // дообучение встроенной сети (ставит Python и PyTorch)
   if (!T.ready()) { console.error('::error::Python/PyTorch не отмечены как готовые'); process.exit(1); }
   await go(['--allow-cpu', '--steps', '30', '--batch', '4', '--scratch']);     // с нуля — файл весов пишется всегда
+  // круги по времени (кнопки 3/6/12 ч): здесь срок 40 с и круги по 20 шагов — кругов должно быть несколько,
+  // каждый следующий — от лучшей версии прошлого; порог «меньше +0,1 дБ — стоп» здесь выключен
+  T.minGain = -1; T.minLeft = 0;
   const t1 = Date.now();
-  await go(['--allow-cpu', '--hours', '0.005', '--batch', '4']);              // по времени (кнопки 3/6/12 часов): ~18 с
+  await go(['--allow-cpu', '--steps', '20', '--batch', '4'], 40 / 3600);
   const dt = (Date.now() - t1) / 1000;
-  if (dt < 15 || dt > 120) { console.error(`::error::обучение по времени шло ${dt.toFixed(0)} с вместо ~18`); process.exit(1); }
-  console.log(`по времени: ${dt.toFixed(0)} с`);
+  if (!(T.result.rounds >= 2) || dt > 150) { console.error(`::error::круги: ${T.result.rounds}, ${dt.toFixed(0)} с`); process.exit(1); }
+  console.log(`круги: ${T.result.rounds} за ${dt.toFixed(0)} с`);
   const f = path.join(out, 'liquid-rtx-pro.json');
   const j = JSON.parse(fs.readFileSync(f, 'utf8'));
   if (!sane(j) || j.F !== 24 || j.H !== 5) { console.error('::error::веса не того формата'); process.exit(1); }
