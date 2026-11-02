@@ -23,3 +23,7 @@
 - План: `DATA=pairs2.npy python3 train.py 24 5 12000 liquid-rtx-pro.json` (большая сеть для сильных видеокарт)
   и `DATA=pairs_anime.npy python3 train.py 16 4 10000 liquid-rtx-anime.json`; браузер уже умеет их брать
   (main/rtx/liquid-rtx-pro.json, liquid-rtx-anime.json) — достаточно положить файлы и включить `vt.animeNet`.
+
+## Обучение на своей видеокарте
+`gpu/` — PyTorch-версия того же обучения для видеокарт NVIDIA и режим обучения браузера, который сам собирает пары
+«1080p → 4K/8K» с YouTube (`main/rtx-learn.js`). Инструкция — `gpu/README.md`.

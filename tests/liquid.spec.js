@@ -304,6 +304,20 @@ test('безопасный DNS включается и выключается в
   await expect.poll(() => win.evaluate(() => settings.dns)).toBe('auto');
 });
 
+test('режим обучения Liquid RTX: включается, берёт ссылки YouTube в очередь, выключается', async () => {
+  expect((await win.evaluate(() => window.liquid.rtxLearn.status())).on).toBe(false);
+  const flip = (on) => win.evaluate((v) => { const s = document.getElementById('rtxLearn'); s.checked = v; s.dispatchEvent(new Event('change')); }, on);
+  await flip(true);
+  await expect.poll(() => win.evaluate(() => window.liquid.rtxLearn.status().then((s) => s.on))).toBe(true);
+  // ссылка, она же короткой ссылкой (повтор), и мусор — в очереди одна
+  const n = await win.evaluate(() => window.liquid.rtxLearn.add('https://www.youtube.com/watch?v=aqz-KE-bpKQ&t=5 https://youtu.be/aqz-KE-bpKQ не-ссылка'));
+  await flip(false); // сразу выключаем: тест не должен ходить на YouTube
+  expect(n).toBe(1);
+  const st = await win.evaluate(() => window.liquid.rtxLearn.status());
+  expect(st.queued).toBe(1);
+  await expect.poll(() => win.evaluate(() => window.liquid.rtxLearn.status().then((s) => s.on))).toBe(false);
+  expect(await win.evaluate(() => document.getElementById('rtxLearnBox').hidden)).toBe(true);
+});
 test('«Почему не открылось?»: рабочий сайт — «отвечает нормально»', async () => {
   const r = await win.evaluate((u) => L.net.diagnose(u), `${base}/article.html`);
   expect(r.verdict).toContain('отвечает нормально');

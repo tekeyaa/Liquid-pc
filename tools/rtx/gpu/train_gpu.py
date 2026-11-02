@@ -1,10 +1,12 @@
-"""Обучение Liquid RTX на видеокарте (PyTorch + CUDA). Та же сеть, что в браузере, — веса встают в Liquid как есть.
-python train_gpu.py --net pro --data video.npz [ещё.npz ...] --out liquid-rtx-pro.json
+r"""Обучение Liquid RTX на видеокарте (PyTorch + CUDA). Та же сеть, что в браузере, — веса встают в Liquid как есть.
+python train_gpu.py --net pro [--data папка_или.npz ...]
 
-По умолчанию ДООБУЧАЕТ нынешнюю сеть (main/rtx/liquid-rtx-<сеть>.json или файл рядом) — так она не забудет
-старое и быстро подстроится под твои видео. --scratch — учить с нуля. Ctrl+C — остановить и сохранить.
+Данные по умолчанию — то, что собрал режим обучения браузера (%APPDATA%\Liquid\rtx-learn\data).
+Результат — сразу в %APPDATA%\Liquid\rtx\, откуда его берёт Liquid (перезапусти браузер).
+По умолчанию ДООБУЧАЕТ нынешнюю сеть (свою из %APPDATA%\Liquid\rtx, иначе встроенную) — так она не забудет
+старое и быстро подстроится под YouTube. --scratch — учить с нуля. Ctrl+C — остановить и сохранить.
 Сохраняется лучший вариант по проверочным кадрам (их сеть не видит), рядом — .pt для продолжения (--resume)."""
-import argparse, math, os, sys, time
+import argparse, glob, math, os, sys, time
 import numpy as np
 import torch
 import torch.nn as nn
@@ -15,7 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 NETS = {'pro': (24, 5, 'liquid-rtx-pro.json'), 'lite': (16, 4, 'liquid-rtx.json'), 'anime': (16, 4, 'liquid-rtx-anime.json')}
 ap = argparse.ArgumentParser()
 ap.add_argument('--net', choices=NETS, default='pro')
-ap.add_argument('--data', nargs='+', required=True)
+APPD = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'Liquid')
+ap.add_argument('--data', nargs='+', default=[os.path.join(APPD, 'rtx-learn', 'data')])
 ap.add_argument('--out', default=None)
 ap.add_argument('--steps', type=int, default=100000)
 ap.add_argument('--batch', type=int, default=64)
@@ -27,7 +30,8 @@ ap.add_argument('--resume', default=None, help='продолжить с .pt')
 ap.add_argument('--percept', type=float, default=0.0, help='вес «на глаз» (VGG), напр. 0.02: детальнее, но PSNR ниже — смотреть глазами')
 a = ap.parse_args()
 F, H, fname = NETS[a.net]
-OUT = a.out or os.path.join(HERE, fname)
+os.makedirs(os.path.join(APPD, 'rtx'), exist_ok=True)
+OUT = a.out or os.path.join(APPD, 'rtx', fname)
 if not torch.cuda.is_available(): sys.exit('PyTorch не видит видеокарту (CUDA). Поставь torch с сайта pytorch.org для CUDA — см. README.')
 dev = torch.device('cuda')
 torch.backends.cudnn.benchmark = True
@@ -51,7 +55,7 @@ class Net(nn.Module):
 
 
 net = Net().to(dev)
-init = a.init or next((p for p in (os.path.join(HERE, fname), os.path.join(HERE, '..', '..', '..', 'main', 'rtx', fname)) if os.path.exists(p)), None)
+init = a.init or next((p for p in (os.path.join(APPD, 'rtx', fname), os.path.join(HERE, fname), os.path.join(HERE, '..', '..', '..', 'main', 'rtx', fname)) if os.path.exists(p)), None)
 if not a.scratch and not a.resume:
     if not init: sys.exit(f'Нет {fname} для дообучения — положи его рядом или учи с нуля: --scratch')
     F0, H0, d0, layers = rtxfmt.load(init)
@@ -65,12 +69,29 @@ start = {k: v.clone() for k, v in net.state_dict().items()}
 
 # данные — целиком на видеокарте (float16): 1000 кусочков 512² — около 1 ГБ
 HR, LR, VAL = [], [], []
-for p in a.data:
+def load_data(p):
+    """npz (HR, LR, CID в float16) или папка режима обучения браузера: <ролик>_hr.npy, _lr.npy, _cid.npy (uint16)."""
+    if os.path.isdir(p):
+        fs = sorted(glob.glob(os.path.join(p, '*_hr.npy')))
+        if not fs: sys.exit(f'В {p} пока нет данных: включи «Режим обучения» в настройках Liquid RTX и посмотри ролики с 4K.')
+        hr, lr, cid = [], [], []
+        for k, f in enumerate(fs):
+            b = f[:-7]
+            try: h, l, c = np.load(f), np.load(b + '_lr.npy'), np.load(b + '_cid.npy')
+            except Exception as e: print('пропуск', os.path.basename(b), e); continue
+            if len(h) != len(l) or len(h) != len(c): continue
+            hr.append((h / 65535).astype(np.float16)); lr.append((l / 65535).astype(np.float16)); cid.append(c.astype(np.int64) + 1000 * k)
+        print(p, 'роликов', len(hr))
+        return np.concatenate(hr), np.concatenate(lr), np.concatenate(cid)
     d = np.load(p)
-    cid = d['CID'] if 'CID' in d else np.arange(len(d['HR']))
-    tr, va = cid % 23 != 0, cid % 23 == 0
-    HR.append(torch.from_numpy(d['HR'][tr]).to(dev)); LR.append(torch.from_numpy(d['LR'][tr]).to(dev))
-    VAL.append((torch.from_numpy(d['HR'][va][:48]).to(dev), torch.from_numpy(d['LR'][va][:48]).to(dev)))
+    return d['HR'], d['LR'], (d['CID'] if 'CID' in d else np.arange(len(d['HR'])))
+for p in a.data:
+    dH, dL, cid = load_data(p)
+    va = (cid * 2654435761 % 2 ** 32) % 23 == 0      # каждое ~23-е место — на проверку (сеть его не видит)
+    if not va.any(): va[::23] = True
+    tr = ~va
+    HR.append(torch.from_numpy(dH[tr]).to(dev)); LR.append(torch.from_numpy(dL[tr]).to(dev))
+    VAL.append((torch.from_numpy(dH[va][:48]).to(dev), torch.from_numpy(dL[va][:48]).to(dev)))
     print(p, 'пар', int(tr.sum()), '+ проверка', int(va.sum()))
 cnt = np.array([len(x) for x in LR], float)
 P = a.patch; S = P + 2 * M

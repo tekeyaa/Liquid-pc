@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld('liquid', {
     open: (url, x, y) => ipcRenderer.send('win:new', { url, x, y }),
     onPromote: on('win:promote'),
   },
+  rtxLearn: {
+    status: () => ipcRenderer.invoke('rtxlearn:status'),
+    add: (text) => ipcRenderer.invoke('rtxlearn:add', text),
+    open: () => ipcRenderer.invoke('rtxlearn:open'),
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch) => ipcRenderer.invoke('settings:set', patch),

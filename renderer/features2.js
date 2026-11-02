@@ -258,7 +258,7 @@
   $('#gameMode').onchange = async (e) => { settings = await L.settings.set({ gameMode: e.target.checked }); };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, srContent: settings.srContent || 'auto' }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, srContent: settings.srContent || 'auto', learn: !!settings.rtxLearn }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
@@ -266,7 +266,24 @@
     $('#vidBar').checked = settings.vidBar !== false;
     $('#lpAuto').checked = settings.lpAuto !== false;
     $('#srContent').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.srContent || 'auto')));
+    $('#rtxLearn').checked = !!settings.rtxLearn; $('#rtxLearnBox').hidden = !settings.rtxLearn;
+    $('#rtxLearnGb').value = String(settings.rtxLearnGb || 1);
+    learnStat();
   }
+  // режим обучения Liquid RTX: очередь роликов и сколько уже собрано
+  const mb = (b) => (b >= 2 ** 30 ? (b / 2 ** 30).toFixed(1).replace('.', ',') + ' ГБ' : Math.round(b / 2 ** 20) + ' МБ');
+  async function learnStat() {
+    if (!settings.rtxLearn || !L.rtxLearn) return;
+    const s = await L.rtxLearn.status().catch(() => null); if (!s) return;
+    const full = s.bytes >= s.budget;
+    $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов готово ${s.done}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
+      (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место кончилось — можно учить (3-train.bat) или дать больше места' : '');
+  }
+  setInterval(() => { if ($('#rtxLearnBox') && !$('#rtxLearnBox').hidden && $('#rtxLearnBox').offsetParent) learnStat(); }, 4000);
+  $('#rtxLearn').onchange = async (e) => { settings = await L.settings.set({ rtxLearn: e.target.checked }); renderSr(); pushVideoPrefs(); };
+  $('#rtxLearnGb').onchange = async (e) => { settings = await L.settings.set({ rtxLearnGb: Number(e.target.value) }); renderSr(); };
+  $('#rtxLinksAdd').onclick = async () => { const n = await L.rtxLearn.add($('#rtxLinks').value); $('#rtxLinks').value = ''; learnStat(); if (window.toast) window.toast(n ? `В очередь: ${n}` : 'Новых ссылок YouTube не нашлось'); };
+  $('#rtxLearnOpen').onclick = () => L.rtxLearn.open();
   $('#srLevel').addEventListener('click', async (e) => { const b = e.target.closest('button'); if (!b) return; settings = await L.settings.set({ superRes: b.dataset.v }); renderSr(); pushVideoPrefs(); });
   $('#srHdr').onchange = async (e) => { settings = await L.settings.set({ srHdr: e.target.checked }); pushVideoPrefs(); };
   $('#vidBar').onchange = async (e) => { settings = await L.settings.set({ vidBar: e.target.checked }); pushVideoPrefs(); };

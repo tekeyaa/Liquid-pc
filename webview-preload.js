@@ -546,6 +546,7 @@ function videoCmd(m) {
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
     if (m.srContent) vt.srContent = m.srContent;
+    if (m.learn != null) vt.learn = !!m.learn;
     if (m.sr != null) { vt.sr = m.sr; vt.srHdr = !!m.srHdr; srSync(); if (lp.open) { lp.dirty = true; lpRender(); } }
     return;
   }
@@ -1972,6 +1973,17 @@ async function ytBest() {
   const best = yq.list.find((x) => x !== 'auto');
   if (best && best !== yq.cur) lpSetQuality(best);
 }
+// Режим обучения Liquid RTX: у ролика есть 1080p и 4K/8K — в очередь. Кадры нарежет фоновое окно браузера,
+// когда ни одна вкладка не играет звук (main/rtx-learn.js). Проверка раз в 7 с, только при включённом режиме
+const learnSeen = new Set();
+if (!IS_FRAME && /(^|\.)youtube\.com$/.test(location.hostname)) setInterval(async () => {
+  if (!vt.learn || location.pathname !== '/watch') return;
+  const id = new URLSearchParams(location.search).get('v'); if (!id || learnSeen.has(id)) return;
+  const v = mainVideo(); if (!v || v.paused || v.currentTime < 3 || document.querySelector('#movie_player.ad-showing')) return;
+  const yq = await ytQualities(); if (!yq || !yq.list.length) return;
+  learnSeen.add(id);
+  if (yq.list.includes('hd1080') && (yq.list.includes('hd2160') || yq.list.includes('highres'))) ipcRenderer.send('rtx:seen', { id, title: document.title.replace(/ - YouTube$/, '') });
+}, 7000);
 // субтитры: YouTube рисует их своими элементами (под нашим плеером их не видно) — повторяем текст у себя;
 // у остальных сайтов — дорожки textTracks в режиме «показывать»
 const ytSkip = () => { const b = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern'); return b && b.offsetParent ? b : null; };

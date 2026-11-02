@@ -29,7 +29,9 @@ const rtxNet = (n) => {
   return rtxNetCache.get(f);
 };
 const os = require('os');
+const { RtxLearn } = require('./main/rtx-learn');
 let game = null;
+let rtxLearn = null; // режим обучения Liquid RTX (main/rtx-learn.js)
 
 // Автотесты (tests/): отдельная папка данных, чтобы тест не трогал настоящие настройки, вкладки и входы,
 // и программная отрисовка WebGL — у серверов GitHub нет видеокарты. Обычный запуск это не затрагивает.
@@ -244,6 +246,7 @@ function publicSettings() {
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
+    rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
@@ -321,7 +324,7 @@ function createWindow({ priv = false, extra = false, open = '', x, y, from = nul
     // главное окно закрыли, а дополнительные открыты — главным становится одно из них (оно и сохранит вкладки)
     win = BrowserWindow.getAllWindows().find((o) => !o.isDestroyed() && o.__extra) || null;
     if (win) { win.__extra = false; win.webContents.send('win:promote'); }
-    else if (mini && !mini.isDestroyed()) mini.close(); // без окон браузера видео поверх тоже закрываем
+    else { if (mini && !mini.isDestroyed()) mini.close(); rtxLearn?.close(); } // без окон браузера закрываем и видео поверх, и фоновое обучение
   });
   return w;
 }
@@ -378,6 +381,7 @@ app.on('web-contents-created', (_e, contents) => {
   contents.setMaxListeners(40); // вкладку слушают блокировщик, журнал и интерфейс — 10 по умолчанию мало
   // только объект события: обращение к старым позиционным аргументам Electron 45 отмечает в журнале как устаревшее
   contents.on('console-message', (ev) => {
+    if (contents.__lqLearn) return; // фоновое окно режима обучения — это YouTube, его сообщения не наши
     const level = String(ev.level || ''), message = ev.message, source = String(ev.sourceId || ''), ln = ev.lineNumber;
     if (level !== 'error' && level !== 'warning') return;
     const ours = contents.getType() !== 'webview' || /webview-preload/i.test(source) || String(message).startsWith('[liquid]');
@@ -1450,6 +1454,8 @@ function registerIpc() {
     if ('srHdr' in patch) s.srHdr = !!patch.srHdr;
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
+    if ('rtxLearn' in patch) { s.rtxLearn = !!patch.rtxLearn; if (!s.rtxLearn && rtxLearn) rtxLearn.close(); }
+    if ('rtxLearnGb' in patch) s.rtxLearnGb = Math.min(50, Math.max(0.2, Number(patch.rtxLearnGb) || 1));
     if ('srContent' in patch) s.srContent = ['auto', 'video', 'anime'].includes(patch.srContent) ? patch.srContent : 'auto';
     if ('adblock' in patch) { s.adblock = !!patch.adblock; if (adblock) adblock.enabled = s.adblock; }
     if ('adAllowToggle' in patch) {
@@ -1518,7 +1524,12 @@ function registerIpc() {
   });
   ipcMain.handle('sr:net', (_e, n) => rtxNet(String(n || 'lite')));
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
-  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto' }; });
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn }; });
+  // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
+  ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
+  ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
+  ipcMain.handle('rtxlearn:add', (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
+  ipcMain.handle('rtxlearn:open', () => { if (!rtxLearn) return; fs.mkdirSync(rtxLearn.dir, { recursive: true }); shell.openPath(rtxLearn.dir); });
   ipcMain.handle('search:suggest', async (e, q) => {
     q = String(q || '').trim().slice(0, 120);
     if (!q || e.sender.session !== ses || /^[a-z]+:\/\//i.test(q)) return [];
@@ -2110,6 +2121,8 @@ app.whenReady().then(async () => {
   await smart.start().catch(() => {});
   syncSmartLists();
   adblock = new AdBlock(app.getPath('userData'));
+  rtxLearn = new RtxLearn({ dir: path.join(app.getPath('userData'), 'rtx-learn'), partition: PARTITION, BrowserWindow, webContents, settings: loadSettings,
+    log: (lv, src, msg) => diag.log(lv, src, msg), urlFor: TEST && process.env.LIQUID_LEARN_URL ? (id) => process.env.LIQUID_LEARN_URL.replace('{id}', id) : null });
   if (TEST && (process.env.LIQUID_PERF_NOADBLOCK || process.env.LIQUID_PERF_NOHOOKS)) adblock.init = async () => false; // замер скорости без блокировщика
   const st0 = loadSettings();
   adblock.enabled = st0.adblock !== false;
@@ -2208,7 +2221,7 @@ app.whenReady().then(async () => {
 
 });
 
-app.on('before-quit', () => { if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); for (const r of watchRooms.values()) r.leave(true); try { globalShortcut.unregisterAll(); } catch {} });
+app.on('before-quit', () => { rtxLearn?.close(); if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); for (const r of watchRooms.values()) r.leave(true); try { globalShortcut.unregisterAll(); } catch {} });
 app.on('window-all-closed', () => { if (xray) xray.stop(); app.quit(); });
 
 // Одна копия приложения
