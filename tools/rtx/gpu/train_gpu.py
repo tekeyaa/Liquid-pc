@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as Fn
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # встроенный Python (кнопка «Обучить») папку скрипта сам не добавляет
 import rtxfmt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
