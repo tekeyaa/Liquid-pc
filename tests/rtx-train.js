@@ -32,7 +32,7 @@ async function go(extra) {
   T.start('pro', extra);
   while (T.busy) { await new Promise((r) => setTimeout(r, 1000)); const m = T.state().msg; if (m !== last) { console.log(`[${((Date.now() - t0) / 1000).toFixed(0)}с] ${m}`); last = m; } }
   const st = T.state(); console.log('итог:', st.phase, st.msg, '| последняя строка:', T.lastLine);
-  if (st.phase !== 'done') { console.error('::error::обучение не дошло до конца:', st.msg); process.exit(1); }
+  if (st.phase !== 'done') { console.log(T.lastTail || ''); console.error('::error::обучение не дошло до конца:', st.msg); process.exit(1); }
 }
 (async () => {
   await go(['--allow-cpu', '--steps', '20', '--batch', '4']);                  // дообучение встроенной сети (ставит Python и PyTorch)

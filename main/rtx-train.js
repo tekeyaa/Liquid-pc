@@ -42,8 +42,21 @@ class RtxTrain {
       const feed = (b) => { tail = (tail + b.toString('utf8')).slice(-4000); for (const l of b.toString('utf8').split(/\r?\n|\r/)) if (l.trim()) { this.lastLine = l.trim(); onLine && onLine(l.trim()); } };
       p.stdout.on('data', feed); p.stderr.on('data', feed);
       p.on('error', no);
-      p.on('close', (code) => { this.proc = null; if (code === 0) ok(tail); else no(new Error(this.stopping ? 'остановлено' : (tail.trim().split(/\r?\n/).pop() || `код ${code}`).slice(0, 300))); });
+      p.on('close', (code) => {
+        this.proc = null; this.lastTail = tail;
+        if (code === 0) return ok(tail);
+        // в сообщение — сама ошибка, а не последняя строка (pip в конце пишет подсказку, а не причину)
+        const lines = tail.trim().split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+        const why = [...lines].reverse().find((x) => /error|exception|не\s/i.test(x) && !/--force-reinstall/.test(x)) || lines.pop() || `код ${code}`;
+        no(new Error(this.stopping ? 'остановлено' : why.slice(0, 300)));
+      });
     });
+  }
+  // сеть бывает капризной: шаги установки повторяем до 3 раз
+  async retry(fn) {
+    for (let k = 1; ; k++) {
+      try { return await fn(); } catch (e) { if (this.stopping || k >= 3) throw e; this.log('warn', 'Liquid RTX обучение', `повтор ${k}: ${e.message}`); await new Promise((r) => setTimeout(r, 5000 * k)); }
+    }
   }
   hasNvidia() {
     if (process.platform !== 'win32') return Promise.resolve(true);
@@ -64,14 +77,13 @@ class RtxTrain {
     fs.writeFileSync(path.join(pyDir, pth), fs.readFileSync(path.join(pyDir, pth), 'utf8').replace(/^#\s*import site/m, 'import site') + '\nLib\\site-packages\n');
     this.set('setup', 'Ставлю pip…', 5);
     const gp = path.join(this.dir, 'get-pip.py');
-    await this.download(PIP_URL, gp, 'pip');
-    await this.run(this.py, [gp, '--no-warn-script-location']);
+    await this.retry(async () => { await this.download(PIP_URL, gp, 'pip'); await this.run(this.py, [gp, '--no-warn-script-location']); });
     this.set('setup', 'Скачиваю PyTorch (~2,5 ГБ, один раз)…', 10);
-    await this.run(this.py, ['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', 'torch', '--index-url', this.torchIndex], (l) => {
+    await this.retry(() => this.run(this.py, ['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', 'torch', '--index-url', this.torchIndex], (l) => {
       const m = l.match(/Downloading (\S+?)-[\d.]+.*\(([\d.]+ [kMG]B)\)/); if (m) this.set('setup', `Скачиваю ${m[1]} (${m[2]})…`);
       if (/^Installing collected/.test(l)) this.set('setup', 'Устанавливаю PyTorch…', 80);
-    });
-    await this.run(this.py, ['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', 'numpy']);
+    }));
+    await this.retry(() => this.run(this.py, ['-m', 'pip', 'install', '--no-warn-script-location', '--progress-bar', 'off', 'numpy']));
     fs.writeFileSync(path.join(pyDir, '.ready'), SETUP_V);
     this.log('info', 'Liquid RTX обучение', 'Python и PyTorch установлены');
   }
