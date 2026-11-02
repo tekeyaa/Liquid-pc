@@ -11,9 +11,11 @@ function buildAside(parts, oldHash) {
     let child;
     try { child = require('electron').utilityProcess.fork(path.join(__dirname, 'adblock-build.js'), [], { serviceName: 'Liquid — сборка блокировщика' }); }
     catch (e) { console.warn('adblock build process', e.message); done(null); return; }
-    const t = setTimeout(() => { try { child.kill(); } catch {} done(null); }, 60e3);
-    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(m.same ? { same: true, hash: m.hash } : { buf: new Uint8Array(m.buf), hash: m.hash }); else { console.warn('adblock build', m && m.error); done(null); } });
-    child.once('exit', () => { clearTimeout(t); done(null); });
+    // не успел или упал — НЕ собираем в основном процессе (это минута подвисаний всего браузера на слабом ПК):
+    // остаёмся на прежнем движке и пробуем позже. В основном процессе — только если отдельный процесс не запустить
+    const t = setTimeout(() => { try { child.kill(); } catch {} done({ fail: 'сборка не успела за 3 минуты' }); }, 180e3);
+    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(m.same ? { same: true, hash: m.hash } : { buf: new Uint8Array(m.buf), hash: m.hash }); else { console.warn('adblock build', m && m.error); done({ fail: 'сборка: ' + (m && m.error) }); } });
+    child.once('exit', () => { clearTimeout(t); done({ fail: 'процесс сборки завершился' }); });
     child.postMessage({ parts, exceptions: EXCEPTIONS, oldHash });
   });
 }
@@ -90,6 +92,7 @@ class AdBlock {
           let old = ''; try { old = await fs.promises.readFile(hashFile, 'utf8'); } catch {}
           const t0 = Date.now();
           const r = await buildAside(got.map((g) => g.text), this.blocker ? old : '');
+          if (r && r.fail) throw new Error(r.fail); // попробуем через полчаса (finally), прежний движок работает
           if (r && r.same) { console.info(`[adblock] списки не изменились (${net} из ${got.length} из сети) — пересборка не нужна`); return; }
           let hash = r && r.hash;
           const buf = r && r.buf;
