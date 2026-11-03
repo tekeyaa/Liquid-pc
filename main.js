@@ -12,7 +12,7 @@ const { Diag, sysInfo } = require('./main/diag');
 const ravu = require('./main/ravu');
 // веса нейросетей Liquid RTX (main/rtx): lite — лёгкая, pro — большая для сильных видеокарт, anime — для рисованного.
 // Читаются с диска по первому запросу, без остановки основного процесса
-const RTX_FILES = { lite: 'liquid-rtx.json', pro: 'liquid-rtx-pro.json', anime: 'liquid-rtx-anime.json' };
+const RTX_FILES = { ultra: 'liquid-rtx-ultra.json', lite: 'liquid-rtx.json', pro: 'liquid-rtx-pro.json', anime: 'liquid-rtx-anime.json' };
 const rtxNetCache = new Map();
 const rtxNet = (n) => {
   const f = RTX_FILES[n] || RTX_FILES.lite;

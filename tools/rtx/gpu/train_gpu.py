@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # встроен
 import rtxfmt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-NETS = {'pro': (24, 5, 'liquid-rtx-pro.json'), 'lite': (16, 4, 'liquid-rtx.json'), 'anime': (16, 4, 'liquid-rtx-anime.json')}
+NETS = {'ultra': (32, 6, 'liquid-rtx-ultra.json'), 'pro': (24, 5, 'liquid-rtx-pro.json'), 'lite': (16, 4, 'liquid-rtx.json'), 'anime': (16, 4, 'liquid-rtx-anime.json')}
 ap = argparse.ArgumentParser()
 ap.add_argument('--net', choices=NETS, default='pro')
 APPD = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'Liquid')
@@ -28,6 +28,7 @@ ap.add_argument('--patch', type=int, default=48, help='кусок кадра (LR
 ap.add_argument('--lr', type=float, default=None, help='шаг обучения (по умолчанию 2e-4 дообучение, 1e-3 с нуля)')
 ap.add_argument('--scratch', action='store_true')
 ap.add_argument('--init', default=None, help='с каких весов начать (json)')
+ap.add_argument('--grow-from', default=None, help='своих весов этой сети ещё нет — вырастить её из меньшей (json), не меняя ответа')
 ap.add_argument('--resume', default=None, help='продолжить с .pt')
 ap.add_argument('--allow-cpu', action='store_true', help=argparse.SUPPRESS)   # только для проверки на машине без видеокарты
 ap.add_argument('--percept', type=float, default=0.0, help='вес «на глаз» (VGG), напр. 0.02: детальнее, но PSNR ниже — смотреть глазами')
@@ -60,8 +61,13 @@ class Net(nn.Module):
 net = Net().to(dev)
 init = a.init or next((p for p in (os.path.join(APPD, 'rtx', fname), os.path.join(HERE, fname), os.path.join(HERE, '..', '..', '..', 'main', 'rtx', fname)) if os.path.exists(p)), None)
 if not a.scratch and not a.resume:
-    if not init: sys.exit(f'Нет {fname} для дообучения — положи его рядом или учи с нуля: --scratch')
-    F0, H0, d0, layers = rtxfmt.load(init)
+    if not init and a.grow_from:
+        F0, H0, d0, layers = rtxfmt.load(a.grow_from)
+        _, _, _, layers = rtxfmt.grow(layers, F, H)
+        init = f'{a.grow_from} (выращена до {F}×{H}: ответ тот же, обучение только улучшит)'
+        F0, H0 = F, H
+    elif not init: sys.exit(f'Нет {fname} для дообучения — положи его рядом или учи с нуля: --scratch')
+    else: F0, H0, d0, layers = rtxfmt.load(init)
     if (F0, H0) != (F, H): sys.exit(f'{init}: сеть {F0}×{H0}, а нужна {F}×{H}')
     with torch.no_grad():
         for c, (W, b) in zip(net.c, layers): c.weight.copy_(torch.from_numpy(W)); c.bias.copy_(torch.from_numpy(b))

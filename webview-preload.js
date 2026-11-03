@@ -842,11 +842,11 @@ const SR_NET = {}; // веса нейросетей (из main/rtx): pro — б�
 const netData = (n) => SR_NET[n] || (SR_NET[n] = ipcRenderer.invoke('sr:net', n).catch(() => null));
 // ступени качества (cap): 4 — нейросеть Pro, 3 — лёгкая (и аниме), 2 — RAVU-3, 1 — RAVU-2, 0 — FSR.
 // Видеокарта не успевает — ступенька вниз.
-const SR_TIER = { fsr: 0, r2: 1, r3: 2, net: 3, anime: 3, pro: 4 };
-const SR_NAMES = { pro: 'нейросеть Liquid RTX Pro', net: 'нейросеть Liquid RTX', anime: 'нейросеть Liquid RTX · аниме', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
+const SR_TIER = { fsr: 0, r2: 1, r3: 2, net: 3, anime: 3, pro: 4, ultra: 5 };
+const SR_NAMES = { ultra: 'нейросеть Liquid RTX Ultra', pro: 'нейросеть Liquid RTX Pro', net: 'нейросеть Liquid RTX', anime: 'нейросеть Liquid RTX · аниме', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
 // резкость RCAS после увеличения: у нейросети своя резкость уже есть — «Чисто» почти без добавки, «Чётко» — заметнее
 const SR_SHARP_K = { net: { mid: 0.1, max: 0.4 }, anime: { mid: 0.15, max: 0.45 }, ravu: { mid: 0.4, max: 0.7 }, fsr: { mid: 0.4, max: 0.7 } };
-const SR_NET_FILE = { pro: 'pro', net: 'lite', anime: 'anime' };
+const SR_NET_FILE = { ultra: 'ultra', pro: 'pro', net: 'lite', anime: 'anime' }; // Ultra — только своя, обученная (встроенной нет)
 // Движок Liquid RTX: один WebGL2-контекст на своём холсте, рисует кадр видео в размер холста.
 // Им пользуются и слой поверх плеера сайта, и Liquid Player.
 class RtxEngine {
@@ -868,7 +868,7 @@ class RtxEngine {
     this.fb = gl.createFramebuffer();
     this.ravu = {}; this.ravuReq = {}; this.nets = {}; this.netReq = {}; this.nb = null;
     // смешивание с прошлым кадром (temporal) проверено и выключено: на медленном движении по текстуре давало шлейф
-    this.cap = 4; this.used = ''; this.ow = 0; this.oh = 0; this.cfl = 1; this.temporal = 0;
+    this.cap = 5; this.used = ''; this.ow = 0; this.oh = 0; this.cfl = 1; this.temporal = 0;
     // Видеокарты нет — рисует процессор (SwiftShader, llvmpipe, «Базовый видеоадаптер»): шейдеры большой сети Pro
     // там собираются минуту и на это время подвешивают отрисовку всего браузера. Тогда — не выше лёгкой сети
     try {
@@ -989,7 +989,7 @@ class RtxEngine {
   pick(level, content) {
     if (!this.gl2) return null;
     if (this.cap >= 3 && this.fbf) {
-      const order = content === 'anime' ? ['anime', 'net'] : this.cap >= 4 ? ['pro', 'net'] : ['net'];
+      const order = content === 'anime' ? ['anime', 'net'] : this.cap >= 5 ? ['ultra', 'pro', 'net'] : this.cap >= 4 ? ['pro', 'net'] : ['net'];
       // лучшая готовая из списка; пока лучшая собирается — рисует следующая готовая (а не FSR)
       let wait = false;
       for (const n of order) {
@@ -1065,7 +1065,7 @@ class RtxEngine {
     }
     if (!M || !M.layers) this.netFrames = 0;
     this.used = level === 'off' ? 'off' : M ? M.name : down ? 'down' : 'fsr';
-    const sk = SR_SHARP_K[this.used === 'pro' || this.used === 'net' ? 'net' : this.used === 'anime' ? 'anime' : /^r\d/.test(this.used) ? 'ravu' : 'fsr'];
+    const sk = SR_SHARP_K[/^(ultra|pro|net)$/.test(this.used) ? 'net' : this.used === 'anime' ? 'anime' : /^r\d/.test(this.used) ? 'ravu' : 'fsr'];
     this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid], ['raw', this.tRaw]], (u) => {
       gl.uniform2f(u('dst'), this.ow, this.oh); gl.uniform1f(u('flip'), 0);
       gl.uniform1f(u('sharp'), down || level === 'off' ? 0 : (sk[level] ?? sk.mid) * (this.sharpMul ?? 1));
@@ -1230,7 +1230,7 @@ class SuperRes {
     const v = this.v;
     if (v.readyState < 2 || !v.videoWidth || !this.ow) return; // слой ещё не получил размер — рисовать некуда
     this.used = this.eng.draw(v, v.videoWidth, v.videoHeight, this.crop, this.level, this.hdr, 0, contentOf(v));
-    if (/^(pro|net|anime|r\d)$/.test(this.used) && !this.c.dataset.lqSrBest) this.c.dataset.lqSrBest = this.used;
+    if (/^(ultra|pro|net|anime|r\d)$/.test(this.used) && !this.c.dataset.lqSrBest) this.c.dataset.lqSrBest = this.used;
     this.c.dataset.lqSr = this.used;
   }
   // Рисуем по кадрам экрана и только когда у видео сменился кадр.
@@ -1241,7 +1241,7 @@ class SuperRes {
     const t = v.currentTime, now = performance.now();
     this.perfMon.frame(now);
     // шейдер нейросети / RAVU собрался, пока видео на паузе, — перерисуем кадр уже им
-    if (v.paused && !this.dirty && !this.big && /^(fsr|r2|r3|net)$/.test(this.used) && (++this.idle % 30) === 0) {
+    if (v.paused && !this.dirty && !this.big && /^(fsr|r2|r3|net|pro)$/.test(this.used) && (++this.idle % 30) === 0) {
       const best = this.eng.pick(this.level, contentOf(this.v)); if ((best ? best.name : 'fsr') !== this.used) this.dirty = true;
     }
     if (v.readyState >= 2 && (t !== this.lastT || this.dirty) && this.bigNow()) {
@@ -1439,7 +1439,7 @@ async function imgEnhance(img, src) {
     let used = '';
     for (const t0 = performance.now(); performance.now() - t0 < 15000;) {
       used = E.draw(bmp, w, h, [0, 0, 1, 1], 'mid', false, 0, contentOf(img));
-      if (/^(pro|net|anime)$/.test(used)) break;
+      if (/^(ultra|pro|net|anime)$/.test(used)) break;
       await new Promise((r) => setTimeout(r, 250));
     }
     const out = await new Promise((r) => E.c.toBlob(r, 'image/png'));
@@ -2108,7 +2108,7 @@ function lpLoop() {
     lpError('Этот сайт не разрешает обрабатывать своё видео (защита от копирования или чужой сервер). Открой обычный плеер.');
   } finally { if (vf) vf.close(); }
   // пока на паузе: шейдер нейросети мог собраться — перерисуем лучшим
-  if (v.paused && vt.sr !== 'off' && /^(fsr|r2|r3|net)$/.test(lp.used) && lp.frames % 30 === 0) { const best = lp.eng.pick(vt.sr, contentOf(v)); if ((best ? best.name : 'fsr') !== lp.used) lp.dirty = true; }
+  if (v.paused && vt.sr !== 'off' && /^(fsr|r2|r3|net|pro)$/.test(lp.used) && lp.frames % 30 === 0) { const best = lp.eng.pick(vt.sr, contentOf(v)); if ((best ? best.name : 'fsr') !== lp.used) lp.dirty = true; }
 }
 function lpError(t) { const e = lp.root.querySelector('.err'); e.textContent = t; e.classList.add('on'); }
 // клавиши — как в обычных плеерах; сайт их не получает, пока открыт наш

@@ -12,7 +12,7 @@ const PY_URL = `https://www.python.org/ftp/python/${PY_VER}/python-${PY_VER}-emb
 // его новые версии отказываются ставить pip во встроенный Python на Windows («To modify pip, please run…»)
 const PIP_URL = 'https://files.pythonhosted.org/packages/py3/p/pip/pip-24.3.1-py3-none-any.whl';
 const SETUP_V = '1'; // поменять — поставится заново
-const NETS = { pro: 'liquid-rtx-pro.json', lite: 'liquid-rtx.json', anime: 'liquid-rtx-anime.json' };
+const NETS = { ultra: 'liquid-rtx-ultra.json', pro: 'liquid-rtx-pro.json', lite: 'liquid-rtx.json', anime: 'liquid-rtx-anime.json' };
 
 class RtxTrain {
   constructor({ dir, scripts, weights, data, out, log, torchIndex, onDone }) {
@@ -109,7 +109,7 @@ class RtxTrain {
     const animeDir = path.join(this.data, 'anime');
     const nAnime = (() => { try { return fs.readdirSync(animeDir).filter((f) => f.endsWith('_hr.npy')).length; } catch { return 0; } })();
     const plan = net === 'auto' || !NETS[net]
-      ? [['pro', this.data, 'видео', 0.7], ...(nAnime >= 3 ? [['anime', animeDir, 'аниме', 0.3]] : [])]
+      ? [['ultra', this.data, 'видео', 0.7], ...(nAnime >= 3 ? [['anime', animeDir, 'аниме', 0.3]] : [])]
       : [[net, net === 'anime' ? animeDir : this.data, net === 'anime' ? 'аниме' : 'видео', 1]];
     this.stopping = false; this.result = null;
     this.set('setup', 'Проверяю видеокарту…', 0);
@@ -135,6 +135,8 @@ class RtxTrain {
           const left = deadline - Date.now();
           if (hours && lastDur && left < lastDur * 1.1) args.push('--hours', String(Math.max(left, 60e3) / 3600e3)); // последний круг — сколько осталось
           if (round > 1 && fs.existsSync(out)) args.push('--init', out);
+          // Ultra (32×6) своих весов ещё нет — вырастает из Pro (твоей обученной, иначе встроенной) с тем же ответом
+          if (name === 'ultra' && !fs.existsSync(out)) { const own = path.join(this.out, NETS.pro); args.push('--grow-from', fs.existsSync(own) ? own : path.join(d, NETS.pro)); }
           this.set('train', `${tag}${hours ? `, круг ${round}` : ''}: запуск…`, 0);
           const t0 = Date.now();
           let v0 = null, best = null;
