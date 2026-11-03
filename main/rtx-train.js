@@ -100,57 +100,73 @@ class RtxTrain {
   }
   // Обучение кругами. Круг — полное обучение (~40 минут на RTX 4070) от лучшей версии прошлого круга: улучшилась —
   // записалась, и следующий круг начинается уже с неё. Без срока — один круг. Со сроком (3/6/12 ч) — круги, пока
-  // не выйдет время или пока круг не даст меньше +0,1 дБ: дальше сеть на этих данных почти не растёт, нужны новые
-  start(net = 'pro', extra = [], hours = 0) {
+  // не выйдет время или пока круг не даст меньше +0,1 дБ: дальше сеть на этих данных почти не растёт, нужны новые.
+  // net 'auto' (кнопка «Обучить»): сеть для видео на общих данных, а если режим обучения набрал аниме (от 3 роликов,
+  // папка data/anime) — следом и сеть для аниме. Со сроком время делится: видео 70 %, аниме 30 %
+  start(net = 'auto', extra = [], hours = 0) {
     hours = Math.max(0, Number(hours) || 0);
     if (this.busy) return false;
-    if (!NETS[net]) net = 'pro';
+    const animeDir = path.join(this.data, 'anime');
+    const nAnime = (() => { try { return fs.readdirSync(animeDir).filter((f) => f.endsWith('_hr.npy')).length; } catch { return 0; } })();
+    const plan = net === 'auto' || !NETS[net]
+      ? [['pro', this.data, 'видео', 0.7], ...(nAnime >= 3 ? [['anime', animeDir, 'аниме', 0.3]] : [])]
+      : [[net, net === 'anime' ? animeDir : this.data, net === 'anime' ? 'аниме' : 'видео', 1]];
     this.stopping = false; this.result = null;
     this.set('setup', 'Проверяю видеокарту…', 0);
     const fmt = (min) => (min >= 90 ? `${Math.floor(min / 60)} ч ${Math.round(min % 60)} мин` : `${Math.round(min)} мин`);
     const db = (x) => x.toFixed(2).replace('.', ',');
+    const deadlineAll = hours ? Date.now() + hours * 3600e3 : 0;
     this.busy = (async () => {
       if (!extra.includes('--allow-cpu') && !(await this.hasNvidia())) throw new Error('нужна видеокарта NVIDIA (не нашёл nvidia-smi — обнови драйвер)');
       await this.setup();
       const d = this.prepScripts();
       fs.mkdirSync(this.out, { recursive: true });
-      const out = path.join(this.out, NETS[net]);
-      const deadline = hours ? Date.now() + hours * 3600e3 : 0;
-      let round = 0, first = null, last = null, lastDur = 0, why = '';
-      for (;;) {
-        round++;
-        const args = [...extra];
-        const left = deadline - Date.now();
-        if (hours && lastDur && left < lastDur * 1.1) args.push('--hours', String(Math.max(left, 60e3) / 3600e3)); // последний круг — сколько осталось
-        if (round > 1 && fs.existsSync(out)) args.push('--init', out);
-        this.set('train', `Обучение${hours ? `, круг ${round}` : ''}: запуск…`, 0);
-        const t0 = Date.now();
-        let v0 = null, best = null;
-        await this.run(this.py, ['-u', path.join(d, 'train_gpu.py'), '--net', net, '--data', this.data, '--out', out, ...args], (l) => {
-          let m;
-          if ((m = l.match(/сеть в начале ([\d.]+)/))) { v0 = +m[1]; if (first == null) first = v0; }
-          if ((m = l.match(/проверка ([\d.]+) дБ/)) && v0 != null) best = Math.max(best ?? v0, +m[1]);
-          if ((m = l.match(/^(\d+)\/(\d+) потери.*?осталось ~(\d+) мин/))) {
-            const pct = Math.round(m[1] / m[2] * 100);
-            const tot = hours ? `, всего осталось ~${fmt(Math.max(0, deadline - Date.now()) / 60e3)}` : `, осталось ~${fmt(+m[3])}`;
-            const gain = best != null && first != null && best > first ? ` · лучше на ${db(best - first)} дБ` : '';
-            this.set('train', `Обучение${hours ? `, круг ${round}` : ''}: ${pct}%${tot}${gain}`, pct);
-          }
-          if (/^В .* пока нет данных/.test(l)) this.set('train', l);
-        });
-        lastDur = Date.now() - t0;
-        const gain = best != null && v0 != null ? best - v0 : 0;
-        if (best != null && best > (last ?? -1)) last = best;
-        if (!hours) break;
-        this.log('info', 'Liquid RTX обучение', `круг ${round}: ${gain > 0 ? '+' + db(gain) : 'без прибавки'} дБ`);
-        if (gain < this.minGain) { why = 'gain'; break; }
-        if (deadline - Date.now() < this.minLeft) { why = 'time'; break; }
+      const results = [];
+      for (let pi = 0; pi < plan.length; pi++) {
+        const [name, data, label, share] = plan[pi];
+        const out = path.join(this.out, NETS[name]);
+        const restShare = plan.slice(pi).reduce((a, p) => a + p[3], 0);
+        const deadline = hours ? Date.now() + Math.max(0, deadlineAll - Date.now()) * (share / restShare) : 0;
+        const tag = plan.length > 1 ? `Сеть для ${label}` : 'Обучение';
+        let round = 0, first = null, last = null, lastDur = 0, why = '';
+        for (;;) {
+          round++;
+          const args = [...extra];
+          const left = deadline - Date.now();
+          if (hours && lastDur && left < lastDur * 1.1) args.push('--hours', String(Math.max(left, 60e3) / 3600e3)); // последний круг — сколько осталось
+          if (round > 1 && fs.existsSync(out)) args.push('--init', out);
+          this.set('train', `${tag}${hours ? `, круг ${round}` : ''}: запуск…`, 0);
+          const t0 = Date.now();
+          let v0 = null, best = null;
+          await this.run(this.py, ['-u', path.join(d, 'train_gpu.py'), '--net', name, '--data', data, '--out', out, ...args], (l) => {
+            let m;
+            if ((m = l.match(/сеть в начале ([\d.]+)/))) { v0 = +m[1]; if (first == null) first = v0; }
+            if ((m = l.match(/проверка ([\d.]+) дБ/)) && v0 != null) best = Math.max(best ?? v0, +m[1]);
+            if ((m = l.match(/^(\d+)\/(\d+) потери.*?осталось ~(\d+) мин/))) {
+              const pct = Math.round(m[1] / m[2] * 100);
+              const tot = hours ? `, всего осталось ~${fmt(Math.max(0, deadlineAll - Date.now()) / 60e3)}` : `, осталось ~${fmt(+m[3])}`;
+              const gain = best != null && first != null && best > first ? ` · лучше на ${db(best - first)} дБ` : '';
+              this.set('train', `${tag}${hours ? `, круг ${round}` : ''}: ${pct}%${tot}${gain}`, pct);
+            }
+            if (/^В .* пока нет данных/.test(l)) this.set('train', l);
+          });
+          lastDur = Date.now() - t0;
+          const gain = best != null && v0 != null ? best - v0 : 0;
+          if (best != null && best > (last ?? -1)) last = best;
+          if (!hours) break;
+          this.log('info', 'Liquid RTX обучение', `${label}, круг ${round}: ${gain > 0 ? '+' + db(gain) : 'без прибавки'} дБ`);
+          if (gain < this.minGain) { why = 'gain'; break; }
+          if (deadline - Date.now() < this.minLeft) { why = 'time'; break; }
+        }
+        results.push({ name, label, first, last, round, why, total: last != null && first != null ? last - first : 0 });
       }
-      const total = last != null && first != null ? last - first : 0;
-      this.result = { v0: first, best: last, better: total > 0, rounds: round };
-      const rounds = hours ? ` за ${round} ${round === 1 ? 'круг' : round < 5 ? 'круга' : 'кругов'}` : '';
-      this.set('done', (total > 0 ? `Готово${rounds}: сеть стала точнее на ${db(total)} дБ — уже работает в новых вкладках` : `Готово${rounds}: на этих данных сеть лучше не стала — оставил прежнюю`)
-        + (why === 'gain' ? '. Последний круг дал меньше +0,1 дБ — дальше нужны новые данные (ещё ролики)' : total > 0 ? '' : '. Соберите больше разных роликов'), 100);
+      const r0 = results[0];
+      this.result = { v0: r0.first, best: r0.last, better: results.some((r) => r.total > 0), rounds: results.reduce((a, r) => a + r.round, 0), nets: results };
+      const part = (r) => (results.length > 1 ? `${r.label}: ` : '') + (r.total > 0 ? `точнее на ${db(r.total)} дБ` : 'лучше не стала — оставил прежнюю');
+      const anyGain = results.some((r) => r.why === 'gain');
+      this.set('done', `Готово${hours ? ` за ${this.result.rounds} ${this.result.rounds === 1 ? 'круг' : this.result.rounds < 5 ? 'круга' : 'кругов'}` : ''} — ${results.map(part).join(' · ')}`
+        + (this.result.better ? '. Уже работает в новых вкладках' : '. Соберите больше разных роликов')
+        + (anyGain ? '. Круги перестали давать прибавку (меньше +0,1 дБ) — дальше нужны новые ролики' : ''), 100);
       this.log('info', 'Liquid RTX обучение', this.st.msg);
       if (this.onDone) this.onDone(this.result);
     })().catch((e) => {

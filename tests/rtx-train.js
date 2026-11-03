@@ -22,14 +22,17 @@ for (let v = 0; v < 3; v++) {
   fs.writeFileSync(path.join(data, `v${v}_lr.npy`), npy('<u2', [6, 256, 256], lr));
   fs.writeFileSync(path.join(data, `v${v}_cid.npy`), npy('<i4', [6], cid));
 }
+// аниме — в свою папку, как раскладывает режим обучения: для проверки «одной кнопки»
+fs.mkdirSync(path.join(data, 'anime'));
+for (const f of fs.readdirSync(data)) if (f.endsWith('.npy')) fs.copyFileSync(path.join(data, f), path.join(data, 'anime', f));
 const out = path.join(root, 'out');
 const T = new RtxTrain({ dir: path.join(root, 'train'), scripts: path.join(__dirname, '..', 'tools', 'rtx', 'gpu'), weights: path.join(__dirname, '..', 'main', 'rtx'),
   data, out, torchIndex: 'https://download.pytorch.org/whl/cpu', log: (...a) => console.log(...a) });
 const sane = (j) => j && Array.isArray(j.dims) && Array.isArray(j.layers) && j.layers.length === j.dims.length - 1 && j.dims[0] === 1 && j.dims[j.dims.length - 1] === 4
   && j.layers.every((l, i) => l.w.length === 9 * j.dims[i] && l.w.every((r) => r.length === j.dims[i + 1]) && l.b.length === j.dims[i + 1]);
-async function go(extra, hours) {
+async function go(extra, hours, net = 'pro') {
   const t0 = Date.now(); let last = '';
-  T.start('pro', extra, hours);
+  T.start(net, extra, hours);
   while (T.busy) { await new Promise((r) => setTimeout(r, 1000)); const m = T.state().msg; if (m !== last) { console.log(`[${((Date.now() - t0) / 1000).toFixed(0)}с] ${m}`); last = m; } }
   const st = T.state(); console.log('итог:', st.phase, st.msg, '| последняя строка:', T.lastLine);
   if (st.phase !== 'done') { console.log(T.lastTail || ''); console.error('::error::обучение не дошло до конца:', st.msg); process.exit(1); }
@@ -46,6 +49,12 @@ async function go(extra, hours) {
   const dt = (Date.now() - t1) / 1000;
   if (!(T.result.rounds >= 2) || dt > 150) { console.error(`::error::круги: ${T.result.rounds}, ${dt.toFixed(0)} с`); process.exit(1); }
   console.log(`круги: ${T.result.rounds} за ${dt.toFixed(0)} с`);
+  // «Обучить» (auto): сеть для видео, затем для аниме — обе по очереди, файлы весов обеих
+  T.minGain = 0.1; T.minLeft = 5 * 60e3;
+  await go(['--allow-cpu', '--steps', '20', '--batch', '4', '--scratch'], 0, 'auto');
+  const nets = (T.result.nets || []).map((r) => r.name).join(',');
+  if (nets !== 'pro,anime' || !fs.existsSync(path.join(out, 'liquid-rtx-anime.json'))) { console.error('::error::«Обучить» выучило не обе сети: ' + nets); process.exit(1); }
+  console.log('одна кнопка: ' + nets + ' — ' + T.state().msg);
   const f = path.join(out, 'liquid-rtx-pro.json');
   const j = JSON.parse(fs.readFileSync(f, 'utf8'));
   if (!sane(j) || j.F !== 24 || j.H !== 5) { console.error('::error::веса не того формата'); process.exit(1); }

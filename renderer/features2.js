@@ -241,10 +241,10 @@
     if (!settings.rtxLearn || !L.rtxLearn) return;
     const s = await L.rtxLearn.status().catch(() => null); if (!s) return;
     const full = s.bytes >= s.budget;
-    $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов готово ${s.done}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
+    $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов готово ${s.done}${s.anime ? ` (из них аниме ${s.anime})` : ''}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
       (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место кончилось — можно обучать или дать больше места' : '');
     const t = await L.rtxLearn.trainState().catch(() => null); if (!t) return;
-    $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainNet').disabled = t.running; $('#rtxTrainHours').disabled = t.running;
+    $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainHours').disabled = t.running;
     $('#rtxTrainStat').textContent = t.msg || (t.ready ? 'Python и PyTorch уже стоят. Обучение — 30–60 минут, видео в это время может подтормаживать.'
       : 'Нужна видеокарта NVIDIA. В первый раз браузер сам скачает Python и PyTorch (~3 ГБ). Обучение — 30–60 минут, видео в это время может подтормаживать.');
   }
@@ -254,7 +254,7 @@
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
     const n = await L.rtxLearn.add(txt); $('#rtxLinks').value = ''; learnStat(); if (window.toast) window.toast(n ? `В очередь: ${n}` : 'Новых ссылок YouTube не нашлось'); };
   $('#rtxLearnOpen').onclick = () => L.rtxLearn.open();
-  $('#rtxTrainGo').onclick = async () => { await L.rtxLearn.train($('#rtxTrainNet').value, Number($('#rtxTrainHours').value)); learnStat(); };
+  $('#rtxTrainGo').onclick = async () => { await L.rtxLearn.train('auto', Number($('#rtxTrainHours').value)); learnStat(); };
   $('#rtxTrainHours').onchange = async (e) => { settings = await L.settings.set({ rtxTrainHours: Number(e.target.value) }); };
   $('#rtxAutoTrain').onchange = async (e) => { settings = await L.settings.set({ rtxAutoTrain: e.target.checked }); };
   $('#rtxTrainStop').onclick = async () => { await L.rtxLearn.trainStop(); setTimeout(learnStat, 800); };

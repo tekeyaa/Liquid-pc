@@ -1539,7 +1539,7 @@ function registerIpc() {
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
   ipcMain.handle('rtxlearn:add', async (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
-  ipcMain.handle('rtxtrain:start', (_e, net, hours) => (rtxTrain ? rtxTrain.start(String(net || 'pro'), [], [3, 6, 12].includes(Number(hours)) ? Number(hours) : 0) : false));
+  ipcMain.handle('rtxtrain:start', (_e, net, hours) => (rtxTrain ? rtxTrain.start('auto', [], [3, 6, 12].includes(Number(hours)) ? Number(hours) : 0) : false));
   ipcMain.handle('rtxtrain:stop', () => { if (rtxTrain) rtxTrain.stop(); });
   ipcMain.handle('rtxtrain:state', () => (rtxTrain ? rtxTrain.state() : null));
   ipcMain.handle('rtxlearn:open', () => { if (!rtxLearn) return; fs.mkdirSync(rtxLearn.dir, { recursive: true }); shell.openPath(rtxLearn.dir); });
@@ -2089,7 +2089,7 @@ app.whenReady().then(async () => {
     const key = `${s.bytes}:${s.done}`; if (st.rtxAutoKey === key) return;
     st.rtxAutoKey = key; saveSettings(st);
     diag.log('info', 'Liquid RTX обучение', `место под данные заполнено — автообучение${st.rtxTrainHours ? ` на ${st.rtxTrainHours} ч` : ''}`);
-    rtxTrain.start('pro', [], st.rtxTrainHours || 0);
+    rtxTrain.start('auto', [], st.rtxTrainHours || 0);
   }, 60_000).unref?.();
   if (TEST && (process.env.LIQUID_PERF_NOADBLOCK || process.env.LIQUID_PERF_NOHOOKS)) adblock.init = async () => false; // замер скорости без блокировщика
   const st0 = loadSettings();

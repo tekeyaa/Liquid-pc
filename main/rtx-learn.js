@@ -47,7 +47,13 @@ window.__lqLearn = {
       const f = luma(cx.getImageData(x, y, ${c}, ${c})); if (std(f) < 0.04) continue;
       out.push({ x, y, f }); k++;
     }
-    lo[i] = { t, w, h, crops: out }; return { n: out.length, w, h };
+    // рисованное ли (как contentOf в webview-preload.js): доля «плоских» точек на уменьшенном кадре 160×90
+    const sm = document.createElement('canvas'); sm.width = 160; sm.height = 90; const sx = sm.getContext('2d', { willReadFrequently: true });
+    sx.drawImage(v, 0, 0, 160, 90); const d = sx.getImageData(0, 0, 160, 90).data; let flat = 0, n = 0;
+    const Y = (x, y) => { const j = (y * 160 + x) * 4; return d[j] * 0.2126 + d[j + 1] * 0.7152 + d[j + 2] * 0.0722; };
+    for (let y = 1; y < 89; y++) for (let x = 1; x < 159; x++) { const c = Y(x, y); if (c <= 24) continue; n++;
+      if (Math.max(Math.abs(c - Y(x - 1, y)), Math.abs(c - Y(x + 1, y)), Math.abs(c - Y(x, y - 1)), Math.abs(c - Y(x, y + 1))) < 1.5) flat++; }
+    lo[i] = { t, w, h, crops: out }; return { n: out.length, w, h, flat: n ? flat / n : 0 };
   },
   // 4K/8K: тот же кадр (пробуем и соседние: потоки могут разойтись на кадр), 8K рисуем в 4K — среднее 2×2.
   async grabHi(i) {
@@ -119,7 +125,10 @@ class RtxLearn {
   save() { try { fs.mkdirSync(this.dir, { recursive: true }); fs.writeFileSync(this.qfile, JSON.stringify(this.q)); } catch {} }
   on() { return !!this.settings().rtxLearn; }
   budget() { return Math.max(0.2, Number(this.settings().rtxLearnGb) || 1) * 2 ** 30; }
-  bytes() { try { return fs.readdirSync(this.data).reduce((s, f) => s + fs.statSync(path.join(this.data, f)).size, 0); } catch { return 0; } }
+  bytes() {
+    const walk = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).reduce((s, f) => s + (f.isDirectory() ? walk(path.join(d, f.name)) : fs.statSync(path.join(d, f.name)).size), 0); } catch { return 0; } };
+    return walk(this.data);
+  }
   add(idOrUrl, title, from) {
     const id = ytId(idOrUrl); if (!id) return false;
     if (this.q.some((x) => x.id === id)) return false;
@@ -149,7 +158,7 @@ class RtxLearn {
   }
   status() {
     const cnt = (st) => this.q.filter((x) => x.st === st).length;
-    return { on: this.on(), queued: cnt('new'), done: cnt('done'), skipped: cnt('skip') + cnt('fail'), pairs: this.q.reduce((s, x) => s + (x.pairs || 0), 0),
+    return { on: this.on(), queued: cnt('new'), done: cnt('done'), anime: this.q.filter((x) => x.st === 'done' && x.kind === 'anime').length, skipped: cnt('skip') + cnt('fail'), pairs: this.q.reduce((s, x) => s + (x.pairs || 0), 0),
       bytes: this.bytes(), budget: this.budget(), busy: !!this.busy, cur: this.cur, dir: this.dir };
   }
   // кто-то смотрит/слушает — не мешаем (фоновой декодер 4K отнимет видеокарту и сеть)
@@ -179,7 +188,11 @@ class RtxLearn {
     const ts = Array.from({ length: PLACES }, (_, k) => dur * (0.05 + 0.9 * (k + Math.random()) / PLACES));
     const stop = () => { if (this.watching() || !this.on()) throw new Error('прервано: включилось видео'); };
     await ex(`__lqLearn.setQ('hd1080')`);
-    for (let i = 0; i < ts.length; i++) { stop(); await ex(`__lqLearn.grabLo(${i}, ${ts[i].toFixed(3)})`); }
+    const flats = [];
+    for (let i = 0; i < ts.length; i++) { stop(); const r = await ex(`__lqLearn.grabLo(${i}, ${ts[i].toFixed(3)})`); if (r && r.flat != null) flats.push(r.flat); }
+    // аниме и мультики — в свою папку (для своей сети), остальное — в общую
+    flats.sort((a, b) => a - b);
+    const anime = flats.length >= 3 && flats[flats.length >> 1] > 0.22;
     await ex(`__lqLearn.setQ('${info.hi}')`);
     const HR = [], LR = [], CID = []; let k8 = 0;
     for (let i = 0; i < ts.length; i++) {
@@ -190,14 +203,15 @@ class RtxLearn {
       for (const p of r.pairs) { HR.push(Buffer.from(p.hr, 'base64')); LR.push(Buffer.from(p.lr, 'base64')); CID.push(i); }
     }
     if (!HR.length) { it.st = 'skip'; it.why = 'кадры не совпали'; return; }
-    fs.mkdirSync(this.data, { recursive: true });
-    const base = path.join(this.data, it.id);
+    const dir = anime ? path.join(this.data, 'anime') : this.data;
+    fs.mkdirSync(dir, { recursive: true });
+    const base = path.join(dir, it.id);
     const cid = Buffer.alloc(4 * CID.length); CID.forEach((v, j) => cid.writeInt32LE(v, 4 * j));
     fs.writeFileSync(base + '_lr.npy', npy('<u2', [LR.length, c, c], Buffer.concat(LR)));
     fs.writeFileSync(base + '_cid.npy', npy('<i4', [CID.length], cid));
     fs.writeFileSync(base + '_hr.npy', npy('<u2', [HR.length, C, C], Buffer.concat(HR)));
-    Object.assign(it, { st: 'done', pairs: HR.length, src: k8 ? '8K' : '4K', why: '' });
-    this.log('info', 'Liquid RTX обучение', `${it.title || it.id}: ${HR.length} пар (${it.src})`);
+    Object.assign(it, { st: 'done', pairs: HR.length, src: k8 ? '8K' : '4K', kind: anime ? 'anime' : 'video', why: '' });
+    this.log('info', 'Liquid RTX обучение', `${it.title || it.id}: ${HR.length} пар (${it.src}${anime ? ', аниме' : ''})`);
   }
 }
 
