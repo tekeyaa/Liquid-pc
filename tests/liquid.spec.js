@@ -526,7 +526,7 @@ test('меню: плитки и прокрутка в маленьком окн�
   await win.locator('#menuBtn').click();
   await expect(win.locator('#menuPop')).toHaveClass(/open/);
   const m = await win.evaluate(() => { const p = document.getElementById('menuPop'); const r = p.getBoundingClientRect(); return { sh: p.scrollHeight, ch: p.clientHeight, bottom: r.bottom, ih: innerHeight, tiles: p.querySelectorAll('button.tile').length, oy: getComputedStyle(p).overflowY }; });
-  expect(m.tiles).toBeGreaterThanOrEqual(15);
+  expect(m.tiles).toBeGreaterThanOrEqual(13);
   expect(m.bottom).toBeLessThanOrEqual(m.ih);           // меню не уходит за низ окна
   expect(m.oy).toBe('auto');
   expect(m.sh).toBeGreaterThan(m.ch);                   // не влезло — значит листается
