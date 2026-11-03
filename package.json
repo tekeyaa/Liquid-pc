@@ -23,6 +23,9 @@
       "main/**/*",
       "tools/rtx/gpu/train_gpu.py",
       "tools/rtx/gpu/rtxfmt.py",
+      "tools/rtx/gpu/rtx2.py",
+      "tools/rtx/gpu/rtx2_torch.py",
+      "tools/rtx/gpu/check_rtx2.py",
       "vpn.js",
       "renderer/**/*"
     ],

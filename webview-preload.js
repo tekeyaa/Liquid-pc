@@ -835,6 +835,60 @@ void main(){
 }`;
   return { layers: out, hr, cfl, compose };
 }
+// ---- Liquid RTX 2 (U-Net, tools/rtx/gpu/rtx2.py): почти вся работа на 1/2 и 1/4 кадра.
+// Веса — не в тексте шейдера, а в буфере (uniform-блок): шейдеры маленькие и собираются быстро, а одинаковое число
+// на всех точках видеокарта читает из быстрой памяти констант. Свёртка 3×3 с повтором краёв (шаг 1 или 2: центр в 2p);
+// up — свёртка на низком уровне сразу в нужный подпиксель 2×2 точки высокого уровня (перестановка как pixel_shuffle)
+// плюс пропуск и ReLU — одним проходом. Слой с большим числом выходов делится на проходы (не больше MAX_DRAW_BUFFERS
+// выходов и размера uniform-блока за раз)
+function netShaders2(net, lim) {
+  const head = '#version 300 es\nprecision highp float; precision highp int;\nconst vec3 W709 = vec3(0.2126, 0.7152, 0.0722);\n';
+  const lv = { x: 0 }, passes = [];
+  for (const Ly of net.layers) {
+    const up = Ly.op === 'up', nIn = Math.ceil(Ly.cin / 4), nOut = Math.ceil(Ly.cout / 4), first = Ly.in === 'x';
+    const lin = lv[Ly.in], lout = up ? lin - 1 : lin + (Ly.s === 2 ? 1 : 0); lv[Ly.out] = lout;
+    const K = up ? 4 : 1;
+    // сколько выходов за проход: MRT и размер блока (K наборов весов по 9·nIn·nO матриц + K·nO смещений)
+    let g = Math.min(lim.db, nOut); while (g > 1 && (K * 9 * nIn * g * 64 + K * g * 16 > lim.ubo || (up ? nIn + g : nIn) > lim.tex)) g--;
+    const groups = []; for (let o = 0, n = Math.ceil(nOut / g); o < nOut; o += Math.ceil(nOut / n)) groups.push([o, Math.min(nOut, o + Math.ceil(nOut / n))]);
+    for (const [o0, o1] of groups) {
+      const nO = o1 - o0, NW = 9 * nIn * nO;
+      // веса: W[k][t][ib][ob] — mat4, столбец j = веса входного канала 4ib+j для выходов (у up — каналы c*4+k)
+      const data = new Float32Array(K * NW * 16 + K * nO * 4);
+      const ch = (c, k) => (up ? c * 4 + k : c); // номер выхода свёртки для канала c и подпикселя k
+      for (let k = 0; k < K; k++) for (let t = 0; t < 9; t++) for (let ib = 0; ib < nIn; ib++) for (let ob = 0; ob < nO; ob++) {
+        const m = (((k * 9 + t) * nIn + ib) * nO + ob) * 16;
+        for (let j = 0; j < 4; j++) for (let r = 0; r < 4; r++) {
+          const cin = 4 * ib + j, c = 4 * (o0 + ob) + r;
+          const row = Ly.w[cin * 9 + t];
+          data[m + j * 4 + r] = cin < Ly.cin && c < Ly.cout && row ? row[ch(c, k)] || 0 : 0;
+        }
+      }
+      for (let k = 0; k < K; k++) for (let ob = 0; ob < nO; ob++) for (let r = 0; r < 4; r++) { const c = 4 * (o0 + ob) + r; data[K * NW * 16 + (k * nO + ob) * 4 + r] = c < Ly.cout ? Ly.b[ch(c, k)] || 0 : 0; }
+      let fs = head + `uniform ivec2 szIn;\nlayout(std140) uniform Wt { mat4 W[${K * NW}]; vec4 Bv[${K * nO}]; };\n`;
+      fs += first ? 'uniform sampler2D src;\n' : Array.from({ length: nIn }, (_, i) => `uniform sampler2D i${i};\n`).join('');
+      if (up) fs += Array.from({ length: nO }, (_, i) => `uniform sampler2D k${i};\n`).join('');
+      fs += Array.from({ length: nO }, (_, i) => `layout(location = ${i}) out vec4 o${i};\n`).join('');
+      fs += 'void main(){\n';
+      fs += up ? '  ivec2 q = ivec2(gl_FragCoord.xy); ivec2 c = q >> 1; int k = (q.y & 1) * 2 + (q.x & 1); int kw = k * ' + NW + '; int kb = k * ' + nO + ';\n'
+        : `  ivec2 c = ivec2(gl_FragCoord.xy) * ${Ly.s}; const int kw = 0, kb = 0;\n`;
+      for (let ob = 0; ob < nO; ob++) fs += `  vec4 a${ob} = Bv[kb + ${ob}];\n`;
+      fs += '  for (int t = 0; t < 9; t++) {\n    ivec2 p = clamp(c + ivec2(t % 3 - 1, t / 3 - 1), ivec2(0), szIn - 1);\n';
+      if (first) fs += '    vec4 v0 = vec4(dot(texelFetch(src, p, 0).rgb, W709), 0.0, 0.0, 0.0);\n';
+      else for (let ib = 0; ib < nIn; ib++) fs += `    vec4 v${ib} = texelFetch(i${ib}, p, 0);\n`;
+      fs += `    int w = kw + t * ${nIn * nO};\n`;
+      for (let ob = 0; ob < nO; ob++) fs += `    a${ob} += ` + Array.from({ length: nIn }, (_, ib) => `W[w + ${ib * nO + ob}] * v${ib}`).join(' + ') + ';\n';
+      fs += '  }\n';
+      for (let ob = 0; ob < nO; ob++) {
+        const v = up ? `a${ob} + texelFetch(k${ob}, q, 0)` : `a${ob}`;
+        fs += `  o${ob} = ${Ly.relu ? `max(${v}, 0.0)` : v};\n`;
+      }
+      fs += '}\n';
+      passes.push({ fs, data, up, first, in: Ly.in, out: Ly.out, skip: Ly.skip || null, nIn, o0, o1, nOutAll: nOut, lin, lout, s: Ly.s });
+    }
+  }
+  return passes;
+}
 // </netShaders>
 const SR_RAVU = {}; // таблицы весов RAVU: одна загрузка на страницу (r2 ~1,5 МБ, r3 ~2,6 МБ) — только если нейросеть недоступна
 const ravuData = (r) => SR_RAVU[r] || (SR_RAVU[r] = ipcRenderer.invoke('sr:ravu', r).catch(() => null));
@@ -842,11 +896,11 @@ const SR_NET = {}; // веса нейросетей (из main/rtx): pro — б�
 const netData = (n) => SR_NET[n] || (SR_NET[n] = ipcRenderer.invoke('sr:net', n).catch(() => null));
 // ступени качества (cap): 4 — нейросеть Pro, 3 — лёгкая (и аниме), 2 — RAVU-3, 1 — RAVU-2, 0 — FSR.
 // Видеокарта не успевает — ступенька вниз.
-const SR_TIER = { fsr: 0, r2: 1, r3: 2, net: 3, anime: 3, pro: 4, ultra: 5 };
-const SR_NAMES = { ultra: 'нейросеть Liquid RTX Ultra', pro: 'нейросеть Liquid RTX Pro', net: 'нейросеть Liquid RTX', anime: 'нейросеть Liquid RTX · аниме', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
+const SR_TIER = { fsr: 0, r2: 1, r3: 2, net: 3, anime: 3, pro: 4, rtx2: 5 };
+const SR_NAMES = { rtx2: 'нейросеть Liquid RTX 2', pro: 'нейросеть Liquid RTX Pro', net: 'нейросеть Liquid RTX', anime: 'нейросеть Liquid RTX · аниме', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
 // резкость RCAS после увеличения: у нейросети своя резкость уже есть — «Чисто» почти без добавки, «Чётко» — заметнее
 const SR_SHARP_K = { net: { mid: 0.1, max: 0.4 }, anime: { mid: 0.15, max: 0.45 }, ravu: { mid: 0.4, max: 0.7 }, fsr: { mid: 0.4, max: 0.7 } };
-const SR_NET_FILE = { ultra: 'ultra', pro: 'pro', net: 'lite', anime: 'anime' }; // Ultra — только своя, обученная (встроенной нет)
+const SR_NET_FILE = { rtx2: 'rtx2', pro: 'pro', net: 'lite', anime: 'anime' }; // RTX 2 — своя обученная (или вшитая в обновление)
 // Движок Liquid RTX: один WebGL2-контекст на своём холсте, рисует кадр видео в размер холста.
 // Им пользуются и слой поверх плеера сайта, и Liquid Player.
 class RtxEngine {
@@ -941,10 +995,25 @@ class RtxEngine {
     netData(SR_NET_FILE[name]).then((d) => {
       if (this.dead) return;
       if (!d || !d.layers) { this.nets[name] = null; return; } // нет такой сети — возьмём следующую
+      if (d.arch === 'g2') { this.nets[name] = this.loadNet2(name, d); return; }
       const S = netShaders(d);
       this.nets[name] = { name, F: d.dims[1], L: d.layers.length, layers: S.layers.map((l) => ({ ...this.prog(l.fs, SR_VS3), nIn: l.nIn, nOut: l.nOut })),
         hr: this.prog(S.hr, SR_VS3), cfl: this.prog(S.cfl, SR_VS3), compose: this.prog(S.compose, SR_VS3), ok: false };
     }).catch((e) => { this.nets[name] = null; console.warn('[liquid] нейросеть Liquid RTX не загрузилась:', e && e.message); });
+  }
+  // Liquid RTX 2: проходы по графу + общие hr / cfl / compose (как у прежних сетей)
+  loadNet2(name, d) {
+    const gl = this.gl;
+    const lim = { db: gl.getParameter(gl.MAX_DRAW_BUFFERS), ubo: gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE), tex: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) };
+    const P2 = netShaders2(d, lim), S = netShaders({ layers: [], dims: [1] });
+    const passes = P2.map((x) => {
+      const ubo = gl.createBuffer(); gl.bindBuffer(gl.UNIFORM_BUFFER, ubo); gl.bufferData(gl.UNIFORM_BUFFER, x.data, gl.STATIC_DRAW);
+      return { ...this.prog(x.fs, SR_VS3), ...x, data: null, ubo, bound: false };
+    });
+    gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+    const bytes = P2.reduce((a, x) => a + x.data.byteLength, 0);
+    console.info(`[liquid] Liquid RTX 2: ${P2.length} проходов, весов ${Math.round(bytes / 1024)} КБ`);
+    return { name, g2: true, layers: passes, L: 0, hr: this.prog(S.hr, SR_VS3), cfl: this.prog(S.cfl, SR_VS3), compose: this.prog(S.compose, SR_VS3), ok: false };
   }
   netReady(N) {
     if (!N || N.bad) return false;
@@ -955,6 +1024,7 @@ class RtxEngine {
   // Память под сеть. Кадр считаем ПОЛОСАМИ (~270 строк + поля под размах свёрток): признаки занимают в 3–4 раза
   // меньше видеопамяти, чем на весь кадр сразу. Плюс добавка сети, яркость 2× (нынешняя и прошлая) и цвет.
   netAlloc(N, vw, vh) {
+    if (this.nb2) this.freeNet2();
     const gl = this.gl, nb = this.nb;
     const n = Math.ceil(N.F / 4), m = N.L, strips = Math.max(1, Math.ceil(vh / 272)), rs = Math.ceil(vh / strips), hs = Math.min(vh, rs + 2 * m);
     if (nb && nb.w === vw && nb.h === vh && nb.n === n && nb.hs === hs) return nb;
@@ -989,10 +1059,10 @@ class RtxEngine {
   pick(level, content) {
     if (!this.gl2) return null;
     if (this.cap >= 3 && this.fbf) {
-      // одна сеть для всего — твоя обученная Ultra (и видео, и аниме). Пока её нет или видеокарта не тянет —
+      // одна сеть для всего — Liquid RTX 2 (и видео, и аниме). Пока её нет или видеокарта не тянет —
       // встроенные запасные: для рисованного своя аниме-сеть, для съёмки Pro, на слабых видеокартах лёгкая
       const fallback = content === 'anime' ? ['anime', 'net'] : this.cap >= 4 ? ['pro', 'net'] : ['net'];
-      const order = this.cap >= 5 ? ['ultra', ...fallback] : fallback;
+      const order = this.cap >= 5 ? ['rtx2', ...fallback] : fallback;
       // лучшая готовая из списка; пока лучшая собирается — рисует следующая готовая (а не FSR)
       let wait = false;
       for (const n of order) {
@@ -1040,6 +1110,68 @@ class RtxEngine {
       gl.uniform1f(u('flip'), 1); gl.uniform2f(u('hsz'), vw * 2, vh * 2); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]); gl.uniform1f(u('cfl'), this.cfl);
     });
   }
+  // Память под RTX 2: у каждого тензора — свои текстуры (по 4 канала) своего уровня; текстура освобождается после
+  // последнего использования тензора и достаётся следующему такому же (уровень и число текстур) — так живут только
+  // нужные одновременно. Кадр целиком, без полос (у U-Net поле зрения большое, поля полос съели бы выигрыш)
+  netAlloc2(N, vw, vh) {
+    const gl = this.gl;
+    if (this.nb2 && this.nb2.N === N && this.nb2.w === vw && this.nb2.h === vh) return this.nb2;
+    this.freeNet2();
+    if (this.nb) { const gl0 = this.gl, nb = this.nb; for (const t of [...nb.fA, ...nb.fB, nb.tRes, ...nb.hr, nb.tCf]) if (t) gl0.deleteTexture(t); for (const f of [nb.fbA, nb.fbB, nb.fbRes, ...nb.fbH, nb.fbCf]) if (f) gl0.deleteFramebuffer(f); this.nb = null; }
+    const dim = (l) => { let w = vw, h = vh; for (let i = 0; i < l; i++) { w = (w + 1) >> 1; h = (h + 1) >> 1; } return [w, h]; };
+    const mk = (fmt, w, h, filt) => { const t = this.tex(filt); gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, fmt === gl.R16F ? gl.RED : gl.RGBA, gl.HALF_FLOAT, null); return t; };
+    const B = { N, w: vw, h: vh, tens: {}, fbs: [], texs: [], mem: 0 };
+    const last = {}; N.layers.forEach((P, i) => { last[P.in] = i; if (P.skip) last[P.skip] = i; });
+    const pool = []; // свободные: { key, list }
+    const take = (lvl, n) => {
+      const key = lvl + ':' + n, i = pool.findIndex((x) => x.key === key);
+      if (i >= 0) return pool.splice(i, 1)[0].list;
+      const [w, h] = dim(lvl); const list = Array.from({ length: n }, () => mk(gl.RGBA16F, w, h, gl.NEAREST));
+      B.texs.push(...list); B.mem += n * w * h * 8; return list;
+    };
+    N.layers.forEach((P, i) => {
+      if (!B.tens[P.out]) B.tens[P.out] = { list: take(P.lout, P.nOutAll), lvl: P.lout };
+      const T = B.tens[P.out];
+      const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      for (let o = P.o0; o < P.o1; o++) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + o - P.o0, gl.TEXTURE_2D, T.list[o], 0);
+      B.fbs.push(f); P.fbo = f; P.dst = dim(P.lout); P.srcSz = dim(P.lin);
+      // освобождаем входы, которые дальше не нужны (выход этого слоя может быть дописан следующим проходом группы)
+      const nextSame = N.layers[i + 1] && N.layers[i + 1].out === P.out;
+      if (!nextSame) for (const nm of [P.in, P.skip]) if (nm && nm !== 'x' && last[nm] === i && B.tens[nm]) pool.push({ key: B.tens[nm].lvl + ':' + B.tens[nm].list.length, list: B.tens[nm].list });
+    });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    B.tRes = B.tens.res.list[0];
+    B.hr = [mk(gl.R16F, vw * 2, vh * 2, gl.LINEAR)]; B.tCf = mk(gl.RGBA16F, vw, vh, gl.LINEAR); B.texs.push(B.hr[0], B.tCf);
+    const fbo = (t) => { const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); B.fbs.push(f); return f; };
+    B.fbH = fbo(B.hr[0]); B.fbCf = fbo(B.tCf); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    B.mem += vw * vh * 4 * 2 + vw * vh * 8;
+    this.mem.net = B.mem;
+    return (this.nb2 = B);
+  }
+  freeNet2() {
+    const gl = this.gl, B = this.nb2; if (!B) return;
+    for (const t of B.texs) gl.deleteTexture(t); for (const f of B.fbs) gl.deleteFramebuffer(f);
+    this.nb2 = null;
+  }
+  drawNet2(N, vw, vh, k) {
+    const gl = this.gl, B = this.netAlloc2(N, vw, vh);
+    for (const P of N.layers) {
+      if (!P.bound) { const bi = gl.getUniformBlockIndex(P.p, 'Wt'); gl.uniformBlockBinding(P.p, bi, 0); P.bound = true; }
+      gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, P.ubo);
+      const ins = P.first ? [['src', this.tSrc]] : B.tens[P.in].list.map((t, j) => ['i' + j, t]);
+      if (P.up) for (let o = P.o0; o < P.o1; o++) ins.push(['k' + (o - P.o0), B.tens[P.skip].list[o]]);
+      this.run(P, P.fbo, P.dst[0], P.dst[1], ins, (u) => { gl.uniform2i(u('szIn'), P.srcSz[0], P.srcSz[1]); }, P.o1 - P.o0);
+    }
+    gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, null);
+    this.run(N.hr, B.fbH, vw * 2, vh * 2, [['src', this.tSrc], ['prev', this.tSrc], ['res', B.tRes], ['hrPrev', B.tRes]], (u) => {
+      gl.uniform1f(u('flip'), 0); gl.uniform2f(u('lsz'), vw, vh); gl.uniform1f(u('tw'), 0);
+    });
+    this.prevKey = '';
+    if (this.cfl) this.run(N.cfl, B.fbCf, vw, vh, [['src', this.tSrc]], (u) => { gl.uniform1f(u('flip'), 0); gl.uniform2i(u('sz'), vw, vh); gl.uniform1f(u('eps'), this.cfEps); });
+    this.run(N.compose, this.fb, this.ow, this.oh, [['src', this.tSrc], ['hr', B.hr[0]], ['cf', B.tCf]], (u) => {
+      gl.uniform1f(u('flip'), 1); gl.uniform2f(u('hsz'), vw * 2, vh * 2); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]); gl.uniform1f(u('cfl'), this.cfl);
+    });
+  }
   // рисует кадр src (видео или VideoFrame) размером vw×vh; crop — видимая часть кадра; split — доля «как было» слева;
   // content — 'video' или 'anime' (рисованное: своя сеть)
   draw(src, vw, vh, crop, level, hdr, split, content) {
@@ -1053,7 +1185,7 @@ class RtxEngine {
     const down = vw * k[2] >= this.ow * 0.97 && vh * k[3] >= this.oh * 0.97 || vw * k[2] > this.ow * 1.05 || vh * k[3] > this.oh * 1.05;
     const M = down || level === 'off' ? null : this.pick(level, content);
     if (M && M.layers) {
-      this.drawNet(M, vw, vh, k);
+      if (M.g2) this.drawNet2(M, vw, vh, k); else this.drawNet(M, vw, vh, k);
       if (Object.keys(this.ravu).length && ++this.netFrames > 120) this.freeRavu(); // нейросеть работает стабильно — запасной RAVU не держим
     } else if (M) {
       this.prevKey = '';
@@ -1068,7 +1200,7 @@ class RtxEngine {
     }
     if (!M || !M.layers) this.netFrames = 0;
     this.used = level === 'off' ? 'off' : M ? M.name : down ? 'down' : 'fsr';
-    const sk = SR_SHARP_K[/^(ultra|pro|net)$/.test(this.used) ? 'net' : this.used === 'anime' ? 'anime' : /^r\d/.test(this.used) ? 'ravu' : 'fsr'];
+    const sk = SR_SHARP_K[/^(rtx2|pro|net)$/.test(this.used) ? 'net' : this.used === 'anime' ? 'anime' : /^r\d/.test(this.used) ? 'ravu' : 'fsr'];
     this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid], ['raw', this.tRaw]], (u) => {
       gl.uniform2f(u('dst'), this.ow, this.oh); gl.uniform1f(u('flip'), 0);
       gl.uniform1f(u('sharp'), down || level === 'off' ? 0 : (sk[level] ?? sk.mid) * (this.sharpMul ?? 1));
@@ -1092,7 +1224,8 @@ class RtxEngine {
     return this.tDeb;
   }
   // ступенька вниз: нейросеть Pro → лёгкая → RAVU-3 → RAVU-2 → FSR
-  slower() { const i = SR_TIER[this.used]; if (i > 0) { this.cap = Math.min(this.cap, i - 1); return true; } return false; }
+  // RTX 2 легче Pro — не успевает она, не успеет и Pro: сразу на лёгкую
+  slower() { const i = SR_TIER[this.used]; if (i > 0) { this.cap = Math.min(this.cap, this.used === 'rtx2' ? 3 : i - 1); return true; } return false; }
   destroy() { this.dead = true; try { this.gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {} }
 }
 // Следит, успевает ли видеокарта: браузер пропускает кадры видео или наша отрисовка тормозит кадры экрана.
@@ -1233,7 +1366,7 @@ class SuperRes {
     const v = this.v;
     if (v.readyState < 2 || !v.videoWidth || !this.ow) return; // слой ещё не получил размер — рисовать некуда
     this.used = this.eng.draw(v, v.videoWidth, v.videoHeight, this.crop, this.level, this.hdr, 0, contentOf(v));
-    if (/^(ultra|pro|net|anime|r\d)$/.test(this.used) && !this.c.dataset.lqSrBest) this.c.dataset.lqSrBest = this.used;
+    if (/^(rtx2|pro|net|anime|r\d)$/.test(this.used) && !this.c.dataset.lqSrBest) this.c.dataset.lqSrBest = this.used;
     this.c.dataset.lqSr = this.used;
   }
   // Рисуем по кадрам экрана и только когда у видео сменился кадр.
@@ -1442,7 +1575,7 @@ async function imgEnhance(img, src) {
     let used = '';
     for (const t0 = performance.now(); performance.now() - t0 < 15000;) {
       used = E.draw(bmp, w, h, [0, 0, 1, 1], 'mid', false, 0, contentOf(img));
-      if (/^(ultra|pro|net|anime)$/.test(used)) break;
+      if (/^(rtx2|pro|net|anime)$/.test(used)) break;
       await new Promise((r) => setTimeout(r, 250));
     }
     const out = await new Promise((r) => E.c.toBlob(r, 'image/png'));

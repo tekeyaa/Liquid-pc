@@ -220,7 +220,7 @@ test('видео с превью «главной» идёт в плеере р�
     expect(st.layerVisible).toBe(true);
     expect(st.layerW).toBeGreaterThan(800);
     // Liquid RTX: лучшая ступень, которую умеет видеокарта, — нейросеть (веса из main) или RAVU (таблицы из main)
-    if (st.gl2) await expect.poll(() => inTab(`document.querySelector('#watch canvas[data-lq-sr]')?.dataset.lqSrBest || ''`), { timeout: 30_000 }).toMatch(/^(ultra|pro|net|anime|r2)$/);
+    if (st.gl2) await expect.poll(() => inTab(`document.querySelector('#watch canvas[data-lq-sr]')?.dataset.lqSrBest || ''`), { timeout: 30_000 }).toMatch(/^(rtx2|pro|net|anime|r2)$/);
   }
   // у серверов тестов нет видеокарты: чёткость и видео считает процессор — выключаем, чтобы не мешать следующим тестам
   await win.evaluate(() => document.querySelector('#srLevel [data-v="off"]').click());
@@ -246,7 +246,7 @@ test('Liquid Player: свой плеер на весь экран рисует �
   await inTabGesture(`document.dispatchEvent(new CustomEvent('liquid:player'))`);
   await expect.poll(() => inTab(`!!document.querySelector('lq-player')`)).toBe(true);
   await expect.poll(() => inTab(`document.fullscreenElement ? document.fullscreenElement.tagName : ''`)).toBe('LQ-PLAYER');
-  if (caps.gl2) await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 40_000 }).toMatch(caps.fbf ? /^(ultra|pro|net|anime)$/ : /^r2$/);
+  if (caps.gl2) await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 40_000 }).toMatch(caps.fbf ? /^(rtx2|pro|net|anime)$/ : /^r2$/);
   // видео сайта продолжает идти под нашим плеером
   const t0 = await inTab(`document.getElementById('v').currentTime`);
   await win.waitForTimeout(1200);

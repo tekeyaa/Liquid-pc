@@ -13,24 +13,28 @@ import torch.nn as nn
 import torch.nn.functional as Fn
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # встроенный Python (кнопка «Обучить») папку скрипта сам не добавляет
 import rtxfmt
+import rtx2
+from rtx2_torch import Net2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-NETS = {'ultra': (32, 6, 'liquid-rtx-ultra.json'), 'pro': (24, 5, 'liquid-rtx-pro.json'), 'lite': (16, 4, 'liquid-rtx.json'), 'anime': (16, 4, 'liquid-rtx-anime.json')}
+NETS = {'rtx2': (0, 0, 'liquid-rtx2.json'), 'ultra': (32, 6, 'liquid-rtx-ultra.json'), 'pro': (24, 5, 'liquid-rtx-pro.json'), 'lite': (16, 4, 'liquid-rtx.json'), 'anime': (16, 4, 'liquid-rtx-anime.json')}
 ap = argparse.ArgumentParser()
-ap.add_argument('--net', choices=NETS, default='pro')
+ap.add_argument('--net', choices=NETS, default='rtx2')
 APPD = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'Liquid')
 ap.add_argument('--data', nargs='+', default=[os.path.join(APPD, 'rtx-learn', 'data')])
 ap.add_argument('--out', default=None)
 ap.add_argument('--steps', type=int, default=100000)
 ap.add_argument('--hours', type=float, default=0, help='учить столько часов (вместо числа шагов): шаг обучения плавно спадает к концу срока')
 ap.add_argument('--batch', type=int, default=64)
-ap.add_argument('--patch', type=int, default=48, help='кусок кадра (LR) на один пример')
+ap.add_argument('--patch', type=int, default=0, help='кусок кадра (LR) на один пример (по умолчанию 48, у RTX 2 — 64)')
 ap.add_argument('--lr', type=float, default=None, help='шаг обучения (по умолчанию 2e-4 дообучение, 1e-3 с нуля)')
 ap.add_argument('--scratch', action='store_true')
 ap.add_argument('--init', default=None, help='с каких весов начать (json)')
 ap.add_argument('--grow-from', default=None, help='своих весов этой сети ещё нет — вырастить её из меньшей (json), не меняя ответа')
 ap.add_argument('--resume', default=None, help='продолжить с .pt')
-ap.add_argument('--allow-cpu', action='store_true', help=argparse.SUPPRESS)   # только для проверки на машине без видеокарты
+ap.add_argument('--warm', default=None, help='начать с весов из .pt (новый круг: шаг обучения заново)')
+ap.add_argument('--allow-cpu', action='store_true', help=argparse.SUPPRESS)
+ap.add_argument('--no-baseline', action='store_true', help=argparse.SUPPRESS)   # проверка: сохранять, даже если хуже Pro   # только для проверки на машине без видеокарты
 ap.add_argument('--percept', type=float, default=0.0, help='вес «на глаз» (VGG), напр. 0.02: детальнее, но PSNR ниже — смотреть глазами')
 a = ap.parse_args()
 F, H, fname = NETS[a.net]
@@ -39,7 +43,9 @@ OUT = a.out or os.path.join(APPD, 'rtx', fname)
 if not torch.cuda.is_available() and not a.allow_cpu: sys.exit('PyTorch не видит видеокарту (CUDA): обнови драйвер NVIDIA.')
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.backends.cudnn.benchmark = True
-L = H + 2; M = L + 1; dims = [1] + [F] * (L - 1) + [4]
+G2 = a.net == 'rtx2'
+L = H + 2; M = 0 if G2 else L + 1; dims = [1] + [F] * (L - 1) + [4]
+CR = 8   # RTX 2: поля куска (LR), где края повторены искусственно, — в потерях не считаем
 
 
 class Net(nn.Module):
@@ -58,9 +64,17 @@ class Net(nn.Module):
         return r + base
 
 
-net = Net().to(dev)
+net = (Net2() if G2 else Net()).to(dev)
 init = a.init or next((p for p in (os.path.join(APPD, 'rtx', fname), os.path.join(HERE, fname), os.path.join(HERE, '..', '..', '..', 'main', 'rtx', fname)) if os.path.exists(p)), None)
-if not a.scratch and not a.resume:
+if G2 and not a.scratch and not a.resume and not a.warm:
+    if init:
+        net.load_json(init); print('дообучаю', init)
+    else:
+        a.scratch = True; print('своей Liquid RTX 2 ещё нет — учу с нуля')
+if G2 and a.scratch:
+    with torch.no_grad(): net.c[-1].weight.mul_(0.1); net.c[-1].bias.zero_()
+elif G2 or a.warm: pass
+elif not a.scratch and not a.resume:
     if not init and a.grow_from:
         F0, H0, d0, layers = rtxfmt.load(a.grow_from)
         _, _, _, layers = rtxfmt.grow(layers, F, H)
@@ -74,6 +88,8 @@ if not a.scratch and not a.resume:
     print('дообучаю', init)
 elif a.scratch:
     with torch.no_grad(): net.c[-1].weight.mul_(0.1); net.c[-1].bias.zero_()
+if a.warm:
+    net.load_state_dict(torch.load(a.warm, map_location=dev)['net']); print('продолжаю с весов', a.warm)
 start = {k: v.clone() for k, v in net.state_dict().items()}
 
 # данные — целиком на видеокарте (float16): 1000 кусочков 512² — около 1 ГБ
@@ -103,7 +119,7 @@ for p in a.data:
     VAL.append((torch.from_numpy(dH[va][:48]).to(dev), torch.from_numpy(dL[va][:48]).to(dev)))
     print(p, 'пар', int(tr.sum()), '+ проверка', int(va.sum()))
 cnt = np.array([len(x) for x in LR], float)
-P = a.patch; S = P + 2 * M
+P = a.patch or (64 if G2 else 48); S = P + 2 * M
 
 
 def batch(B):
@@ -127,11 +143,14 @@ def validate(sd=None):
     ps, pb = [], []
     for hr, lr in VAL:
         if not len(lr): continue
-        Pv = lr.shape[1] - 2 * M
-        x = lr[:, None].float(); t = hr[:, None, 2 * M:2 * (M + Pv), 2 * M:2 * (M + Pv)].float()
+        Mv = 8 if G2 else M
+        Pv = lr.shape[1] - 2 * Mv
+        x = lr[:, None].float(); t = hr[:, None, 2 * Mv:2 * (Mv + Pv), 2 * Mv:2 * (Mv + Pv)].float()
         for j in range(0, len(x), 8):
-            o = net(x[j:j + 8], Pv).clamp(0, 1)
-            c = x[j:j + 8, :, M - 1:M + Pv + 1, M - 1:M + Pv + 1]
+            if G2:  # весь кадр, сверяем ту же середину, что у прежних сетей (поля 8 точек)
+                o = net(x[j:j + 8])[:, :, 16:16 + 2 * (lr.shape[1] - 16), 16:16 + 2 * (lr.shape[2] - 16)].clamp(0, 1)
+            else: o = net(x[j:j + 8], Pv).clamp(0, 1)
+            c = x[j:j + 8, :, Mv - 1:Mv + Pv + 1, Mv - 1:Mv + Pv + 1]
             b = Fn.interpolate(c, scale_factor=2, mode='bilinear', align_corners=False)[:, :, 2:2 * Pv + 2, 2:2 * Pv + 2]
             ps += (10 * torch.log10(1 / ((o - t[j:j + 8]) ** 2).mean((1, 2, 3)))).tolist()
             pb += (10 * torch.log10(1 / ((b - t[j:j + 8]) ** 2).mean((1, 2, 3)))).tolist()
@@ -155,11 +174,25 @@ if a.resume:
 v0 = validate(start)
 print(f'проверка: простое растягивание {v0[1]:.2f} дБ, сеть в начале {v0[0]:.2f} дБ')
 best = v0[0] if not a.scratch else -1
+if G2:
+    # планка — Pro (твоя, иначе встроенная) на тех же проверочных кадрах: браузеру отдаём, только когда RTX 2 её обогнала
+    pro = next((p for p in (os.path.join(APPD, 'rtx', 'liquid-rtx-pro.json'), os.path.join(HERE, 'liquid-rtx-pro.json'), os.path.join(HERE, '..', '..', '..', 'main', 'rtx', 'liquid-rtx-pro.json')) if os.path.exists(p)), None)
+    if pro and not a.no_baseline:
+        F, H = 24, 5; L = H + 2; M = L + 1; dims = [1] + [F] * (L - 1) + [4]
+        keepnet, G2, net = net, False, Net().to(dev)
+        _, _, _, lay = rtxfmt.load(pro)
+        with torch.no_grad():
+            for c, (W, b) in zip(net.c, lay): c.weight.copy_(torch.from_numpy(W)); c.bias.copy_(torch.from_numpy(b))
+        vp = validate()[0]
+        net, G2, M = keepnet, True, 0
+        best = max(best, vp)
+        print(f'планка: Pro {vp:.2f} дБ — сохраню, только когда RTX 2 станет точнее')
 
 
 def save_json(tag):
     layers = [(c.weight.detach().cpu().numpy(), c.bias.detach().cpu().numpy()) for c in net.c]
-    rtxfmt.save(OUT, F, H, dims, layers, version=tag)
+    if G2: rtx2.save(OUT, layers, version=tag)
+    else: rtxfmt.save(OUT, F, H, dims, layers, version=tag)
 
 
 def save_pt(it):
@@ -177,6 +210,7 @@ try:
         x, y = batch(a.batch)
         with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == 'cuda'):
             o = net(x, P)
+        if G2: o, y = o[:, :, 2 * CR:-2 * CR, 2 * CR:-2 * CR], y[:, :, 2 * CR:-2 * CR, 2 * CR:-2 * CR]  # края куска — не настоящие
         loss = torch.sqrt((o - y) ** 2 + 1e-6).mean()
         if vgg is not None:
             with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == 'cuda'):
@@ -200,4 +234,4 @@ v = validate()[0]
 if v > best or vgg is not None: best = v; save_json(f'gpu-{it}')
 save_pt(it)
 print(f'итог: лучшая проверка {best:.2f} дБ (в начале {v0[0]:.2f}, простое растягивание {v0[1]:.2f})')
-print('веса:', OUT if best > v0[0] or a.scratch or vgg is not None else 'не стали лучше — файл не менялся')
+print('веса:', OUT if os.path.exists(OUT) and os.path.getmtime(OUT) >= t0 else 'не стали лучше — файл не менялся')

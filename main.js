@@ -12,16 +12,20 @@ const { Diag, sysInfo } = require('./main/diag');
 const ravu = require('./main/ravu');
 // веса нейросетей Liquid RTX (main/rtx): lite — лёгкая, pro — большая для сильных видеокарт, anime — для рисованного.
 // Читаются с диска по первому запросу, без остановки основного процесса
-const RTX_FILES = { ultra: 'liquid-rtx-ultra.json', lite: 'liquid-rtx.json', pro: 'liquid-rtx-pro.json', anime: 'liquid-rtx-anime.json' };
+const RTX_FILES = { rtx2: 'liquid-rtx2.json', lite: 'liquid-rtx.json', pro: 'liquid-rtx-pro.json', anime: 'liquid-rtx-anime.json' };
 const rtxNetCache = new Map();
 const rtxNet = (n) => {
   const f = RTX_FILES[n] || RTX_FILES.lite;
   // свои веса (обученные tools/rtx/gpu) — в %APPDATA%\Liquid\rtx\ — важнее встроенных
   const read = (p) => fs.promises.readFile(p, 'utf8').then(JSON.parse);
+  // Liquid RTX 2 (граф U-Net): у каждого слоя 9·cin строк весов по cout (у up — 4·cout) и столько же смещений
+  const sane2 = (j) => Array.isArray(j.layers) && j.layers.length > 2 && j.layers.every((l) => ['conv', 'up'].includes(l.op) && typeof l.in === 'string' && typeof l.out === 'string'
+    && l.cin > 0 && l.cout > 0 && [1, 2].includes(l.s) && Array.isArray(l.w) && l.w.length === 9 * l.cin && l.w.every((r) => Array.isArray(r) && r.length === l.cout * (l.op === 'up' ? 4 : 1))
+    && Array.isArray(l.b) && l.b.length === l.cout * (l.op === 'up' ? 4 : 1)) && j.layers[j.layers.length - 1].out === 'res';
   const sane = (j) => j && Array.isArray(j.dims) && Array.isArray(j.layers) && j.layers.length === j.dims.length - 1 && j.dims[0] === 1 && j.dims[j.dims.length - 1] === 4
     && j.layers.every((l, i) => Array.isArray(l.w) && l.w.length === 9 * j.dims[i] && l.w.every((r) => Array.isArray(r) && r.length === j.dims[i + 1]) && Array.isArray(l.b) && l.b.length === j.dims[i + 1]);
   if (!rtxNetCache.has(f)) rtxNetCache.set(f, read(path.join(app.getPath('userData'), 'rtx', f))
-    .then((j) => { if (!sane(j)) throw new Error('не тот формат'); console.log(`[liquid] Liquid RTX: свои веса ${f}`); return j; })
+    .then((j) => { if (!(j && j.arch === 'g2' ? sane2(j) : sane(j))) throw new Error('не тот формат'); console.log(`[liquid] Liquid RTX: свои веса ${f}`); return j; })
     .catch((e) => { if (e.code !== 'ENOENT') console.warn(`[liquid] Liquid RTX: свои веса ${f} не подошли (${e.message}), беру встроенные`); return read(path.join(__dirname, 'main', 'rtx', f)); })
     .catch(() => null));
   return rtxNetCache.get(f);

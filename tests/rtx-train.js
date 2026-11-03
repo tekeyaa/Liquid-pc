@@ -49,17 +49,14 @@ async function go(extra, hours, net = 'pro') {
   const dt = (Date.now() - t1) / 1000;
   if (!(T.result.rounds >= 2) || dt > 150) { console.error(`::error::круги: ${T.result.rounds}, ${dt.toFixed(0)} с`); process.exit(1); }
   console.log(`круги: ${T.result.rounds} за ${dt.toFixed(0)} с`);
-  // «Обучить» (auto): одна сеть для всего — Ultra на всех данных, включая вложенную папку (старая anime)
+  // «Обучить» (auto): одна сеть для всего — Liquid RTX 2 с нуля на всех данных, включая вложенную папку
   T.minGain = 0.1; T.minLeft = 5 * 60e3;
-  await go(['--allow-cpu', '--steps', '20', '--batch', '4', '--scratch'], 0, 'auto');
+  await go(['--allow-cpu', '--steps', '20', '--batch', '4', '--scratch', '--no-baseline'], 0, 'auto');
   const nets = (T.result.nets || []).map((r) => r.name).join(',');
-  if (nets !== 'ultra' || !fs.existsSync(path.join(out, 'liquid-rtx-ultra.json')) || !T.mine()) { console.error('::error::«Обучить» выучило не одну Ultra: ' + nets); process.exit(1); }
+  if (nets !== 'rtx2' || !fs.existsSync(path.join(out, 'liquid-rtx2.json')) || !T.mine()) { console.error('::error::«Обучить» выучило не Liquid RTX 2: ' + nets); process.exit(1); }
   console.log('одна кнопка: ' + nets + ' — ' + T.state().msg);
-  // Ultra из Pro: своих весов Ultra нет — первый круг стартует с выращенной Pro, «в начале» — та же точность
-  fs.rmSync(path.join(out, 'liquid-rtx-ultra.json'), { force: true });
-  await go(['--allow-cpu', '--steps', '10', '--batch', '4'], 0, 'ultra');
-  if (!/выращена до 32×6/.test(T.lastTail || '')) { console.log(T.lastTail); console.error('::error::Ultra не выросла из Pro'); process.exit(1); }
-  console.log('Ultra выросла из Pro');
+  // цепочка: сеть на PyTorch (как учится) == эталон на numpy по файлу (а эталон == шейдеры браузера — проверено отдельно)
+  await T.run(T.py, [path.join(__dirname, '..', 'tools', 'rtx', 'gpu', 'check_rtx2.py'), path.join(out, 'liquid-rtx2.json')], (l) => console.log(l)).catch((e) => { console.error('::error::PyTorch и эталон RTX 2 расходятся: ' + e.message); process.exit(1); });
   const f = path.join(out, 'liquid-rtx-pro.json');
   const j = JSON.parse(fs.readFileSync(f, 'utf8'));
   if (!sane(j) || j.F !== 24 || j.H !== 5) { console.error('::error::веса не того формата'); process.exit(1); }

@@ -12,7 +12,7 @@ const PY_URL = `https://www.python.org/ftp/python/${PY_VER}/python-${PY_VER}-emb
 // его новые версии отказываются ставить pip во встроенный Python на Windows («To modify pip, please run…»)
 const PIP_URL = 'https://files.pythonhosted.org/packages/py3/p/pip/pip-24.3.1-py3-none-any.whl';
 const SETUP_V = '1'; // поменять — поставится заново
-const NETS = { ultra: 'liquid-rtx-ultra.json', pro: 'liquid-rtx-pro.json', lite: 'liquid-rtx.json', anime: 'liquid-rtx-anime.json' };
+const NETS = { rtx2: 'liquid-rtx2.json', pro: 'liquid-rtx-pro.json', lite: 'liquid-rtx.json', anime: 'liquid-rtx-anime.json' };
 
 class RtxTrain {
   constructor({ dir, scripts, weights, data, out, log, torchIndex, onDone }) {
@@ -24,10 +24,10 @@ class RtxTrain {
     this.proc = null; this.stopping = false; this.minGain = 0.1; this.minLeft = 5 * 60e3;
   }
   state() { return { ...this.st, running: !!this.busy, ready: this.ready(), mine: this.mine() }; }
-  // своя обученная сеть (Ultra): есть ли, когда обучалась, сколько прибавила
+  // своя обученная сеть (Liquid RTX 2): есть ли, когда обучалась, сколько прибавила
   mine() {
-    if (!fs.existsSync(path.join(this.out, NETS.ultra))) return null;
-    try { return JSON.parse(fs.readFileSync(path.join(this.out, 'liquid-rtx-ultra.meta.json'), 'utf8')); } catch { return {}; }
+    if (!fs.existsSync(path.join(this.out, NETS.rtx2))) return null;
+    try { return JSON.parse(fs.readFileSync(path.join(this.out, 'liquid-rtx2.meta.json'), 'utf8')); } catch { return {}; }
   }
   ready() { try { return fs.readFileSync(path.join(this.dir, 'py', '.ready'), 'utf8') === SETUP_V; } catch { return false; } }
   set(phase, msg, pct) { this.st = { ...this.st, phase, msg, pct: pct ?? this.st.pct }; }
@@ -99,19 +99,19 @@ class RtxTrain {
   // скрипты — из приложения (они в app.asar, Python его не читает) — копируем рядом
   prepScripts() {
     const d = path.join(this.dir, 'scripts'); fs.mkdirSync(d, { recursive: true });
-    for (const f of ['train_gpu.py', 'rtxfmt.py']) fs.writeFileSync(path.join(d, f), fs.readFileSync(path.join(this.scripts, f)));
+    for (const f of ['train_gpu.py', 'rtxfmt.py', 'rtx2.py', 'rtx2_torch.py', 'check_rtx2.py']) fs.writeFileSync(path.join(d, f), fs.readFileSync(path.join(this.scripts, f)));
     for (const f of Object.values(NETS)) { const src = path.join(this.weights, f); if (fs.existsSync(src)) fs.writeFileSync(path.join(d, f), fs.readFileSync(src)); }
     return d;
   }
   // Обучение кругами. Круг — полное обучение (~40 минут на RTX 4070) от лучшей версии прошлого круга: улучшилась —
   // записалась, и следующий круг начинается уже с неё. Без срока — один круг. Со сроком (3/6/12 ч) — круги, пока
   // не выйдет время или пока круг не даст меньше +0,1 дБ: дальше сеть на этих данных почти не растёт, нужны новые.
-  // net 'auto' (кнопка «Обучить») — одна сеть для всего (Ultra) на всех собранных роликах
+  // net 'auto' (кнопка «Обучить») — одна сеть для всего (Liquid RTX 2) на всех собранных роликах
   start(net = 'auto', extra = [], hours = 0) {
     hours = Math.max(0, Number(hours) || 0);
     if (this.busy) return false;
-    // одна сеть для всего: Ultra на всех собранных роликах (train_gpu берёт и вложенные папки — старая data/anime тоже)
-    const plan = net === 'auto' || !NETS[net] ? [['ultra', this.data, 'видео', 1]] : [[net, this.data, 'видео', 1]];
+    // одна сеть для всего: Liquid RTX 2 на всех собранных роликах (train_gpu берёт и вложенные папки — старая data/anime тоже)
+    const plan = net === 'auto' || !NETS[net] ? [['rtx2', this.data, 'видео', 1]] : [[net, this.data, 'видео', 1]];
     this.stopping = false; this.result = null;
     this.set('setup', 'Проверяю видеокарту…', 0);
     const fmt = (min) => (min >= 90 ? `${Math.floor(min / 60)} ч ${Math.round(min % 60)} мин` : `${Math.round(min)} мин`);
@@ -135,9 +135,8 @@ class RtxTrain {
           const args = [...extra];
           const left = deadline - Date.now();
           if (hours && lastDur && left < lastDur * 1.1) args.push('--hours', String(Math.max(left, 60e3) / 3600e3)); // последний круг — сколько осталось
-          if (round > 1 && fs.existsSync(out)) args.push('--init', out);
-          // Ultra (32×6) своих весов ещё нет — вырастает из Pro (твоей обученной, иначе встроенной) с тем же ответом
-          if (name === 'ultra' && !fs.existsSync(out)) { const own = path.join(this.out, NETS.pro); args.push('--grow-from', fs.existsSync(own) ? own : path.join(d, NETS.pro)); }
+          // продолжение: лучшие веса (json), а если RTX 2 ещё не обогнала Pro и json нет — веса прошлого круга (.pt)
+          if (fs.existsSync(out)) args.push('--init', out); else if (fs.existsSync(out + '.pt') && !args.includes('--scratch')) args.push('--warm', out + '.pt');
           this.set('train', `${tag}${hours ? `, круг ${round}` : ''}: запуск…`, 0);
           const t0 = Date.now();
           let v0 = null, best = null;
@@ -173,7 +172,7 @@ class RtxTrain {
       this.log('info', 'Liquid RTX обучение', this.st.msg);
       // «твоя сеть»: когда обучалась и сколько прибавила за все обучения — для строки в настройках
       if (this.result.better) try {
-        const mf = path.join(this.out, 'liquid-rtx-ultra.meta.json');
+        const mf = path.join(this.out, 'liquid-rtx2.meta.json');
         let m = {}; try { m = JSON.parse(fs.readFileSync(mf, 'utf8')); } catch {}
         m.at = Date.now(); m.gain = (m.gain || 0) + Math.max(0, r0.total); m.times = (m.times || 0) + 1;
         fs.writeFileSync(mf, JSON.stringify(m));
