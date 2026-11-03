@@ -281,37 +281,57 @@
 
         <section class="set-sec" data-t="video">
           <h4>Liquid RTX</h4>
-          <div class="muted sm" style="margin:-4px 0 10px;line-height:1.5">Как RTX Video Super Resolution: нейросеть на видеокарте убирает следы сжатия и увеличивает ролик до разрешения экрана (1080p → 4K). Включается и кнопкой на самом видео.</div>
-          <div class="seg2" id="srLevel" style="margin-top:0">
-            <button data-v="off">Выкл</button>
-            <button data-v="mid">Чисто</button>
-            <button data-v="max">Чётко</button>
-          </div>
-          <label class="switch-row"><span>Убирать полосы на градиентах (небо, тёмные сцены)</span><input type="checkbox" id="srDeband" class="switch" /></label>
-          <label class="switch-row"><span>HDR-цвет: ярче краски и глубже тени</span><input type="checkbox" id="srHdr" class="switch" /></label>
-          <label class="switch-row"><span>Полный экран — в Liquid Player (свой плеер с Liquid RTX вместо плеера сайта)</span><input type="checkbox" id="lpAuto" class="switch" /></label>
-          <h4>Обучение нейросети</h4>
-          <label class="switch-row"><span>Режим обучения: собирать с YouTube пары кадров «1080p → 4K/8K» для дообучения Liquid RTX на своей видеокарте<small class="muted sm" style="display:block;margin-top:2px">Ролики с 4K сами попадают в очередь, когда ты их смотришь. Кадры нарезаются в фоне, пока видео не играет.</small></span><input type="checkbox" id="rtxLearn" class="switch" /></label>
-          <div id="rtxLearnBox" class="field" hidden>
-            <div id="rtxLearnStat" class="muted sm" style="margin:2px 0 8px;line-height:1.5"></div>
-            <textarea id="rtxLinks" rows="3" spellcheck="false" placeholder="Ещё ролики: ссылки YouTube или ссылка на плейлист, по одной в строке"></textarea>
-            <div class="row" style="margin-top:8px;gap:8px;align-items:center">
-              <button id="rtxLinksAdd" class="btn ghost sm" style="height:30px">В очередь</button>
-              <span class="muted sm" style="margin-left:auto">Место под данные</span>
-              <select id="rtxLearnGb" style="width:auto;padding:5px 8px"><option value="0.5">0,5 ГБ</option><option value="1">1 ГБ</option><option value="2">2 ГБ</option><option value="5">5 ГБ</option><option value="10">10 ГБ</option></select>
-              <button id="rtxLearnOpen" class="btn ghost sm" style="height:30px" title="Папка с собранными кадрами">Папка</button>
+          <div class="set-card">
+            <div class="set-row col">
+              <div class="set-t"><b>Улучшение видео</b><small>Нейросеть на видеокарте убирает следы сжатия и увеличивает ролик до разрешения экрана — как RTX Video у Nvidia. Включается и кнопкой на самом видео.</small></div>
+              <div class="seg2" id="srLevel">
+                <button data-v="off">Выкл</button>
+                <button data-v="mid">Чисто</button>
+                <button data-v="max">Чётко</button>
+              </div>
             </div>
-            <div class="row" style="margin-top:12px;gap:8px;align-items:center">
-              <select id="rtxTrainHours" style="width:auto;padding:5px 8px" title="Сколько учить"><option value="0">~40 минут</option><option value="3">3 часа</option><option value="6">6 часов</option><option value="12">12 часов</option></select>
-              <button id="rtxTrainGo" class="btn primary sm" style="height:30px">Обучить</button>
-              <button id="rtxTrainStop" class="btn ghost sm" style="height:30px" hidden>Стоп</button>
-            </div>
-            <div id="rtxTrainStat" class="muted sm" style="margin-top:6px;line-height:1.5"></div>
-            <label class="switch-row" style="margin-top:6px"><span>Учить автоматически, когда место под данные заполнится<small class="muted sm" style="display:block;margin-top:2px">На выбранное время. Начнётся, когда не играет видео.</small></span><input type="checkbox" id="rtxAutoTrain" class="switch" /></label>
+            <label class="set-row"><div class="set-t"><b>Без полос на градиентах</b><small>Небо и тёмные сцены — плавно, без «ступенек»</small></div><input type="checkbox" id="srDeband" class="switch" /></label>
+            <label class="set-row"><div class="set-t"><b>HDR-цвет</b><small>Ярче краски, глубже тени</small></div><input type="checkbox" id="srHdr" class="switch" /></label>
           </div>
-          <h4>Панель на видео</h4>
-          <label class="switch-row"><span>Показывать панель при наведении на видео</span><input type="checkbox" id="vidBar" class="switch" /></label>
-          <div class="muted sm" style="line-height:1.6;margin-top:6px">Shift + колесо над видео — скорость · Alt + колесо — громкость · Alt+P — картинка в картинке · Alt+Enter — Liquid Player</div>
+
+          <h4>Плеер</h4>
+          <div class="set-card">
+            <label class="set-row"><div class="set-t"><b>Liquid Player на весь экран</b><small>Свой плеер с Liquid RTX вместо полноэкранного плеера сайта</small></div><input type="checkbox" id="lpAuto" class="switch" /></label>
+            <label class="set-row"><div class="set-t"><b>Панель на видео</b><small>Скорость, громкость и картинка — при наведении на видео</small></div><input type="checkbox" id="vidBar" class="switch" /></label>
+            <div class="set-row keys-line"><kbd>Shift</kbd>+колесо — скорость <kbd>Alt</kbd>+колесо — громкость <kbd>Alt+P</kbd> картинка в картинке <kbd>Alt+Enter</kbd> Liquid Player</div>
+          </div>
+
+          <h4>Своя нейросеть</h4>
+          <div class="set-card">
+            <div class="set-row">
+              <div class="set-t"><b id="rtxMine">Своя сеть ещё не обучена</b><small id="rtxTrainStat"></small></div>
+            </div>
+            <div class="set-row tools">
+              <select id="rtxTrainHours" class="glass-select" title="Сколько учить"><option value="0">~40 минут</option><option value="3">3 часа</option><option value="6">6 часов</option><option value="12">12 часов</option></select>
+              <button id="rtxTrainGo" class="btn primary sm">Обучить</button>
+              <button id="rtxTrainStop" class="btn ghost sm" hidden>Остановить</button>
+            </div>
+            <label class="set-row"><div class="set-t"><b>Учить автоматически</b><small>Когда место под данные заполнится и видео не играет</small></div><input type="checkbox" id="rtxAutoTrain" class="switch" /></label>
+          </div>
+          <div class="set-card">
+            <label class="set-row"><div class="set-t"><b>Сбор данных с YouTube</b><small>Ролики с 4K и 8K, которые ты смотришь, сами попадают в очередь; кадры нарезаются в фоне, пока видео не играет</small></div><input type="checkbox" id="rtxLearn" class="switch" /></label>
+            <div id="rtxLearnBox" hidden>
+              <div class="set-row col">
+                <div class="set-t"><small id="rtxLearnStat"></small></div>
+                <div class="meter" id="rtxMeter"><i></i></div>
+              </div>
+              <div class="set-row tools">
+                <span class="muted sm">Место под данные</span>
+                <select id="rtxLearnGb" class="glass-select"><option value="0.5">0,5 ГБ</option><option value="1">1 ГБ</option><option value="2">2 ГБ</option><option value="5">5 ГБ</option><option value="10">10 ГБ</option></select>
+                <button id="rtxLearnOpen" class="btn ghost sm" title="Папка с собранными кадрами">Папка</button>
+              </div>
+              <details class="set-row more">
+                <summary>Добавить ролики или плейлист</summary>
+                <div class="field"><textarea id="rtxLinks" rows="3" spellcheck="false" placeholder="Ссылки YouTube или ссылка на плейлист, по одной в строке"></textarea></div>
+                <button id="rtxLinksAdd" class="btn ghost sm">В очередь</button>
+              </details>
+            </div>
+          </div>
         </section>
 
         <section class="set-sec" data-t="claude">

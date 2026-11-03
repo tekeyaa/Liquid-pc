@@ -834,3 +834,115 @@ body.tab-dragging .tab-glider { opacity: 0; transition: opacity .12s; }
 .vpn-tools { display: flex; align-items: center; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; }
 .vpn-best { display: flex; align-items: center; gap: 8px; flex: 1; font-size: 12px; color: var(--muted); min-width: 150px; }
 .vpn-best .switch { transform: scale(.82); transform-origin: left center; }
+
+/* ======================================================================================================
+   Жидкое стекло (1.27). Один материал для всего: полупрозрачная нейтральная подложка с размытием того, что под ней,
+   тонкий светлый блик по верхнему краю и мягкая тень. Цвет акцента — только лёгким оттенком стекла, без заливок
+   градиентом. Этот слой идёт последним и перекрывает накопившиеся за версии градиенты.
+   ====================================================================================================== */
+:root {
+  --lg-tint: rgba(24, 24, 32, .58);          /* стекло окон и меню */
+  --lg-tint-dense: rgba(20, 20, 28, .74);    /* стекло, под которым может быть яркое видео */
+  --lg-card: rgba(255, 255, 255, .045);      /* карточки внутри окна */
+  --lg-card-b: rgba(255, 255, 255, .085);
+  --lg-hi: rgba(255, 255, 255, .22);         /* блик верхнего края */
+  --lg-blur: blur(22px) saturate(170%);
+  --lg-shadow: 0 24px 70px -24px rgba(0, 0, 0, .75);
+  --lg-edge: inset 0 1px 0 var(--lg-hi), inset 0 0 0 1px rgba(255, 255, 255, .06);
+  --lg-accent-glass: color-mix(in srgb, var(--accent) 26%, rgba(255, 255, 255, .06));
+}
+
+/* окна и меню: стекло вместо плотных градиентов */
+#setPop.settings, .pop, .ctx, #suggest, #toast, #find, #updCard {
+  background: var(--lg-tint) !important;
+  -webkit-backdrop-filter: var(--lg-blur); backdrop-filter: var(--lg-blur) !important;
+  border: 1px solid rgba(255, 255, 255, .12);
+  box-shadow: var(--lg-edge), var(--lg-shadow) !important;
+}
+#setPop.settings { background: var(--lg-tint-dense) !important; border-radius: 22px; }
+.set-head { border-bottom: 1px solid rgba(255, 255, 255, .06); }
+#setNav { border-right: 1px solid rgba(255, 255, 255, .06); }
+
+/* выделение в меню настроек — стеклянная «капля», акцент только у значка */
+.nav-glider, #setNav button.on {
+  background: rgba(255, 255, 255, .09) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), inset 0 0 0 1px rgba(255, 255, 255, .07) !important;
+}
+#setNav button.on { color: #fff; }
+#setNav button.on svg { color: var(--accent-2); }
+
+/* кнопки: главная — тонированное стекло, а не градиент */
+.btn.primary, .send, #toast .toast-act, #updCard .uc-acts .uc-main {
+  background: var(--lg-accent-glass) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 40%, rgba(255, 255, 255, .12));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 6px 18px -10px color-mix(in srgb, var(--accent) 70%, transparent) !important;
+  color: #fff;
+}
+.btn.primary:hover { background: color-mix(in srgb, var(--accent) 34%, rgba(255, 255, 255, .08)) !important; }
+.btn.ghost { background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .1); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1); }
+#danger .btn.primary { background: color-mix(in srgb, #ff5a5a 30%, rgba(255, 255, 255, .06)) !important; border-color: rgba(255, 120, 120, .4); }
+
+/* сегменты: выбранный — светлая стеклянная пластина (как в iOS), без цветной заливки */
+.seg2 { background: rgba(0, 0, 0, .22); border: 1px solid rgba(255, 255, 255, .07); box-shadow: inset 0 1px 2px rgba(0, 0, 0, .25); }
+.seg-glider, .seg2 button.on {
+  background: rgba(255, 255, 255, .14) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 2px 8px -2px rgba(0, 0, 0, .45) !important;
+}
+.seg2 button.on { color: #fff; }
+.seg-glider ~ button.on, .has-glider .seg2 button.on { background: transparent !important; box-shadow: none !important; }
+
+/* переключатель: стеклянная дорожка, включённый — спокойный цвет акцента */
+.switch { background: rgba(255, 255, 255, .12); box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35), inset 0 0 0 1px rgba(255, 255, 255, .06); flex: none; }
+.switch:checked { background: color-mix(in srgb, var(--accent) 75%, #fff 5%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25); }
+.switch::before { box-shadow: 0 2px 6px rgba(0, 0, 0, .35), inset 0 -1px 0 rgba(0, 0, 0, .08); }
+
+/* поля и списки — утопленное стекло */
+.field textarea, .field input:not([type=range]):not([type=checkbox]), .field select, .glass-select, .lib-search, .ask-input {
+  background: rgba(0, 0, 0, .22) !important; border: 1px solid rgba(255, 255, 255, .09) !important;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .3);
+}
+.glass-select { height: 30px; min-width: 96px; padding: 0 30px 0 12px; border-radius: 10px; color: var(--text); font-size: 12.5px; outline: none; cursor: pointer;
+  appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23aaa' stroke-width='1.5'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important; background-position: right 10px center !important; }
+.glass-select option { background: #1b1a24; }
+
+/* ---------- настройки: заголовки групп и карточки ---------- */
+.set-sec h4 { margin: 22px 2px 8px !important; font-size: 11.5px; letter-spacing: .7px; color: var(--faint); }
+.set-sec h4:first-child { margin-top: 10px !important; }
+.set-card { background: var(--lg-card); border: 1px solid var(--lg-card-b); border-radius: 16px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06); overflow: hidden; }
+.set-card + .set-card { margin-top: 10px; }
+.set-row { display: flex; align-items: center; gap: 14px; padding: 12px 16px; min-height: 52px; }
+.set-row + .set-row, .set-card > div > .set-row:first-child, #rtxLearnBox > .set-row { border-top: 1px solid rgba(255, 255, 255, .055); }
+label.set-row { cursor: pointer; transition: background .2s; }
+label.set-row:hover { background: rgba(255, 255, 255, .025); }
+.set-row.col { flex-direction: column; align-items: stretch; gap: 10px; }
+.set-row.col .seg2 { margin-top: 0; }
+.set-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.set-t b { font-size: 13.5px; font-weight: 550; color: var(--text); }
+.set-t small { font-size: 12px; line-height: 1.45; color: var(--muted); }
+.set-row.tools { justify-content: flex-end; gap: 8px; min-height: 0; padding-top: 4px; }
+.set-row.tools .muted { margin-right: auto; }
+.set-row.tools .btn.sm { height: 30px; flex: none; }
+.set-row.keys-line { display: block; min-height: 0; font-size: 11.5px; color: var(--faint); line-height: 2; }
+.set-row.keys-line kbd { display: inline-block; margin: 0 3px 0 10px; padding: 0 6px; border-radius: 6px; background: rgba(255, 255, 255, .07); border: 1px solid rgba(255, 255, 255, .08); color: var(--muted); font-family: inherit; font-size: 11px; line-height: 18px; }
+.set-row.keys-line kbd:first-child { margin-left: 0; }
+.meter { height: 6px; border-radius: 4px; background: rgba(0, 0, 0, .28); box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35); overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; border-radius: inherit; background: color-mix(in srgb, var(--accent-2) 75%, #fff 10%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35); transition: width .6s var(--ease); }
+.meter.full i { background: var(--ok); }
+details.set-row.more { display: block; min-height: 0; }
+details.set-row.more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); list-style: none; }
+details.set-row.more summary::before { content: "＋"; margin-right: 8px; color: var(--accent-2); }
+details.set-row.more[open] summary::before { content: "－"; }
+details.set-row.more .field { margin: 10px 0 8px; }
+
+/* остальные вкладки: строки с переключателями — такие же стеклянные плитки */
+.set-sec .switch-row { margin: 0 0 8px; padding: 12px 16px; min-height: 48px; gap: 14px; border-radius: 14px; background: var(--lg-card); border: 1px solid var(--lg-card-b);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05); color: var(--text); font-size: 13px; }
+.set-sec .switch-row small { color: var(--muted); }
+
+/* ползунки — стеклянная дорожка и светлая «капля» */
+input[type=range] { -webkit-appearance: none; appearance: none; height: 22px; padding: 0 !important; border: 0 !important; background: transparent !important; box-shadow: none !important; cursor: pointer; }
+input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 4px; background: rgba(0, 0, 0, .28); box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35), inset 0 0 0 1px rgba(255, 255, 255, .05); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; margin-top: -6px; border-radius: 50%;
+  background: #f4f4f8; box-shadow: 0 2px 8px rgba(0, 0, 0, .45), inset 0 -1px 0 rgba(0, 0, 0, .1); transition: transform .3s var(--spring); }
+input[type=range]:active::-webkit-slider-thumb { transform: scale(1.15); }

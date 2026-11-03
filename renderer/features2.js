@@ -237,18 +237,25 @@
   // режим обучения Liquid RTX: очередь роликов и сколько уже собрано
   const mb = (b) => (b >= 2 ** 30 ? (b / 2 ** 30).toFixed(1).replace('.', ',') + ' ГБ' : Math.round(b / 2 ** 20) + ' МБ');
   async function learnStat() {
-    if (!settings.rtxLearn || !L.rtxLearn) return;
-    const s = await L.rtxLearn.status().catch(() => null); if (!s) return;
-    const full = s.bytes >= s.budget;
-    $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов готово ${s.done}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
-      (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место кончилось — можно обучать или дать больше места' : '');
+    if (!L.rtxLearn) return;
+    if (settings.rtxLearn) {
+      const s = await L.rtxLearn.status().catch(() => null);
+      if (s) {
+        const full = s.bytes >= s.budget;
+        $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов ${s.done}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
+          (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место заполнено' : '');
+        $('#rtxMeter i').style.width = Math.min(100, (s.bytes / s.budget) * 100).toFixed(1) + '%';
+        $('#rtxMeter').classList.toggle('full', full);
+      }
+    }
     const t = await L.rtxLearn.trainState().catch(() => null); if (!t) return;
     $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainHours').disabled = t.running;
-    const mine = t.mine ? `Твоя сеть: ${t.mine.at ? 'обучена ' + new Date(t.mine.at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) : 'обучена'}${t.mine.gain ? ` · за все обучения точнее на ${t.mine.gain.toFixed(2).replace('.', ',')} дБ` : ''}. ` : 'Своя сеть ещё не обучена — работает встроенная. ';
-    $('#rtxTrainStat').textContent = (t.running ? '' : mine) + (t.msg || (t.ready ? 'Python и PyTorch уже стоят. Обучение — 30–60 минут, видео в это время может подтормаживать.'
-      : 'Нужна видеокарта NVIDIA. В первый раз браузер сам скачает Python и PyTorch (~3 ГБ). Обучение — 30–60 минут, видео в это время может подтормаживать.'));
+    const day = (x) => new Date(x).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+    $('#rtxMine').textContent = t.mine ? `Твоя сеть обучена${t.mine.at ? ' ' + day(t.mine.at) : ''}${t.mine.gain ? ` · точнее на ${t.mine.gain.toFixed(2).replace('.', ',')} дБ` : ''}` : 'Своя сеть ещё не обучена';
+    $('#rtxTrainStat').textContent = t.msg || (t.mine ? 'Можно доучить — станет ещё точнее.' : t.ready ? 'Пока работает встроенная. Учится на собранных роликах; лучше ставить на 6–12 часов.'
+      : 'Пока работает встроенная. Нужна видеокарта NVIDIA; в первый раз браузер сам скачает Python и PyTorch (~3 ГБ).');
   }
-  setInterval(() => { if ($('#rtxLearnBox') && !$('#rtxLearnBox').hidden && $('#rtxLearnBox').offsetParent) learnStat(); }, 2000);
+  setInterval(() => { if ($('#rtxTrainGo') && $('#rtxTrainGo').offsetParent) learnStat(); }, 2000);
   $('#rtxLearn').onchange = async (e) => { settings = await L.settings.set({ rtxLearn: e.target.checked }); renderSr(); pushVideoPrefs(); };
   $('#rtxLearnGb').onchange = async (e) => { settings = await L.settings.set({ rtxLearnGb: Number(e.target.value) }); renderSr(); };
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
