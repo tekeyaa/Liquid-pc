@@ -8,8 +8,6 @@ const { SmartVpn, DPI_SITES, NEVER_VPN, parseBlockList } = require('./main/smart
 const { splitInput, decodeSub, keyId, tcpPing, endpoint, flag, explain } = require('./main/vpnlist');
 const { Extensions, POPULAR } = require('./main/extensions');
 const { translateBatch } = require('./main/translate');
-const { GameMode } = require('./main/gamemode');
-const { WatchRoom, BROKERS: WATCH_BROKERS } = require('./main/watch');
 const { Diag, sysInfo } = require('./main/diag');
 const ravu = require('./main/ravu');
 // веса нейросетей Liquid RTX (main/rtx): lite — лёгкая, pro — большая для сильных видеокарт, anime — для рисованного.
@@ -31,7 +29,6 @@ const rtxNet = (n) => {
 const os = require('os');
 const { RtxLearn } = require('./main/rtx-learn');
 const { RtxTrain } = require('./main/rtx-train');
-let game = null;
 let rtxLearn = null; // режим обучения Liquid RTX (main/rtx-learn.js)
 let rtxTrain = null; // обучение по кнопке: свой Python + PyTorch (main/rtx-train.js)
 
@@ -246,9 +243,9 @@ function publicSettings() {
     search: s.search || 'google', vpnAuto: !!s.vpnAuto, guard: s.guard !== false, fps: s.fps === '60' ? '60' : 'auto', claudeMode: s.claudeMode || (s.claudeKey ? 'api' : 'web'),
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
-    adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, gameMode: s.gameMode !== false, gameKeepAudio: s.gameKeepAudio !== false,
+    adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
-    ambient: s.ambient !== false, rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
+    rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
@@ -331,7 +328,7 @@ function createWindow({ priv = false, extra = false, open = '', x, y, from = nul
   return w;
 }
 
-const CODE_KEYS = { Equal: '=', Minus: '-', Backslash: '\\', Tab: 'tab', NumpadAdd: '+', NumpadSubtract: '-', Numpad0: '0' };
+const CODE_KEYS = { Equal: '=', Minus: '-', Tab: 'tab', NumpadAdd: '+', NumpadSubtract: '-', Numpad0: '0' };
 function keyOf(input) {
   const c = input.code || '';
   if (/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
@@ -339,7 +336,7 @@ function keyOf(input) {
   if (CODE_KEYS[c]) return CODE_KEYS[c];
   return (input.key || '').toLowerCase(); // F5, F11, Escape, стрелки — от раскладки не зависят
 }
-const SHORTCUTS = new Set(['t', 'w', 'l', 'r', 'tab', 'j', 'k', 'h', '=', '+', '-', '0', 'f', 'i', 'n', 'd', 'b', '\\', 'y', 's']);
+const SHORTCUTS = new Set(['t', 'w', 'l', 'r', 'tab', 'j', 'k', 'h', '=', '+', '-', '0', 'f', 'i', 'n', 'd', 'b', 'y', 's']);
 function handleShortcut(e, input, target) {
   if (input.type !== 'keyDown' || !target || target.isDestroyed()) return;
   // Клавишу узнаём по её месту на клавиатуре, а не по букве: с русской раскладкой Ctrl+T приходит как Ctrl+Е,
@@ -468,7 +465,6 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('context-menu', (_e, p) => {
     const t = [];
     if (p.linkURL) {
-      t.push({ label: 'Открыть рядом (два сайта)', click: () => host().send('tab:split', { url: p.linkURL }) });
       t.push({ label: 'Открыть в инкогнито', click: () => { const w = createWindow({ priv: true }); w.webContents.once('did-finish-load', () => w.webContents.send('tab:open', { url: p.linkURL, replace: true })); } });
       t.push({ label: 'Открыть в новой вкладке', click: () => host().send('tab:open', { url: p.linkURL, background: true }) });
       t.push({ label: 'Копировать ссылку', click: () => clipboard.writeText(p.linkURL) });
@@ -491,7 +487,6 @@ app.on('web-contents-created', (_e, contents) => {
       t.push({ label: 'Картинка в картинке', click: () => host().send('shortcut', { key: 'pip' }) });
       t.push({ label: 'Настройки видео (скорость, громкость)', click: () => host().send('shortcut', { key: 'video' }) });
       t.push({ label: 'Окно поверх игры', click: () => host().send('shortcut', { key: 'mini' }) });
-      t.push({ label: 'Сохранить клип (последние 30 с)', click: () => host().send('shortcut', { key: 'clip' }) });
       t.push({ type: 'separator' });
     }
     if (p.mediaType === 'image' && p.srcURL) {
@@ -1450,13 +1445,10 @@ function registerIpc() {
     if ('sleepAfter' in patch) s.sleepAfter = Number(patch.sleepAfter) || 0;
     if ('restore' in patch) s.restore = !!patch.restore;
     if ('dlAsk' in patch) s.dlAsk = !!patch.dlAsk;
-    if ('gameMode' in patch) { s.gameMode = !!patch.gameMode; if (game) { game.enabled = s.gameMode; if (!s.gameMode && game.forced === null) game.set(false); } }
-    if ('gameKeepAudio' in patch) s.gameKeepAudio = !!patch.gameKeepAudio;
     if ('superRes' in patch) s.superRes = ['off', 'mid', 'max'].includes(patch.superRes) ? patch.superRes : 'off';
     if ('srHdr' in patch) s.srHdr = !!patch.srHdr;
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
-    if ('ambient' in patch) s.ambient = !!patch.ambient;
     if ('rtxAutoTrain' in patch) s.rtxAutoTrain = !!patch.rtxAutoTrain;
     if ('rtxTrainHours' in patch) s.rtxTrainHours = [3, 6, 12].includes(Number(patch.rtxTrainHours)) ? Number(patch.rtxTrainHours) : 0;
     if ('rtxLearn' in patch) { s.rtxLearn = !!patch.rtxLearn; if (!s.rtxLearn && rtxLearn) rtxLearn.close(); }
@@ -1529,7 +1521,7 @@ function registerIpc() {
   });
   ipcMain.handle('sr:net', (_e, n) => rtxNet(String(n || 'lite')));
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
-  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, amb: st.ambient !== false }; });
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn }; });
   // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
@@ -1797,40 +1789,6 @@ function registerIpc() {
     w.loadURL(`chrome-extension://${x.realId}/${page.replace(/^\//, '')}`);
   });
 
-  // игровой режим: вкладки не выгружаем, а замораживаем — скрипты и таймеры стоят, память отдаётся,
-  // а страница со всем, что на ней было, остаётся на месте. Размораживаются мгновенно
-  const frozen = new Set();
-  ipcMain.handle('tabs:freeze', async (e, { ids, on }) => {
-    let n = 0;
-    for (const id of (Array.isArray(ids) ? ids : []).slice(0, 500)) {
-      const wc = webContents.fromId(Number(id));
-      if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== e.sender) continue;
-      try {
-        const dbg = wc.debugger;
-        if (on) {
-          if (frozen.has(wc.id)) continue;
-          if (!dbg.isAttached()) dbg.attach('1.3');
-          // скрытую страницу Chromium замораживает сам; видимую (окно браузера под игрой) — ставим скрипты на паузу
-          await dbg.sendCommand('Page.enable').catch(() => {});
-          await dbg.sendCommand('Page.setWebLifecycleState', { state: 'frozen' }).catch(() => {});
-          await dbg.sendCommand('Debugger.enable');
-          await dbg.sendCommand('Debugger.pause');
-          dbg.sendCommand('Memory.simulatePressureNotification', { level: 'critical' }).catch(() => {});
-          frozen.add(wc.id); n++;
-          wc.once('destroyed', () => frozen.delete(wc.id));
-        } else {
-          if (!frozen.has(wc.id)) continue;
-          frozen.delete(wc.id);
-          await dbg.sendCommand('Debugger.resume').catch(() => {});
-          await dbg.sendCommand('Debugger.disable').catch(() => {});
-          await dbg.sendCommand('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
-          try { dbg.detach(); } catch {}
-          n++;
-        }
-      } catch (err) { diag.log('warn', 'игровой режим', 'заморозка вкладки: ' + err.message); }
-    }
-    return n;
-  });
 
   // окно поверх игры
   ipcMain.handle('mini:open', (_e, o) => openMini(o || {}));
@@ -1841,11 +1799,6 @@ function registerIpc() {
     else if (op === 'close') mini.close();
     else if (op === 'back') { const from = mini.__from; mini.close(); try { win?.webContents.send('mini:back', { wcId: from, t }); win?.focus(); } catch {} }
   });
-  // «Смотреть вместе»
-  ipcMain.handle('watch:join', async (e, code) => { try { return { ok: true, code: await watchRoom(e.sender).join(code) }; } catch (err) { return { ok: false, error: err.message }; } });
-  ipcMain.handle('watch:send', (e, m) => { const r = watchRooms.get(e.sender.id); return r ? r.send(m && typeof m === 'object' ? m : {}) : false; });
-  ipcMain.on('watch:leave', (e) => watchRooms.get(e.sender.id)?.leave());
-
   // снимок вкладки для превью при наведении: маленький JPEG, только своих вкладок
   ipcMain.handle('tab:thumb', async (e, wcId) => {
     const wc = webContents.fromId(Number(wcId));
@@ -1886,8 +1839,8 @@ function registerIpc() {
     return img.toDataURL();
   });
   ipcMain.handle('file:save', async (_e, { name, data, kind, copy }) => {
-    // заметки — в «Загрузки», клипы видео — в «Видео/Liquid», кадры и скриншоты — в «Изображения/Liquid»
-    const dir = kind === 'note' ? app.getPath('downloads') : path.join(app.getPath(kind === 'clip' ? 'videos' : 'pictures'), 'Liquid');
+    // заметки — в «Загрузки», кадры и скриншоты — в «Изображения/Liquid»
+    const dir = kind === 'note' ? app.getPath('downloads') : path.join(app.getPath('pictures'), 'Liquid');
     fs.mkdirSync(dir, { recursive: true });
     const file = uniquePath(dir, name);
     const buf = typeof data === 'string' && data.startsWith('data:') ? Buffer.from(data.split(',')[1], 'base64') : Buffer.from(data);
@@ -1926,10 +1879,6 @@ function registerIpc() {
     clearTimeout(diagT);
     diagT = setTimeout(() => broadcast('diag:new', { unseen, last: e ? { level: e.level, source: e.source, msg: e.msg.slice(0, 160) } : null }), 300);
   });
-
-  // игровой режим
-  ipcMain.handle('game:state', () => ({ on: !!game?.on, game: game?.game || '', forced: game?.forced ?? null, supported: process.platform === 'win32' }));
-  ipcMain.on('game:force', (_e, on) => game?.force(on));
 
   // память
   ipcMain.handle('mem:info', () => {
@@ -2102,23 +2051,6 @@ function openMini({ url, t, wcId }) {
   return true;
 }
 
-// ---------- «Смотреть вместе» ----------
-// У каждого окна — своя комната и свой участник. Раньше комната была одна на весь браузер, а её события уходили
-// только в главное окно: второе окно в той же комнате «перезаходило» за первое, показывало «нет связи», а сообщения
-// между окнами отсеивались как свои же
-const watchRooms = new Map(); // id окна (webContents) -> WatchRoom
-if (TEST && process.env.LIQUID_WATCH_BROKERS) WATCH_BROKERS.splice(0, WATCH_BROKERS.length, ...process.env.LIQUID_WATCH_BROKERS.split(',')); // свой брокер в автотестах
-function watchRoom(wc) {
-  let r = watchRooms.get(wc.id);
-  if (r) return r;
-  const send = (ch, d) => { try { if (!wc.isDestroyed()) wc.send(ch, d); } catch {} };
-  r = new WatchRoom({ onMessage: (m) => send('watch:msg', m), onStatus: (st) => send('watch:status', st), log: (lvl, msg) => diag.log(lvl, 'вместе', msg) });
-  watchRooms.set(wc.id, r);
-  const id = wc.id;
-  wc.once('destroyed', () => { watchRooms.get(id)?.leave(true); watchRooms.delete(id); }); // окно закрыли — выходим из его комнаты
-  return r;
-}
-
 // ---------- старт ----------
 app.whenReady().then(async () => {
   const bootT0 = Date.now();
@@ -2216,27 +2148,6 @@ app.whenReady().then(async () => {
     });
   }
   createWindow();
-  // игровой режим
-  let ownPids = null, ownPidsAt = 0;
-  game = new GameMode({
-    // список процессов браузера обновляем раз в 30 с, а не при каждой проверке (каждые 4 с)
-    isOwnPid: (pid) => {
-      const now = Date.now();
-      if (!ownPids || now - ownPidsAt > 30e3) { ownPids = new Set(app.getAppMetrics().map((m) => m.pid)); ownPidsAt = now; }
-      if (ownPids.has(pid)) return true;
-      ownPids = new Set(app.getAppMetrics().map((m) => m.pid)); ownPidsAt = now; // новый процесс вкладки — перепроверяем сразу
-      return ownPids.has(pid);
-    },
-    onChange: ({ on, game: name }) => {
-      for (const m of app.getAppMetrics()) {
-        try { os.setPriority(m.pid, on ? os.constants.priority.PRIORITY_BELOW_NORMAL : os.constants.priority.PRIORITY_NORMAL); } catch {}
-      }
-      broadcast('game:state', { on, game: name, keepAudio: loadSettings().gameKeepAudio !== false });
-    },
-  });
-  game.enabled = loadSettings().gameMode !== false && !TEST;
-  // слежение игрового режима запускаем, когда браузер уже освоился (запуск PowerShell на некоторых ПК заметно ест время)
-  if (!TEST) setTimeout(() => { const t0 = Date.now(); game.start(); const dt = Date.now() - t0; if (dt > 150) diag.log('info', 'заминка', `игровой режим: запуск слежения ${dt} мс`); }, 25000);
   announceUpdate();
   fixShortcuts();
   setTimeout(() => checkUpdates(), 60_000);          // через минуту после запуска
@@ -2244,7 +2155,7 @@ app.whenReady().then(async () => {
 
 });
 
-app.on('before-quit', () => { rtxLearn?.close(); rtxTrain?.stop(); if (xray) xray.stop(); dpiXray?.stop(); game?.stop(); for (const r of watchRooms.values()) r.leave(true); try { globalShortcut.unregisterAll(); } catch {} });
+app.on('before-quit', () => { rtxLearn?.close(); rtxTrain?.stop(); if (xray) xray.stop(); dpiXray?.stop(); try { globalShortcut.unregisterAll(); } catch {} });
 app.on('window-all-closed', () => { if (xray) xray.stop(); app.quit(); });
 
 // Одна копия приложения

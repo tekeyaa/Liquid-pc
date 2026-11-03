@@ -424,7 +424,6 @@
       history: () => window.openLibrary('history'),
       downloads: () => window.openLibrary('downloads'),
       extensions: () => window.openExtensions(),
-      split: () => (split ? endSplit(true) : startSplit()),
       translate: () => window.translatePage(),
       pip: () => window.togglePip(),
       settings: () => window.openSettings(),

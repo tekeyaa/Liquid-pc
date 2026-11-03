@@ -235,9 +235,7 @@
     ['Режим чтения', 'F9', () => window.toggleReader()],
     ['Перевести страницу', '', () => window.translatePage()],
     ['Картинка в картинке', 'Alt+P', () => window.togglePip()],
-    ['Два сайта рядом', 'Ctrl+\\', () => (split ? endSplit(true) : startSplit())],
     ['Заметки', '', () => window.openNotes()],
-    ['Игровой режим', '', () => window.toggleGame()],
     ['Настройки', '', () => window.openSettings()],
     ['Новое пространство…', 'пространство', () => newSpace()],
     ...spaces.filter((s) => s.id !== cur).map((s) => [`Пространство «${s.name}»`, 'перейти', () => setSpace(s.id)]),
@@ -318,7 +316,7 @@
   }
   async function snap(tab) {
     if (tab && Date.now() - (tab.thumbAt || 0) < 60e3) return;
-    if (!tab || tab !== active || !tab.wv || !tab.wcId || document.hidden || document.body.classList.contains('game') || !/^https?:/.test(tab.url)) return;
+    if (!tab || tab !== active || !tab.wv || !tab.wcId || document.hidden || !/^https?:/.test(tab.url)) return;
     tab.thumbAt = Date.now();
     let d = ''; try { d = await L.tabs.thumb(tab.wcId); } catch {}
     // кадр не получился (страница ещё не нарисовалась) — пробуем снова через 3 секунды, а не через минуту

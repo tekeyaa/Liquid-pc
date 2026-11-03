@@ -1,4 +1,4 @@
-/* Liquid — скриншоты, режим чтения, заметки, видео, игровой режим */
+/* Liquid — скриншоты, режим чтения, заметки, видео */
 (function () {
   const lsGet = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -153,31 +153,9 @@
     }
   };
 
-  // ================= Подсветка под видео =================
-  // цвета приходят от вкладки (webview-preload.js), показываем цвета открытой вкладки
-  let ambCur = '', ambLayer = 0, ambAt = 0, ambT = 0;
-  function ambApply(tab) {
-    const c = settings.ambient !== false && tab && tab.amb;
-    if (!c) { document.body.classList.remove('amb'); ambCur = ''; return; }
-    document.body.classList.add('amb');
-    const key = c.join(';');
-    if (key === ambCur) return;
-    // не чаще раза в 1,6 с (пока идёт прошлый переход) — последние цвета применятся следом
-    const wait = ambAt + 1600 - Date.now();
-    if (wait > 0) { clearTimeout(ambT); ambT = setTimeout(() => ambApply(active), wait); return; }
-    ambCur = key; ambAt = Date.now();
-    const L2 = document.querySelectorAll('#amb i'); if (L2.length < 2) return;
-    const next = L2[ambLayer ^= 1], prev = L2[ambLayer ^ 1];
-    c.forEach((x, i) => next.style.setProperty('--a' + i, `rgb(${x[0]}, ${x[1]}, ${x[2]})`));
-    requestAnimationFrame(() => { next.classList.add('on'); prev.classList.remove('on'); });
-  }
-  const prevActAmb = window.onTabActivated;
-  window.onTabActivated = (tab) => { if (prevActAmb) prevActAmb(tab); ambApply(tab); };
-
   // ================= Сообщения со страниц =================
   const prevOnPage = window.onPageMsg;
   window.onPageMsg = (tab, m) => {
-    if (m.type === 'ambient') { tab.amb = m.c; if (tab === active) ambApply(tab); return; }
     if (m.type === 'reader') {
       tab.reading = m.state === 'on';
       if (m.state === 'none') toast('Не нашёл на странице статью для режима чтения');
@@ -218,47 +196,12 @@
     $('#readerBtn').classList.toggle('on', !!tab.reading);
   };
 
-  // ================= Игровой режим =================
-  let gameOn = false;
-  function gameApply({ on, game, keepAudio }) {
-    if (on === gameOn) return;
-    gameOn = on;
-    document.body.classList.toggle('game', on);
-    $('#gameBadge').title = on ? `Игровой режим: ${game || 'игра'} — браузер отдал ресурсы игре` : '';
-    if (on) {
-      // вкладки не закрываем и не перезагружаем: замораживаем — страница остаётся как была, но не тратит процессор,
-      // и браузер отдаёт её память. Вкладки с музыкой или видео (если так выбрано) продолжают играть
-      const ids = [];
-      for (const t of tabs) {
-        if (!t.wv || !t.wcId || (keepAudio !== false && t.playing)) continue;
-        t.frozen = true; t.el.classList.add('frozen'); ids.push(t.wcId);
-      }
-      L.tabs.freeze(ids, true).then((n) => toast(`🎮 Игровой режим${game && game !== 'вручную' ? ': ' + game : ''} — заморожено вкладок: ${n}`)).catch(() => {});
-    } else {
-      const ids = tabs.filter((t) => t.frozen && t.wcId).map((t) => t.wcId);
-      for (const t of tabs) { t.frozen = false; t.el.classList.remove('frozen'); }
-      L.tabs.freeze(ids, false).catch(() => {});
-      toast('Игровой режим выключен');
-    }
-    syncGameUi();
-  }
-  // вернулся в браузер во время игры — размораживаем только открытую вкладку
-  window.addEventListener('focus', () => { if (gameOn && active?.frozen) { active.frozen = false; active.el.classList.remove('frozen'); if (active.wcId) L.tabs.freeze([active.wcId], false); } });
-  L.game.onState(gameApply);
-  function syncGameUi() {
-    $('#gameMenuLbl').textContent = gameOn ? 'Выкл. игру' : 'Игровой'; $('#gameMenuLbl').parentElement.classList.toggle('on', gameOn);
-    $('#gameBtn').classList.toggle('on', gameOn);
-    $('#gameBtn').title = gameOn ? 'Игровой режим включён — нажми, чтобы выключить' : 'Игровой режим: заморозить вкладки и отдать ресурсы игре';
-  }
-  window.toggleGame = () => L.game.force(gameOn ? null : true);
-  $('#gameBadge').onclick = () => L.game.force(null);
-  $('#gameBtn').onclick = () => window.toggleGame();
 
   // ================= Меню и хоткеи =================
   $('#menuPop').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-m]');
     if (!b) return;
-    const fn = { shot: window.openShot, reader: window.toggleReader, notes: window.openNotes, game: window.toggleGame }[b.dataset.m];
+    const fn = { shot: window.openShot, reader: window.toggleReader, notes: window.openNotes }[b.dataset.m];
     if (fn) { closePops(); setTimeout(fn, 60); }
   });
   L.onShortcut(({ key }) => {
@@ -270,17 +213,13 @@
 
   // настройки
   window.features2Init = () => {
-    $('#gameMode').checked = settings.gameMode !== false;
-    $('#gameKeepAudio').checked = settings.gameKeepAudio !== false;
     bumpNotes();
     renderSr();
     $('#aboutLine').textContent = `Liquid ${settings.version || ''} · движок Electron ${settings.electron || ''}`;
-    L.game.state().then((s) => { if (!s.supported) { $('#gameRow').style.display = 'none'; } gameApply(s); syncGameUi(); });
   };
-  $('#gameMode').onchange = async (e) => { settings = await L.settings.set({ gameMode: e.target.checked }); };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, srContent: settings.srContent || 'auto', learn: !!settings.rtxLearn, amb: settings.ambient !== false }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, srContent: settings.srContent || 'auto', learn: !!settings.rtxLearn }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
@@ -288,7 +227,6 @@
     $('#vidBar').checked = settings.vidBar !== false;
     $('#lpAuto').checked = settings.lpAuto !== false;
     $('#srContent').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.srContent || 'auto')));
-    $('#ambient').checked = settings.ambient !== false;
     $('#rtxLearn').checked = !!settings.rtxLearn; $('#rtxLearnBox').hidden = !settings.rtxLearn;
     $('#rtxLearnGb').value = String(settings.rtxLearnGb || 1);
     $('#rtxTrainHours').value = String(settings.rtxTrainHours || 0);
@@ -309,7 +247,6 @@
       : 'Нужна видеокарта NVIDIA. В первый раз браузер сам скачает Python и PyTorch (~3 ГБ). Обучение — 30–60 минут, видео в это время может подтормаживать.');
   }
   setInterval(() => { if ($('#rtxLearnBox') && !$('#rtxLearnBox').hidden && $('#rtxLearnBox').offsetParent) learnStat(); }, 2000);
-  $('#ambient').onchange = async (e) => { settings = await L.settings.set({ ambient: e.target.checked }); pushVideoPrefs(); ambApply(active); };
   $('#rtxLearn').onchange = async (e) => { settings = await L.settings.set({ rtxLearn: e.target.checked }); renderSr(); pushVideoPrefs(); };
   $('#rtxLearnGb').onchange = async (e) => { settings = await L.settings.set({ rtxLearnGb: Number(e.target.value) }); renderSr(); };
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
@@ -327,5 +264,4 @@
   window.saveSrPref = async (p) => { settings = await L.settings.set(p); renderSr(); pushVideoPrefs(); };
   $('#setClose').onclick = () => closePops();
   $('#setExt').onclick = () => { closePops(); setTimeout(() => window.openExtensions(), 120); };
-  $('#gameKeepAudio').onchange = async (e) => { settings = await L.settings.set({ gameKeepAudio: e.target.checked }); };
 })();

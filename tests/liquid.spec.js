@@ -12,30 +12,8 @@ const ROOT = path.join(__dirname, '..');
 const SITE = path.join(__dirname, 'site');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.webm': 'video/webm' };
 
-let app, win, server, base, dataDir, mqttBroker, brokerUrl, cdp = null;
+let app, win, server, base, dataDir, cdp = null;
 
-// Свой MQTT-брокер поверх WebSocket для теста «Смотреть вместе»: публичные брокеры с серверов GitHub
-// работают через раз, а проверяем мы логику Liquid, а не их доступность. Только CONNECT/SUBSCRIBE/PUBLISH QoS 0.
-function startBroker() {
-  const { WebSocketServer } = require('ws');
-  const subs = new Map();
-  mqttBroker = new WebSocketServer({ port: 0, host: '127.0.0.1', handleProtocols: (p) => (p.has('mqtt') ? 'mqtt' : false) });
-  const rd = (b, o) => { const l = b.readUInt16BE(o); return b.subarray(o + 2, o + 2 + l).toString(); };
-  mqttBroker.on('connection', (ws) => {
-    subs.set(ws, new Set());
-    ws.on('message', (data) => {
-      const b = Buffer.from(data), type = b[0] >> 4;
-      let len = 0, mul = 1, i = 1, x; do { x = b[i++]; len += (x & 127) * mul; mul *= 128; } while (x & 128);
-      const body = b.subarray(i, i + len);
-      if (type === 1) ws.send(Buffer.from([0x20, 2, 0, 0]));
-      else if (type === 8) { subs.get(ws).add(rd(body, 2)); ws.send(Buffer.from([0x90, 3, body[0], body[1], 0])); }
-      else if (type === 3) { const t = rd(body, 0); for (const [c, s] of subs) if (s.has(t)) c.send(b.subarray(0, i + len)); }
-      else if (type === 12) ws.send(Buffer.from([0xd0, 0]));
-    });
-    ws.on('close', () => subs.delete(ws));
-  });
-  return new Promise((ok) => mqttBroker.on('listening', () => { brokerUrl = `ws://127.0.0.1:${mqttBroker.address().port}/mqtt`; ok(); }));
-}
 const hits = { hang: 0 };
 
 // Настоящий прокси-сервер (HTTP CONNECT) для проверки VPN: браузер подключается к нему как к серверу VPN,
@@ -148,13 +126,12 @@ function logErrors() {
 
 test.beforeAll(async () => {
   await startServer();
-  await startBroker();
   // папка данных браузера — внутри test-results: при падении её журнал попадает в отчёт
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
   dataDir = fs.mkdtempSync(path.join(ROOT, 'test-results', 'userdata-'));
   app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_WATCH_BROKERS: brokerUrl, LIQUID_BLOCKLIST_URL: `${base}/blocklist` },
+    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_BLOCKLIST_URL: `${base}/blocklist` },
   });
   win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
@@ -170,7 +147,7 @@ test.afterAll(async () => {
     try { await app.evaluate(() => global.__lqSaveProfile && global.__lqSaveProfile()); } catch {}
   }
   await app?.close().catch(() => {});
-  server?.closeAllConnections?.(); server?.close(); mqttBroker?.close();
+  server?.closeAllConnections?.(); server?.close();
 });
 
 test('браузер запускается и открывает вкладку', async () => {
@@ -419,17 +396,6 @@ test('пространства: свои вкладки, переключени�
 // ---------------- 1.10: видео и игры ----------------
 const vt = (js) => inTab(`(() => { const v = document.getElementById('v'); return ${js}; })()`);
 
-test('подсветка под видео: окно окрашивается в цвета играющего ролика', async () => {
-  await openUrl(`${base}/video.html`);
-  await expect.poll(() => vt('v.currentTime').catch(() => 0), { timeout: 15_000 }).toBeGreaterThan(0.3);
-  await expect.poll(() => win.evaluate(() => document.body.classList.contains('amb')), { timeout: 15_000 }).toBe(true);
-  await expect.poll(() => win.evaluate(() => { const l = document.querySelector('#amb i.on'); return l ? l.style.getPropertyValue('--a0') : ''; })).toMatch(/^rgb\(/);
-  // выключили в настройках — подсветка гаснет
-  await win.evaluate(() => { const s = document.getElementById('ambient'); s.checked = false; s.dispatchEvent(new Event('change')); });
-  await expect.poll(() => win.evaluate(() => document.body.classList.contains('amb'))).toBe(false);
-  await win.evaluate(() => { const s = document.getElementById('ambient'); s.checked = true; s.dispatchEvent(new Event('change')); });
-});
-
 test('окно поверх игры: открывается с тем же видео, вкладка на паузе', async () => {
   await openUrl(`${base}/video.html`);
   // страница могла ещё не дорисоваться — ждём, пока на ней появится видео
@@ -445,99 +411,6 @@ test('окно поверх игры: открывается с тем же ви
   expect(await vt('v.paused')).toBe(true); // во вкладке видео встало на паузу
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.__mini).close());
   await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.__mini).length)).toBe(0);
-});
-
-test('клип: буфер пишет, «Сохранить клип» кладёт файл в Видео/Liquid', async () => {
-  test.setTimeout(60_000);
-  await vt('v.play()');
-  const dir = path.join(await app.evaluate(({ app }) => app.getPath('videos')), 'Liquid');
-  const before = new Set(fs.existsSync(dir) ? fs.readdirSync(dir) : []);
-  await win.evaluate(() => window.toggleClipBuffer());
-  await win.waitForTimeout(4000);
-  await win.evaluate(() => window.saveClip());
-  await expect.poll(() => (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => !before.has(f) && /^Клип/.test(f)).length, { timeout: 20_000 }).toBe(1);
-  const f = fs.readdirSync(dir).find((x) => !before.has(x) && /^Клип/.test(x));
-  expect(fs.statSync(path.join(dir, f)).size).toBeGreaterThan(10_000);
-  fs.unlinkSync(path.join(dir, f));
-  await win.evaluate(() => window.toggleClipBuffer()); // выключаем буфер
-  await vt('v.pause()');
-});
-
-test('смотреть вместе: комната, пауза и перемотка от друга, чат', async () => {
-  test.setTimeout(150_000);
-  const W = require(path.join(ROOT, 'main', 'watch.js'));
-  W.BROKERS.splice(0, W.BROKERS.length, brokerUrl); // друг — на том же тестовом брокере
-  const { WatchRoom } = W;
-  await win.evaluate(() => window.openWatch());
-  await win.locator('#wtName').fill('Тестер');
-  await win.locator('#wtCreate').click();
-  await expect.poll(() => win.evaluate(() => window.watchState().state), { timeout: 20_000 }).toBe('online');
-  const code = await win.evaluate(() => window.watchState().code);
-  const got = [];
-  const friend = new WatchRoom({ onMessage: (m) => got.push(m), onStatus: () => {}, log: () => {} });
-  await friend.join(code);
-  // как настоящий Liquid: дождаться пары брокеров и повторять «я здесь», пока нас не увидят
-  await expect.poll(() => friend.online().length, { timeout: 10_000 }).toBeGreaterThanOrEqual(2).catch(() => {}); // хватит и одного общего
-  const hi = () => friend.send({ type: 'hello', name: 'Друг' });
-  hi(); const hiAgain = setInterval(hi, 3000);
-  await expect.poll(() => win.evaluate(() => window.watchState().people), { timeout: 40_000 }).toBe(1).finally(() => clearInterval(hiAgain));
-  // друг ставит на паузу на 1,5 секунде — у нас видео встаёт туда же
-  // (как настоящий Liquid, друг напоминает своё состояние — публичный брокер может потерять одно сообщение)
-  const pause = () => friend.send({ type: 'state', url: `${base}/video.html`, t: 1.5, paused: true, rate: 1, reason: 'pause', name: 'Друг' });
-  pause(); const again = setInterval(pause, 3000);
-  await expect.poll(() => vt('v.paused && Math.abs(v.currentTime - 1.5) < 0.6'), { timeout: 20_000 }).toBe(true).finally(() => clearInterval(again));
-  // мы нажимаем «играть» — друг получает это
-  await vt('v.play()');
-  // если само «играть» потерялось, его догонит напоминание раз в 5 секунд
-  await expect.poll(() => got.some((m) => m.type === 'state' && m.paused === false), { timeout: 30_000 }).toBe(true);
-  const chat = () => friend.send({ type: 'chat', text: 'привет из теста', name: 'Друг' });
-  chat(); const chatAgain = setInterval(chat, 4000);
-  await expect(win.locator('#wtChat')).toContainText('привет из теста', { timeout: 30_000 }).finally(() => clearInterval(chatAgain));
-  friend.leave();
-  await win.locator('#wtLeave').click();
-  expect(await win.evaluate(() => window.watchState().code)).toBe('');
-  await win.evaluate(() => closePops());
-});
-
-test('смотреть вместе: два окна одного браузера видят друг друга и переписываются', async () => {
-  test.setTimeout(120_000);
-  await win.evaluate((u) => navigate(u), `${base}/video.html`);
-  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/video.html');
-  await win.evaluate(() => window.openWatch());
-  await win.locator('#wtName').fill('Окно1');
-  await win.locator('#wtCreate').click();
-  await expect.poll(() => win.evaluate(() => window.watchState().state), { timeout: 20_000 }).toBe('online');
-  const code = await win.evaluate(() => window.watchState().code);
-  // второе окно того же браузера
-  await win.evaluate((u) => L.win.open(u), `${base}/video.html`);
-  let w2 = null;
-  await expect.poll(() => { w2 = app.windows().find((pg) => /[?&]extra=1/.test(pg.url())) || null; return !!w2; }, { timeout: 15_000 }).toBe(true);
-  await w2.waitForLoadState('domcontentloaded');
-  await expect.poll(() => w2.evaluate(() => (active && active.wv ? active.wv.getURL() : '')).catch(() => ''), { timeout: 20_000 }).toContain('/video.html');
-  await w2.evaluate(() => window.openWatch());
-  await w2.locator('#wtName').fill('Окно2');
-  await w2.locator('#wtCodeIn').fill(code);
-  await w2.locator('#wtGo').click();
-  // оба на связи и видят друг друга (раньше второе окно показывало «нет связи», а первое — «пока только вы»)
-  await expect.poll(() => w2.evaluate(() => window.watchState().state), { timeout: 20_000 }).toBe('online');
-  await expect.poll(() => win.evaluate(() => window.watchState().state), { timeout: 5_000 }).toBe('online');
-  await expect.poll(() => win.evaluate(() => window.watchState().people), { timeout: 40_000 }).toBe(1);
-  await expect.poll(() => w2.evaluate(() => window.watchState().people), { timeout: 40_000 }).toBe(1);
-  // сообщения ходят в обе стороны
-  await w2.locator('#wtInput').fill('привет из второго окна');
-  await w2.locator('#wtSend').click();
-  await expect(win.locator('#wtChat')).toContainText('привет из второго окна', { timeout: 20_000 });
-  await win.locator('#wtInput').fill('ответ из первого');
-  await win.locator('#wtSend').click();
-  await expect(w2.locator('#wtChat')).toContainText('ответ из первого', { timeout: 20_000 });
-  // закрыли второе окно — первое остаётся в комнате и на связи
-  const closed = w2.waitForEvent('close');
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.__extra)?.close());
-  await closed;
-  await win.waitForTimeout(1000);
-  expect(await win.evaluate(() => window.watchState().state)).toBe('online');
-  await win.locator('#wtLeave').click();
-  await win.evaluate(() => closePops());
 });
 
 // ---------------- 1.11: Claude ----------------

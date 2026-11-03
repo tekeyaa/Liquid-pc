@@ -78,7 +78,6 @@ const newtabUrl = () => `${NEWTAB}#search=${settings.search}${L.incognito ? '&pr
 // Вкладка живёт и без webview: «спящая» вкладка хранит только адрес, заголовок и иконку (почти 0 МБ ОЗУ)
 const BLOCK_ERRORS = [-101, -100, -118, -7, -105, -107, -324, -356, -137, -21];
 const closedTabs = [];
-let split = null; // { left, right, ratio }
 
 function createTab(url, { background = false, lazy = false, title = '', favicon = '', after = null } = {}) {
   const id = ++uid;
@@ -125,7 +124,7 @@ let spareWv = null, spareT = 0;
 function makeSpare() {
   clearTimeout(spareT);
   spareT = setTimeout(() => {
-    if (spareWv || document.hidden || document.body.classList.contains('game')) return;
+    if (spareWv || document.hidden) return;
     try { if (localStorage.getItem('liquid.noSpare')) return; } catch {} // для замеров «без заготовки»
     const wv = document.createElement('webview');
     wv.setAttribute('partition', PARTITION);
@@ -177,7 +176,6 @@ function attachWebview(tab, url) {
   wv.addEventListener('did-stop-loading', () => { tab.loading = false; updateTab(tab); guardScan(tab); saveSession(); });
   wv.addEventListener('media-started-playing', () => { el.classList.add('playing'); tab.playing = true; });
   wv.addEventListener('media-paused', () => { el.classList.remove('playing'); tab.playing = false; });
-  wv.addEventListener('focus', () => { if (split && (tab === split.left || tab === split.right) && active !== tab) focusPane(tab); });
   wv.addEventListener('ipc-message', (e) => {
     if (e.channel !== 'liquid') return;
     const m = e.args[0] || {};
@@ -259,7 +257,7 @@ for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
 }
 
 function sleepTab(tab) {
-  if (!tab.wv || tab === active || tab.playing || (split && (tab === split.left || tab === split.right))) return false;
+  if (!tab.wv || tab === active || tab.playing) return false;
   tab.wv.remove();
   tab.wv = null;
   tab.wcId = null;
@@ -288,9 +286,6 @@ function updateTab(tab) {
 
 function activate(tab) {
   if (active === tab) return;
-  if (tab.frozen) { tab.frozen = false; tab.el.classList.remove('frozen'); if (tab.wcId) L.tabs.freeze([tab.wcId], false); } // игровой режим: открытую вкладку размораживаем
-  // выбрали вкладку не из пары — выходим из режима «два сайта»
-  if (split && tab !== split.left && tab !== split.right) endSplit(false);
   if (active) active.lastActive = Date.now();
   active?.el.classList.remove('active');
   active = tab;
@@ -308,18 +303,7 @@ function activate(tab) {
 }
 
 function layoutViews() {
-  const views = $('#views');
-  views.classList.toggle('split', !!split);
-  if (split) views.style.setProperty('--split', (split.ratio * 100).toFixed(2) + '%');
-  for (const t of tabs) {
-    if (!t.wv) continue;
-    const l = split && t === split.left, r = split && t === split.right;
-    t.wv.classList.toggle('active', t === active || l || r);
-    t.wv.classList.toggle('split-l', !!l);
-    t.wv.classList.toggle('split-r', !!r);
-    t.wv.classList.toggle('focused', !!split && t === active);
-    t.el.classList.toggle('paired', !!(l || r));
-  }
+  for (const t of tabs) if (t.wv) t.wv.classList.toggle('active', t === active);
 }
 
 function closeTab(tab, opts) {
@@ -327,7 +311,6 @@ function closeTab(tab, opts) {
   if (i < 0) return;
   const moved = !!(opts && opts.moved); // вкладку унесли в другое окно — в «закрытые» не кладём
   if (!moved && !L.incognito && !isInternal(tab.url)) { closedTabs.push({ url: tab.url, title: tab.title, i }); if (closedTabs.length > 25) closedTabs.shift(); }
-  if (split && (tab === split.left || tab === split.right)) endSplit(true, tab);
   tabs.splice(i, 1);
   flipTabs(() => {
     // вкладка покидает ряд сразу и гаснет на своём месте поверх него; соседи плавно съезжаются (трансформацией)
@@ -440,60 +423,10 @@ function reopenClosed() {
   saveSession();
 }
 
-// ---------- два сайта рядом ----------
-function startSplit(rightUrl) {
-  if (!active) return;
-  const left = active;
-  let right = null;
-  if (rightUrl === undefined) {
-    // берём последнюю открытую другую вкладку, иначе — новую
-    right = tabs.filter((t) => t !== left).sort((a, b) => b.lastActive - a.lastActive)[0] || null;
-  }
-  if (!right) right = createTab(rightUrl || null, { background: true, after: left });
-  if (!right.wv) attachWebview(right, right.url);
-  split = { left, right, ratio: 0.5 };
-  document.body.classList.add('split-on');
-  layoutViews();
-  focusPane(right);
-}
-function endSplit(keepActive = true, closing = null) {
-  if (!split) return;
-  const keep = closing ? (closing === split.left ? split.right : split.left) : active;
-  split = null;
-  document.body.classList.remove('split-on');
-  if (keepActive && keep) { active = null; activate(keep); }
-  layoutViews();
-}
-function focusPane(tab) {
-  if (active === tab) return;
-  active?.el.classList.remove('active');
-  active = tab;
-  tab.el.classList.add('active');
-  tab.lastActive = Date.now();
-  layoutViews();
-  syncChrome();
-  window.onTabActivated && window.onTabActivated(tab);
-}
-(() => {
-  const bar = $('#splitBar');
-  let drag = false;
-  bar.addEventListener('pointerdown', (e) => { if (e.target.closest('button')) return; drag = true; bar.setPointerCapture(e.pointerId); document.body.classList.add('resizing'); });
-  bar.addEventListener('pointermove', (e) => {
-    if (!drag || !split) return;
-    const r = $('#views').getBoundingClientRect();
-    split.ratio = Math.min(0.8, Math.max(0.2, (e.clientX - r.left) / r.width));
-    $('#views').style.setProperty('--split', (split.ratio * 100).toFixed(2) + '%');
-  });
-  bar.addEventListener('pointerup', () => { drag = false; document.body.classList.remove('resizing'); });
-  $('#splitSwap').onclick = () => { if (!split) return; [split.left, split.right] = [split.right, split.left]; layoutViews(); };
-  $('#splitClose').onclick = () => endSplit(true);
-})();
-
 // ---------- меню вкладки ----------
 function tabMenu(tab, x, y) {
   const m = $('#tabMenu');
   const items = [
-    ['Открыть рядом с текущей', () => { if (tab === active) startSplit(); else startSplitWith(active, tab); }],
     [tab.sleeping ? 'Разбудить' : 'Усыпить (освободить память)', () => { if (tab.sleeping) activate(tab); else if (!sleepTab(tab)) toast('Эту вкладку сейчас нельзя усыпить'); }],
     ['Дублировать', () => createTab(tab.url, { after: tab })],
     ...(L.incognito ? [] : [['В отдельное окно', () => tearOffTab(tab)]]),
@@ -517,14 +450,6 @@ function placeCtx(m, x, y) {
 }
 window.placeCtx = placeCtx;
 function hideTabMenu(e) { if (e && e.target.closest && e.target.closest('#tabMenu')) { document.addEventListener('mousedown', hideTabMenu, { once: true }); return; } $('#tabMenu').classList.remove('open'); }
-function startSplitWith(left, right) {
-  if (!right.wv) attachWebview(right, right.url);
-  split = { left, right, ratio: 0.5 };
-  document.body.classList.add('split-on');
-  active?.el.classList.remove('active');
-  active = left; left.el.classList.add('active');
-  layoutViews(); syncChrome();
-}
 
 // ---------- восстановление сессии ----------
 let saveT = 0;
@@ -1244,7 +1169,6 @@ L.tabs.onOpen(({ url, background, replace }) => {
   if (replace && active && isInternal(active.url)) { navigate(url); return; }
   createTab(url, { background, after: active });
 });
-L.onSplit(({ url }) => { if (split) endSplit(true); startSplit(url); });
 L.tabs.onSearch(({ q }) => createTab((SEARCH[settings.search] || SEARCH.google) + encodeURIComponent(q)));
 L.onToast(({ text, error }) => toast(text, error));
 // всплывающее окно без нажатия заблокировано — можно разрешить для сайта
@@ -1255,7 +1179,6 @@ L.onShortcut(({ key, shift }) => {
   switch (key) {
     case 't': shift ? reopenClosed() : createTab(); break;
     case 'n': createTab(); break; // Ctrl+Shift+N (инкогнито) основной процесс обрабатывает сам
-    case '\\': split ? endSplit(true) : startSplit(); break;
     case 'h': case 'y': window.openLibrary && window.openLibrary('history'); break;
     case 'b': if (shift) window.openLibrary && window.openLibrary('bookmarks'); break;
     case 'd': window.toggleBookmark && window.toggleBookmark(); break;

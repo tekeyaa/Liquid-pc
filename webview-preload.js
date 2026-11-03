@@ -1,7 +1,7 @@
 // Preload для сайтов (изолированный мир: сайт не видит этот код). Работает на странице и во фреймах.
 // 1) Вход Google: маскировка под Firefox.  2) Перевод страницы на месте, без поломки вёрстки.
 // 3) Сведения о странице для браузера (язык, есть ли видео).  4) Тема оформления для стартовой страницы.
-// 5) Режим чтения.  6) Видео: скорость, громкость до 300 %, фильтры.  7) Liquid RTX — супер-чёткость (WebGL2, RAVU + FSR).
+// 5) Режим чтения.  6) Видео: скорость, громкость, фильтры.  7) Liquid RTX — супер-чёткость (WebGL2, RAVU + FSR).
 // 8) Кружок с панелью видео.  Плюс боковые кнопки мыши и команды от браузера.
 const { contextBridge, webFrame, ipcRenderer } = require('electron');
 // стартовая страница хранит избранное в настройках приложения, а не в localStorage (его стирает «Очистить данные»)
@@ -403,7 +403,7 @@ function readerClose() {
   toHost({ type: 'reader', state: 'off' });
 }
 
-// ---------- 6. Видео: скорость, громкость до 300%, картинка ----------
+// ---------- 6. Видео: скорость, громкость, картинка ----------
 const vt = { graphs: new WeakMap(), want: {}, hud: null, hudT: 0, svg: false };
 function videos() {
   const out = [...document.querySelectorAll('video')];
@@ -447,14 +447,12 @@ function graph(v) {
   resume();
   return g;
 }
+// громкость — обычная, до 100 % (усиление до 300 % убрано в 1.23)
 function setVolume(v, vol) {
-  vol = Math.max(0, Math.min(3, vol));
-  const g = vt.graphs.get(v);
-  if (vol <= 1 && !g) { v.volume = vol; v.muted = vol === 0; }
-  else { const gg = graph(v); v.volume = 1; v.muted = false; gg.gain.gain.value = vol; }
-  v.__lqVol = vol;
+  vol = Math.max(0, Math.min(1, vol));
+  v.volume = vol; v.muted = vol === 0;
 }
-function getVolume(v) { return v.__lqVol ?? (v.muted ? 0 : v.volume); }
+function getVolume(v) { return v.muted ? 0 : v.volume; }
 function setComp(v, on) {
   const g = graph(v);
   if (g.compOn === on) return;
@@ -541,7 +539,7 @@ function onVideoWheel(e) {
     hud(v, `Скорость ${fmtRate(r)}`);
     toHost({ type: 'videoPrefs', speed: r });
   } else {
-    const vol = Math.max(0, Math.min(3, Math.round((getVolume(v) + dir * 0.1) * 10) / 10));
+    const vol = Math.max(0, Math.min(1, Math.round((getVolume(v) + dir * 0.1) * 10) / 10));
     setVolume(v, vol);
     hud(v, `Громкость ${Math.round(vol * 100)}%`);
   }
@@ -563,7 +561,6 @@ function videoCmd(m) {
     if (m.remember != null) vt.remember = !!m.remember;
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
-    if (m.amb != null) vt.amb = !!m.amb;
     if (m.srContent) vt.srContent = m.srContent;
     if (m.learn != null) vt.learn = !!m.learn;
     if (m.sr != null) { vt.sr = m.sr; vt.srHdr = !!m.srHdr; srSync(); if (lp.open) { lp.dirty = true; lpRender(); } }
@@ -573,8 +570,6 @@ function videoCmd(m) {
   if (m.op === 'pip') { pipToggle(); return; }
   if (m.op === 'player') { const v0 = mainVideo(); if (v0) lpOpen(v0); return; }
   if (m.op === 'mini') { miniOut(); return; }
-  if (m.op === 'clipbuf') { const v0 = mainVideo(); if (v0) clip.v === v0 ? clipStop(true) : clipStart(v0); return; }
-  if (m.op === 'clip') { clipSave(); return; }
   if (m.op === 'seekPlay') { const v0 = mainVideo(); if (v0) { if (m.t > 0 && Math.abs(v0.currentTime - m.t) > 1) v0.currentTime = m.t; v0.play().catch(() => {}); } return; }
   if (!v) return;
   try {
@@ -1437,7 +1432,7 @@ function barBuild() {
       <button data-a="more" title="Яркость, контраст и другое">${IC.more}</button>
     </div>
     <div class="row">
-      <button data-a="mute" title="Громкость до 300% (Alt+колесо)">${IC.vol}</button><input type="range" data-r="vol" min="0" max="300" step="5"><span class="val" data-v="vol">100%</span>
+      <button data-a="mute" title="Громкость (Alt+колесо)">${IC.vol}</button><input type="range" data-r="vol" min="0" max="100" step="5"><span class="val" data-v="vol">100%</span>
     </div>
     <div class="row">
       <button class="sr" data-a="sr" title="Liquid RTX на плеере сайта: нейросеть убирает сжатие и увеличивает до разрешения экрана. Нажимай: выкл → чисто → чётко">${IC.sr}Чёткость <i data-v="sr"></i></button>
@@ -1450,7 +1445,7 @@ function barBuild() {
       <label><span>Контраст</span><input type="range" data-r="contrast" min="50" max="180" step="5"><b data-v="contrast"></b></label>
       <label><span>Насыщенность</span><input type="range" data-r="sat" min="0" max="200" step="5"><b data-v="sat"></b></label>
       <div class="chips">
-        ${/(^|\.)youtube\.com$/.test(location.hostname) ? '<button data-a="summary">Пересказать (Claude)</button>' : ''}<button data-a="watch">Смотреть вместе</button><button data-a="clipbuf">Буфер клипа</button><button data-a="clip">Сохранить клип</button>
+        ${/(^|\.)youtube\.com$/.test(location.hostname) ? '<button data-a="summary">Пересказать (Claude)</button>' : ''}
         <button data-a="comp">Ровная громкость</button><button data-a="loop">Повтор</button><button data-a="remember">Запомнить скорость</button>
         <button data-a="frame">Кадр в PNG</button><button data-a="reset">Сбросить</button>
       </div>
@@ -1485,10 +1480,7 @@ function barBuild() {
     else if (a === 'remember') { vt.remember = !vt.remember; toHost({ type: 'videoRemember', on: vt.remember, speed: v.playbackRate }); }
     else if (a === 'frame') videoCmd({ op: 'frame' });
     else if (a === 'mini') { barOpen(false); miniOut(v); }
-    else if (a === 'watch') { barOpen(false); toHost({ type: 'watchOpen' }); }
     else if (a === 'summary') { barOpen(false); toHost({ type: 'summarize' }); }
-    else if (a === 'clipbuf') clip.v === v ? clipStop(true) : clipStart(v);
-    else if (a === 'clip') clipSave();
     else if (a === 'reset') videoCmd({ op: 'reset' });
     barRender();
   });
@@ -1533,9 +1525,6 @@ function barRender() {
   q('[data-a="comp"]').classList.toggle('on', !!vt.graphs.get(v)?.compOn);
   q('[data-a="loop"]').classList.toggle('on', v.loop);
   q('[data-a="remember"]').classList.toggle('on', !!vt.remember);
-  q('[data-a="clipbuf"]').classList.toggle('on', clip.v === v);
-  q('[data-a="clipbuf"]').textContent = clip.v === v ? `Буфер клипа · ${clipSecs()} с` : 'Буфер клипа';
-  q('[data-a="watch"]').classList.toggle('on', wt.on);
 }
 // кружок — в правом верхнем углу видео, панель раскрывается под ним, прижатая к правому краю
 function barPlace() {
@@ -1667,93 +1656,6 @@ button:hover{background:rgba(255,255,255,.22)} button.on{background:linear-gradi
 function miniBarCt(on) { if (!mini.root) return; mini.root.querySelector('[data-a="click"]').classList.toggle('on', on); mini.root.querySelector('.ct').classList.toggle('on', on); }
 function miniBarOpacity(v) { if (mini.root) mini.root.querySelector('.val').textContent = Math.round(v * 100) + '%'; }
 
-// ---------- 10. Клип последних 30 секунд ----------
-// Пока включён «Буфер клипа», видео записывается двумя сменяющимися записями (новая каждые 30 с, живут по минуте).
-// «Сохранить клип» берёт старшую из них: в ней последние 30–60 секунд. Кодирует видеокарта (H.264), если умеет.
-const clip = { v: null, stream: null, recs: [], timer: 0, mime: '', t0: 0 };
-function clipMime() {
-  for (const m of ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'])
-    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch {}
-  return '';
-}
-function clipSecs() { return clip.recs.length ? Math.min(60, Math.round((performance.now() - clip.recs[0].t0) / 1000)) : 0; }
-function clipSpawn() {
-  try {
-    const rec = { chunks: [], t0: performance.now() };
-    rec.r = new MediaRecorder(clip.stream, { mimeType: clip.mime, videoBitsPerSecond: 6e6 });
-    rec.r.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
-    rec.r.start(1000);
-    clip.recs.push(rec);
-    while (clip.recs.length > 2) { const old = clip.recs.shift(); try { old.r.stop(); } catch {} }
-  } catch (e) { report('буфер клипа', e); clipStop(); toHost({ type: 'videoErr', error: /secur|origin/i.test(String(e && e.message)) ? 'этот сайт не разрешает записывать своё видео' : 'буфер клипа не запустился: ' + (e && e.message) }); }
-}
-function clipStart(v) {
-  clipStop();
-  if (v.mediaKeys) { toHost({ type: 'videoErr', error: 'защищённое видео (DRM) записывать нельзя' }); return; }
-  try { clip.stream = v.captureStream(); } catch (e) { toHost({ type: 'videoErr', error: 'этот сайт не разрешает записывать своё видео' }); return; }
-  clip.v = v; clip.mime = clipMime();
-  clipSpawn();
-  if (!clip.v) return;
-  clip.timer = setInterval(() => { clipSpawn(); barRender(); }, 30e3);
-  clip.tick = setInterval(() => { if (bar.open) barRender(); }, 1000);
-  toHost({ type: 'clipState', on: true });
-  barRender();
-}
-function clipStop(say) {
-  clearInterval(clip.timer); clearInterval(clip.tick);
-  for (const r of clip.recs) { try { r.r.stop(); } catch {} }
-  clip.recs = []; clip.v = null; clip.stream = null;
-  if (say) toHost({ type: 'clipState', on: false });
-  barRender();
-}
-function clipSave() {
-  const rec = clip.recs[0];
-  if (!rec) { const v = mainVideo(); if (v) { clipStart(v); toHost({ type: 'videoErr', error: 'буфер клипа был выключен — включил, сохранить можно будет через несколько секунд' }); } return; }
-  const secs = clipSecs(), mime = clip.mime;
-  rec.r.onstop = async () => {
-    try {
-      const buf = await new Blob(rec.chunks, { type: mime }).arrayBuffer();
-      toHost({ type: 'clip', data: buf, mime, secs });
-    } catch (e) { report('клип', e); }
-  };
-  clip.recs.shift();
-  try { rec.r.stop(); } catch (e) { report('клип', e); }
-  clipSpawn(); // буфер продолжает писать дальше
-}
-
-// ---------- 11. Смотреть вместе ----------
-// Браузер сообщает о каждом действии с видео (пауза, игра, перемотка, скорость), а чужие действия применяет.
-// Пока применяем чужое действие, свои события не отправляем — иначе получится бесконечное эхо.
-const wt = { on: false, v: null, mute: 0, bound: new WeakSet() };
-function wtState(reason) {
-  const v = wt.v || mainVideo(); if (!v) return null;
-  return { url: location.href, t: v.currentTime, paused: v.paused, rate: v.playbackRate, live: !isFinite(v.duration), reason };
-}
-function wtBind(v) {
-  if (!v) return;
-  wt.v = v;
-  if (wt.bound.has(v)) return;
-  wt.bound.add(v);
-  for (const ev of ['play', 'pause', 'seeked', 'ratechange']) v.addEventListener(ev, () => {
-    if (!wt.on || v !== wt.v || performance.now() < wt.mute) return;
-    const st = wtState(ev); if (st) toHost({ type: 'wtState', state: st });
-  });
-}
-function wtSet(on) { wt.on = !!on; if (on) wtBind(mainVideo()); }
-function wtApply(s) {
-  const v = mainVideo(); if (!v) return;
-  wtBind(v);
-  wt.mute = performance.now() + 1000;
-  if (s.rate && Math.abs(v.playbackRate - s.rate) > 0.01) v.playbackRate = s.rate;
-  if (!s.live && typeof s.t === 'number') {
-    const target = s.t + (s.paused ? 0 : 0.3); // пока сообщение шло, у отправителя видео ушло вперёд
-    if (Math.abs(v.currentTime - target) > (s.reason === 'beat' ? 2.5 : 0.8)) v.currentTime = target;
-  }
-  if (s.paused && !v.paused) v.pause();
-  else if (!s.paused && v.paused) v.play().catch(() => {});
-}
-document.addEventListener('loadedmetadata', (e) => { if (wt.on && e.target.tagName === 'VIDEO' && !IS_FRAME) wtBind(mainVideo()); }, true);
-
 // ---------- 12. Предварительное соединение со ссылкой под мышью (как в Chrome) ----------
 // Мышь задержалась на ссылке 80 мс или кнопка нажата — просим браузер заранее открыть соединение с сайтом.
 let preT = 0, preHref = '';
@@ -1878,7 +1780,7 @@ function lpBuild() {
       <div class="row">
         <button data-a="play" title="Пауза / играть (пробел)">${LPI.play}</button>
         <button data-a="back" title="Назад 10 с (←)">${LPI.back}</button><button data-a="fwd" title="Вперёд 10 с (→)">${LPI.fwd}</button>
-        <button data-a="mute" title="Звук (M)">${LPI.vol}</button><input type="range" data-r="vol" min="0" max="300" step="5">
+        <button data-a="mute" title="Звук (M)">${LPI.vol}</button><input type="range" data-r="vol" min="0" max="100" step="5">
         <span class="time"></span><span class="grow"></span>
         <span class="seg" title="Liquid RTX: Выкл — как в обычном плеере; Чисто — нейросеть убирает сжатие и восстанавливает детали; Чётко — плюс резкость">
           <button data-sr="off">Выкл</button><button data-sr="mid">Чисто</button><button data-sr="max">Чётко</button></span>
@@ -1932,7 +1834,7 @@ function lpUi() {
 }
 function lpHud(t) { const h = lp.root.querySelector('.hud'); h.textContent = t; h.classList.add('on'); clearTimeout(lp.hudT); lp.hudT = setTimeout(() => h.classList.remove('on'), 700); }
 function lpToggle() { const v = lp.v; if (!v) return; if (v.paused) v.play().catch(() => {}); else v.pause(); }
-function lpVol(x) { setVolume(lp.v, Math.max(0, Math.min(3, Math.round(x * 100) / 100))); lpHud('Громкость ' + Math.round(getVolume(lp.v) * 100) + '%'); lpRender(); }
+function lpVol(x) { setVolume(lp.v, Math.max(0, Math.min(1, Math.round(x * 100) / 100))); lpHud('Громкость ' + Math.round(getVolume(lp.v) * 100) + '%'); lpRender(); }
 function lpSeek(d) { const v = lp.v; v.currentTime = Math.max(0, Math.min((v.duration || 1e9) - 0.1, v.currentTime + d)); lpHud((d > 0 ? '+' : '−') + Math.abs(d) + ' с'); }
 function lpRate(d) { const v = lp.v; const r = Math.max(0.25, Math.min(4, Math.round((v.playbackRate + d) * 4) / 4)); v.playbackRate = r; vt.want.speed = r; lpHud('Скорость ' + fmtRate(r)); lpRender(); }
 async function lpFull() {
@@ -2023,40 +1925,6 @@ if (!IS_FRAME && /^https?:$/.test(location.protocol)) window.addEventListener('l
     if (document.body && text < 20 && document.querySelectorAll('img,video,canvas,svg,iframe').length < 3) console.warn(`[liquid] ${location.hostname}: страница загрузилась, но пустая — скорее всего, не загрузились скрипты сайта (блокировщик или сеть)`);
   } catch {}
 }, 6000), { once: true });
-
-// Подсветка под видео: окно браузера подстраивается под цвета ролика (как «атмосфера» на YouTube).
-// Раз в секунду кадр уменьшается до 32×18 на видеокарте (без копии 4K-кадра в память), считаем цвет углов
-// и всего кадра. Только верхняя страница, только большое видео на экране; на паузе подсветка остаётся
-vt.amb = true;
-if (!IS_FRAME) toHost({ type: 'ambient', c: null }); // новая страница — прежняя подсветка вкладки больше не её
-let ambCv = null, ambKey = '', ambOn = false;
-const ambBad = new WeakSet();
-const ambTone = ([r, g, b]) => {   // ярче цвет, но не светлее середины — белый текст вкладок должен читаться
-  const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  const k = Math.min(1.25, 95 / Math.max(y, 1));
-  return [r, g, b].map((c) => Math.round(Math.max(0, Math.min(255, (y + (c - y) * 1.35) * k)) / 12) * 12); // шаг 12: мелкие колебания не шлём
-};
-if (!IS_FRAME) setInterval(() => {
-  let v = vt.amb && !document.hidden ? mainVideo() : null;
-  if (v && (v.readyState < 2 || ambBad.has(v) || !v.videoWidth)) v = null;
-  if (v) {
-    const r = v.getBoundingClientRect();
-    const vis = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
-    if (vis < innerWidth * innerHeight * 0.18) v = null;
-  }
-  if (!v) { if (ambOn) { ambOn = false; ambKey = ''; toHost({ type: 'ambient', c: null }); } return; }
-  if (v.paused) return; // на паузе — оставляем как было (и не включаем, если ещё не играло)
-  try {
-    if (!ambCv) { ambCv = document.createElement('canvas'); ambCv.width = 32; ambCv.height = 18; }
-    const cx = ambCv.getContext('2d');
-    cx.drawImage(v, 0, 0, 32, 18);
-    const d = cx.getImageData(0, 0, 32, 18).data;
-    const q = (x0, y0, x1, y1) => { let r = 0, g = 0, b = 0, n = 0; for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * 32 + x) * 4; r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; } return [r / n, g / n, b / n]; };
-    const c = [q(0, 0, 32, 18), q(0, 0, 13, 8), q(19, 0, 32, 8), q(0, 10, 13, 18), q(19, 10, 32, 18)].map(ambTone);
-    const key = c.join(';');
-    if (key !== ambKey) { ambKey = key; ambOn = true; toHost({ type: 'ambient', c }); }
-  } catch { ambBad.add(v); } // видео с чужого сайта без разрешения (CORS) — кадр не прочитать, подсветки не будет
-}, 1000);
 
 // Режим обучения Liquid RTX: у ролика есть 1080p и 4K/8K — в очередь. Кадры нарежет фоновое окно браузера,
 // когда ни одна вкладка не играет звук (main/rtx-learn.js). Проверка раз в 7 с, только при включённом режиме
@@ -2245,7 +2113,4 @@ function liquidCmd(msg) {
   else if (msg.type === 'mini') miniMode(msg);
   else if (msg.type === 'miniCt') miniBarCt(msg.on);
   else if (msg.type === 'miniOpacity') miniBarOpacity(msg.v);
-  else if (msg.type === 'wt') wtSet(msg.on);
-  else if (msg.type === 'wtApply') wtApply(msg.state || {});
-  else if (msg.type === 'wtPoll') { const st = wtState('beat'); if (st) toHost({ type: 'wtState', state: st }); }
 }

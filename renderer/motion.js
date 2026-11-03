@@ -107,7 +107,7 @@
     hot.style.setProperty('--my', (py - r.top).toFixed(1) + 'px');
   }
   document.addEventListener('pointermove', (e) => {
-    if (reduce.matches || document.body.classList.contains('game')) return;
+    if (reduce.matches) return;
     const el = e.target.closest && e.target.closest('.glass, .tab');
     const ok = el && el.offsetWidth < 640 && el.offsetHeight < 200 ? el : null;
     if (ok !== hot) { hot?.classList.remove('lit'); hot = ok; hot?.classList.add('lit'); }
