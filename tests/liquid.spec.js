@@ -236,8 +236,9 @@ async function inTabGesture(js) {
 test('Liquid Player: свой плеер на весь экран рисует нейросетью, управляет видео сайта, закрывается', async () => {
   test.setTimeout(180_000); // без видеокарты (SwiftShader) шейдеры большой сети собираются долго и тормозят всё окно
   await win.evaluate(() => document.querySelector('#srLevel [data-v="mid"]').click());
-  await win.locator('#url').fill(`${base}/video.html`);
-  await win.locator('#url').press('Enter', { timeout: 60_000 });
+  // напрямую, а не Enter в адресной строке: без видеокарты (SwiftShader) окно в этот момент собирает шейдеры
+  // и не успевает принять нажатие — тест падал не из-за плеера
+  await win.evaluate((u) => navigate(u), `${base}/video.html`);
   await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/video.html');
   await expect.poll(() => inTab(`document.getElementById('v').currentTime`), { timeout: 15_000 }).toBeGreaterThan(0.3);
   const caps = await inTab(`(() => { const g = document.createElement('canvas').getContext('webgl2'); return { gl2: !!g, fbf: !!(g && g.getExtension('EXT_color_buffer_float')) }; })()`);
