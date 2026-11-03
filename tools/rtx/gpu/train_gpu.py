@@ -81,7 +81,7 @@ HR, LR, VAL = [], [], []
 def load_data(p):
     """npz (HR, LR, CID в float16) или папка режима обучения браузера: <ролик>_hr.npy, _lr.npy, _cid.npy (uint16)."""
     if os.path.isdir(p):
-        fs = sorted(glob.glob(os.path.join(p, '*_hr.npy')))
+        fs = sorted(glob.glob(os.path.join(p, '**', '*_hr.npy'), recursive=True))  # и вложенные (старая папка anime)
         if not fs: sys.exit(f'В {p} пока нет данных: включи «Режим обучения» в настройках Liquid RTX и посмотри ролики с 4K.')
         hr, lr, cid = [], [], []
         for k, f in enumerate(fs):

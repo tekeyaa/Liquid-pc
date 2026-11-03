@@ -220,7 +220,7 @@
   };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, srContent: settings.srContent || 'auto', learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
@@ -228,7 +228,6 @@
     $('#vidBar').checked = settings.vidBar !== false;
     $('#lpAuto').checked = settings.lpAuto !== false;
     $('#srDeband').checked = settings.srDeband !== false;
-    $('#srContent').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.srContent || 'auto')));
     $('#rtxLearn').checked = !!settings.rtxLearn; $('#rtxLearnBox').hidden = !settings.rtxLearn;
     $('#rtxLearnGb').value = String(settings.rtxLearnGb || 1);
     $('#rtxTrainHours').value = String(settings.rtxTrainHours || 0);
@@ -241,12 +240,13 @@
     if (!settings.rtxLearn || !L.rtxLearn) return;
     const s = await L.rtxLearn.status().catch(() => null); if (!s) return;
     const full = s.bytes >= s.budget;
-    $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов готово ${s.done}${s.anime ? ` (из них аниме ${s.anime})` : ''}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
+    $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов готово ${s.done}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
       (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место кончилось — можно обучать или дать больше места' : '');
     const t = await L.rtxLearn.trainState().catch(() => null); if (!t) return;
     $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainHours').disabled = t.running;
-    $('#rtxTrainStat').textContent = t.msg || (t.ready ? 'Python и PyTorch уже стоят. Обучение — 30–60 минут, видео в это время может подтормаживать.'
-      : 'Нужна видеокарта NVIDIA. В первый раз браузер сам скачает Python и PyTorch (~3 ГБ). Обучение — 30–60 минут, видео в это время может подтормаживать.');
+    const mine = t.mine ? `Твоя сеть: ${t.mine.at ? 'обучена ' + new Date(t.mine.at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) : 'обучена'}${t.mine.gain ? ` · за все обучения точнее на ${t.mine.gain.toFixed(2).replace('.', ',')} дБ` : ''}. ` : 'Своя сеть ещё не обучена — работает встроенная. ';
+    $('#rtxTrainStat').textContent = (t.running ? '' : mine) + (t.msg || (t.ready ? 'Python и PyTorch уже стоят. Обучение — 30–60 минут, видео в это время может подтормаживать.'
+      : 'Нужна видеокарта NVIDIA. В первый раз браузер сам скачает Python и PyTorch (~3 ГБ). Обучение — 30–60 минут, видео в это время может подтормаживать.'));
   }
   setInterval(() => { if ($('#rtxLearnBox') && !$('#rtxLearnBox').hidden && $('#rtxLearnBox').offsetParent) learnStat(); }, 2000);
   $('#rtxLearn').onchange = async (e) => { settings = await L.settings.set({ rtxLearn: e.target.checked }); renderSr(); pushVideoPrefs(); };
@@ -263,7 +263,6 @@
   $('#vidBar').onchange = async (e) => { settings = await L.settings.set({ vidBar: e.target.checked }); pushVideoPrefs(); };
   $('#srDeband').onchange = async (e) => { settings = await L.settings.set({ srDeband: e.target.checked }); pushVideoPrefs(); };
   $('#lpAuto').onchange = async (e) => { settings = await L.settings.set({ lpAuto: e.target.checked }); pushVideoPrefs(); };
-  $('#srContent').addEventListener('click', async (e) => { const b = e.target.closest('button'); if (!b) return; settings = await L.settings.set({ srContent: b.dataset.v }); renderSr(); pushVideoPrefs(); });
   window.saveSrPref = async (p) => { settings = await L.settings.set(p); renderSr(); pushVideoPrefs(); };
   $('#setClose').onclick = () => closePops();
   $('#setExt').onclick = () => { closePops(); setTimeout(() => window.openExtensions(), 120); };

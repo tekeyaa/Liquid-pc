@@ -23,7 +23,12 @@ class RtxTrain {
     this.st = { phase: 'idle', msg: '', pct: 0 };
     this.proc = null; this.stopping = false; this.minGain = 0.1; this.minLeft = 5 * 60e3;
   }
-  state() { return { ...this.st, running: !!this.busy, ready: this.ready() }; }
+  state() { return { ...this.st, running: !!this.busy, ready: this.ready(), mine: this.mine() }; }
+  // своя обученная сеть (Ultra): есть ли, когда обучалась, сколько прибавила
+  mine() {
+    if (!fs.existsSync(path.join(this.out, NETS.ultra))) return null;
+    try { return JSON.parse(fs.readFileSync(path.join(this.out, 'liquid-rtx-ultra.meta.json'), 'utf8')); } catch { return {}; }
+  }
   ready() { try { return fs.readFileSync(path.join(this.dir, 'py', '.ready'), 'utf8') === SETUP_V; } catch { return false; } }
   set(phase, msg, pct) { this.st = { ...this.st, phase, msg, pct: pct ?? this.st.pct }; }
 
@@ -101,16 +106,12 @@ class RtxTrain {
   // Обучение кругами. Круг — полное обучение (~40 минут на RTX 4070) от лучшей версии прошлого круга: улучшилась —
   // записалась, и следующий круг начинается уже с неё. Без срока — один круг. Со сроком (3/6/12 ч) — круги, пока
   // не выйдет время или пока круг не даст меньше +0,1 дБ: дальше сеть на этих данных почти не растёт, нужны новые.
-  // net 'auto' (кнопка «Обучить»): сеть для видео на общих данных, а если режим обучения набрал аниме (от 3 роликов,
-  // папка data/anime) — следом и сеть для аниме. Со сроком время делится: видео 70 %, аниме 30 %
+  // net 'auto' (кнопка «Обучить») — одна сеть для всего (Ultra) на всех собранных роликах
   start(net = 'auto', extra = [], hours = 0) {
     hours = Math.max(0, Number(hours) || 0);
     if (this.busy) return false;
-    const animeDir = path.join(this.data, 'anime');
-    const nAnime = (() => { try { return fs.readdirSync(animeDir).filter((f) => f.endsWith('_hr.npy')).length; } catch { return 0; } })();
-    const plan = net === 'auto' || !NETS[net]
-      ? [['ultra', this.data, 'видео', 0.7], ...(nAnime >= 3 ? [['anime', animeDir, 'аниме', 0.3]] : [])]
-      : [[net, net === 'anime' ? animeDir : this.data, net === 'anime' ? 'аниме' : 'видео', 1]];
+    // одна сеть для всего: Ultra на всех собранных роликах (train_gpu берёт и вложенные папки — старая data/anime тоже)
+    const plan = net === 'auto' || !NETS[net] ? [['ultra', this.data, 'видео', 1]] : [[net, this.data, 'видео', 1]];
     this.stopping = false; this.result = null;
     this.set('setup', 'Проверяю видеокарту…', 0);
     const fmt = (min) => (min >= 90 ? `${Math.floor(min / 60)} ч ${Math.round(min % 60)} мин` : `${Math.round(min)} мин`);
@@ -170,6 +171,13 @@ class RtxTrain {
         + (this.result.better ? '. Уже работает в новых вкладках' : '. Соберите больше разных роликов')
         + (anyGain ? '. Круги перестали давать прибавку (меньше +0,1 дБ) — дальше нужны новые ролики' : ''), 100);
       this.log('info', 'Liquid RTX обучение', this.st.msg);
+      // «твоя сеть»: когда обучалась и сколько прибавила за все обучения — для строки в настройках
+      if (this.result.better) try {
+        const mf = path.join(this.out, 'liquid-rtx-ultra.meta.json');
+        let m = {}; try { m = JSON.parse(fs.readFileSync(mf, 'utf8')); } catch {}
+        m.at = Date.now(); m.gain = (m.gain || 0) + Math.max(0, r0.total); m.times = (m.times || 0) + 1;
+        fs.writeFileSync(mf, JSON.stringify(m));
+      } catch {}
       if (this.onDone) this.onDone(this.result);
     })().catch((e) => {
       if (this.stopping) { this.set('idle', this.st.phase === 'train' ? 'Остановлено. Лучший результат уже сохранён' : 'Остановлено', 0); return; }

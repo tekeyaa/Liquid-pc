@@ -49,11 +49,11 @@ async function go(extra, hours, net = 'pro') {
   const dt = (Date.now() - t1) / 1000;
   if (!(T.result.rounds >= 2) || dt > 150) { console.error(`::error::круги: ${T.result.rounds}, ${dt.toFixed(0)} с`); process.exit(1); }
   console.log(`круги: ${T.result.rounds} за ${dt.toFixed(0)} с`);
-  // «Обучить» (auto): сеть для видео (Ultra), затем для аниме — обе по очереди, файлы весов обеих
+  // «Обучить» (auto): одна сеть для всего — Ultra на всех данных, включая вложенную папку (старая anime)
   T.minGain = 0.1; T.minLeft = 5 * 60e3;
   await go(['--allow-cpu', '--steps', '20', '--batch', '4', '--scratch'], 0, 'auto');
   const nets = (T.result.nets || []).map((r) => r.name).join(',');
-  if (nets !== 'ultra,anime' || !fs.existsSync(path.join(out, 'liquid-rtx-anime.json')) || !fs.existsSync(path.join(out, 'liquid-rtx-ultra.json'))) { console.error('::error::«Обучить» выучило не обе сети: ' + nets); process.exit(1); }
+  if (nets !== 'ultra' || !fs.existsSync(path.join(out, 'liquid-rtx-ultra.json')) || !T.mine()) { console.error('::error::«Обучить» выучило не одну Ultra: ' + nets); process.exit(1); }
   console.log('одна кнопка: ' + nets + ' — ' + T.state().msg);
   // Ultra из Pro: своих весов Ultra нет — первый круг стартует с выращенной Pro, «в начале» — та же точность
   fs.rmSync(path.join(out, 'liquid-rtx-ultra.json'), { force: true });

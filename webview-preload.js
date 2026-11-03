@@ -989,7 +989,10 @@ class RtxEngine {
   pick(level, content) {
     if (!this.gl2) return null;
     if (this.cap >= 3 && this.fbf) {
-      const order = content === 'anime' ? ['anime', 'net'] : this.cap >= 5 ? ['ultra', 'pro', 'net'] : this.cap >= 4 ? ['pro', 'net'] : ['net'];
+      // одна сеть для всего — твоя обученная Ultra (и видео, и аниме). Пока её нет или видеокарта не тянет —
+      // встроенные запасные: для рисованного своя аниме-сеть, для съёмки Pro, на слабых видеокартах лёгкая
+      const fallback = content === 'anime' ? ['anime', 'net'] : this.cap >= 4 ? ['pro', 'net'] : ['net'];
+      const order = this.cap >= 5 ? ['ultra', ...fallback] : fallback;
       // лучшая готовая из списка; пока лучшая собирается — рисует следующая готовая (а не FSR)
       let wait = false;
       for (const n of order) {
@@ -1115,7 +1118,7 @@ class RtxPerf {
 // Раз в 4 с уменьшаем кадр до 160×90 и считаем долю «ровных» точек (без тёмных — ночь и полосы не в счёт).
 // Проверка на фото и рисунках: у съёмки 0,4–15 %, у рисованного 33–86 %. Решение меняем после 3 одинаковых ответов подряд.
 vt.srContent = 'auto';
-vt.animeNet = true; // своя сеть для рисованного (main/rtx/liquid-rtx-anime.json)
+vt.animeNet = true; // рисованное ли — нужно только запасной встроенной аниме-сети (пока своя Ultra не обучена)
 function contentOf(v) {
   if (!vt.animeNet) return 'video';
   if (vt.srContent === 'video' || vt.srContent === 'anime') return vt.srContent;
@@ -1947,7 +1950,6 @@ function lpAct(b) {
   if (b.dataset.sr) { vt.sr = b.dataset.sr; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); lp.dirty = true; lpRender(); return; }
   if (b.dataset.q) { lpSetQuality(b.dataset.q); lpMenu(false); return; }
   if (b.dataset.rate) { v.playbackRate = +b.dataset.rate; vt.want.speed = +b.dataset.rate; lpMenu(false); lpRender(); return; }
-  if (b.dataset.content) { vt.srContent = b.dataset.content; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr, content: vt.srContent }); lp.dirty = true; lpMenu('q'); return; }
   if (a === 'close') lpClose();
   else if (a === 'play') lpToggle();
   else if (a === 'back') lpSeek(-10);
@@ -1976,11 +1978,6 @@ async function lpMenu(kind) {
     if (yq && yq.list.length) {
       const NAME = { hd2160: '2160p (4K)', hd1440: '1440p', hd1080: '1080p', hd720: '720p', large: '480p', medium: '360p', small: '240p', tiny: '144p', auto: 'Авто' };
       h += '<b>Качество YouTube</b>' + yq.list.map((x) => `<button data-q="${x}" class="${x === yq.cur ? 'on' : ''}">${NAME[x] || x}</button>`).join('');
-    }
-    if (vt.animeNet) {
-      const kind = contentOf(lp.v);
-      h += `<b>Содержимое</b>` + [['auto', `Авто (сейчас: ${kind === 'anime' ? 'рисованное' : 'видео'})`], ['video', 'Видео (съёмка)'], ['anime', 'Аниме и мультики']]
-        .map(([k, t]) => `<button data-content="${k}" class="${vt.srContent === k ? 'on' : ''}">${t}</button>`).join('');
     }
     h += `<b>Liquid Player</b><button data-a="auto" class="${vt.lpAuto ? 'on' : ''}">Открывать вместо полного экрана сайта</button>`;
     if (lp.eng) h += `<b>Видеопамять: ~${lp.eng.vram()} МБ</b>`;

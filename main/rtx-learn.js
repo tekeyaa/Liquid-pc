@@ -203,7 +203,7 @@ class RtxLearn {
       for (const p of r.pairs) { HR.push(Buffer.from(p.hr, 'base64')); LR.push(Buffer.from(p.lr, 'base64')); CID.push(i); }
     }
     if (!HR.length) { it.st = 'skip'; it.why = 'кадры не совпали'; return; }
-    const dir = anime ? path.join(this.data, 'anime') : this.data;
+    const dir = this.data; // одна сеть для всего — и аниме, и съёмка в одну папку
     fs.mkdirSync(dir, { recursive: true });
     const base = path.join(dir, it.id);
     const cid = Buffer.alloc(4 * CID.length); CID.forEach((v, j) => cid.writeInt32LE(v, 4 * j));
