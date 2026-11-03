@@ -141,9 +141,10 @@ for (const lvl of ['warn', 'error']) {
   console[lvl] = (...a) => {
     orig(...a);
     const text = a.map((x) => (x && x.stack) || (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
-    // Electron сам пишет «Error occurred in handler for GUEST_VIEW_MANAGER_CALL … (-3)», когда загрузку вкладки прервали
-    // переходом на другую страницу, — это обычное дело, а не ошибка
-    diag.log(/GUEST_VIEW_MANAGER_CALL[\s\S]*\(-3\)/.test(text) ? 'debug' : lvl, 'main', text);
+    // Electron сам пишет «Error occurred in handler for GUEST_VIEW_MANAGER_CALL … ERR_ABORTED (-3) / ERR_FAILED (-2)»,
+    // когда загрузку вкладки прервали (перешли на другую страницу, закрыли вкладку, пока грузилась новая вкладка), —
+    // это не ошибка. Настоящие сбои загрузки журнал и так пишет отдельно (did-fail-load, «загрузка»)
+    diag.log(/GUEST_VIEW_MANAGER_CALL[\s\S]*\((-3|-2)\)/.test(text) ? 'debug' : lvl, 'main', text);
   };
 }
 process.on('uncaughtException', (e) => {
