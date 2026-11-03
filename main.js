@@ -245,7 +245,7 @@ function publicSettings() {
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
-    rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
+    srDeband: s.srDeband !== false, rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
@@ -490,6 +490,7 @@ app.on('web-contents-created', (_e, contents) => {
       t.push({ type: 'separator' });
     }
     if (p.mediaType === 'image' && p.srcURL) {
+      t.push({ label: 'Улучшить картинку (Liquid RTX)', click: () => (p.frame || contents).executeJavaScript(`document.dispatchEvent(new CustomEvent('liquid:imgsr', { detail: { src: ${JSON.stringify(String(p.srcURL))} } }))`).catch(() => {}) });
       t.push({ label: 'Открыть картинку в новой вкладке', click: () => host().send('tab:open', { url: p.srcURL, background: true }) });
       t.push({ label: 'Сохранить картинку как…', click: () => contents.downloadURL(p.srcURL) });
       t.push({ type: 'separator' });
@@ -1449,6 +1450,7 @@ function registerIpc() {
     if ('srHdr' in patch) s.srHdr = !!patch.srHdr;
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
+    if ('srDeband' in patch) s.srDeband = !!patch.srDeband;
     if ('rtxAutoTrain' in patch) s.rtxAutoTrain = !!patch.rtxAutoTrain;
     if ('rtxTrainHours' in patch) s.rtxTrainHours = [3, 6, 12].includes(Number(patch.rtxTrainHours)) ? Number(patch.rtxTrainHours) : 0;
     if ('rtxLearn' in patch) { s.rtxLearn = !!patch.rtxLearn; if (!s.rtxLearn && rtxLearn) rtxLearn.close(); }
@@ -1520,8 +1522,19 @@ function registerIpc() {
     try { await e.senderFrame.executeJavaScript(`document.dispatchEvent(new CustomEvent('liquid:lpfs'))`, true); return true; } catch { return false; }
   });
   ipcMain.handle('sr:net', (_e, n) => rtxNet(String(n || 'lite')));
+  // Liquid RTX для картинок: картинки сайтов почти всегда лежат на другом домене, и странице читать их нельзя —
+  // скачиваем сами (с входом и куками вкладки) и отдаём байты. Только вкладкам, только картинки до 20 МБ
+  ipcMain.handle('img:fetch', async (e, url) => {
+    if (e.sender.getType() !== 'webview' || !/^https?:\/\//.test(String(url))) return null;
+    try {
+      const r = await e.sender.session.fetch(String(url), { headers: { Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' } });
+      if (!r.ok || !/^image\//.test(r.headers.get('content-type') || '')) return null;
+      const b = Buffer.from(await r.arrayBuffer());
+      return b.length <= 20 * 1048576 ? new Uint8Array(b) : null;
+    } catch { return null; }
+  });
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
-  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn }; });
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false }; });
   // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));

@@ -561,6 +561,7 @@ function videoCmd(m) {
     if (m.remember != null) vt.remember = !!m.remember;
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
+    if (m.deband != null) { vt.srDeband = !!m.deband; for (const r of vt.srMap.values()) r.dirty = true; if (lp.open) lp.dirty = true; }
     if (m.srContent) vt.srContent = m.srContent;
     if (m.learn != null) vt.learn = !!m.learn;
     if (m.sr != null) { vt.sr = m.sr; vt.srHdr = !!m.srHdr; srSync(); if (lp.open) { lp.dirty = true; lpRender(); } }
@@ -608,6 +609,26 @@ const SR_VS3 = `#version 300 es
 in vec2 p; uniform float flip; out vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
 // «как было»: просто растянуть кадр (так его показывает сам браузер) — для режима «Выкл» и сравнения
 const SR_BILIN = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec4 crop; void main(){ gl_FragColor = vec4(texture2D(t, crop.xy + uv * crop.zw).rgb, 1.0); }`;
+// Полосы на градиентах (небо, тёмные сцены): видео 8-битное, а кодек ещё и выравнивает плавные переходы — выходят
+// «ступеньки». Как deband в mpv: сравниваем точку со средним по 4 точкам на окружности (радиус 4, 8, 12, 16, угол
+// случайный, но постоянный для точки — без мерцания). Разница меньше порога (1–2 ступеньки яркости) — это ступенька
+// градиента, берём среднее; больше — настоящая деталь, не трогаем. Порог падает с радиусом: чем дальше, тем строже.
+// Дальше всё считается в 16-битах, а последний проход добавляет незаметный шум — ступеньки не возвращаются
+const SR_DEB = `#version 300 es
+precision highp float; uniform sampler2D src; uniform ivec2 sz; uniform float thr; out vec4 o;
+float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+vec3 at(ivec2 p) { return texelFetch(src, clamp(p, ivec2(0), sz - 1), 0).rgb; }
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy); vec3 c = at(p);
+  for (int i = 1; i <= 4; i++) {
+    float a = h(vec2(p) + float(i) * 17.0) * 6.2831853, r = 4.0 * float(i);
+    ivec2 d = ivec2(round(vec2(cos(a), sin(a)) * r)), e = ivec2(-d.y, d.x);
+    vec3 av = (at(p + d) + at(p - d) + at(p + e) + at(p - e)) * 0.25;
+    vec3 df = abs(c - av);
+    if (max(df.r, max(df.g, df.b)) < thr / float(i)) c = av;
+  }
+  o = vec4(c, 1.0);
+}`;
 // уменьшение (видео крупнее слоя, слой нужен только ради HDR-цвета): бикубическое
 const SR_DOWN = `precision highp float; varying vec2 uv; uniform sampler2D t; uniform vec2 src; uniform vec4 crop;
 vec4 cub(float x){ float x2=x*x, x3=x2*x; return vec4(-0.5*x3+x2-0.5*x, 1.5*x3-2.5*x2+1.0, -1.5*x3+2.0*x2+0.5*x, 0.5*x3-0.5*x2); }
@@ -840,6 +861,7 @@ class RtxEngine {
     const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     this.pEasu = this.prog(SR_EASU); this.pRcas = this.prog(SR_RCAS); this.pDown = this.prog(SR_DOWN); this.pBilin = this.prog(SR_BILIN);
+    if (this.gl2) { this.pDeb = this.prog(SR_DEB, SR_VS3); this.deband = true; }
     for (const p of [this.pEasu, this.pRcas, this.pDown, this.pBilin]) if (!gl.getProgramParameter(p.p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p.p) || 'link');
     // два исходных кадра по очереди: текущий и прошлый (для стабильности во времени)
     this.tSrcs = [this.tex(), this.tex()]; this.si = 0; this.tSrc = this.tSrcs[0]; this.tMid = this.tex();
@@ -1022,6 +1044,8 @@ class RtxEngine {
     this.si ^= 1; this.tSrc = this.tSrcs[this.si]; this.lastSrcBytes = vw * vh * 4;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); // кросс-доменное видео без CORS здесь бросит SecurityError
+    this.tRaw = this.tSrc; // исходный кадр — для сравнения половинок экрана (клавиша C)
+    if (this.deband && vt.srDeband !== false && this.pDeb && level !== 'off' && this.ready(this.pDeb)) this.tSrc = this.debandPass(vw, vh);
     // видео не меньше холста (4K на 4K-экране, слой ради HDR) — увеличивать нечего: только уменьшаем/копируем
     const down = vw * k[2] >= this.ow * 0.97 && vh * k[3] >= this.oh * 0.97 || vw * k[2] > this.ow * 1.05 || vh * k[3] > this.oh * 1.05;
     const M = down || level === 'off' ? null : this.pick(level, content);
@@ -1042,12 +1066,27 @@ class RtxEngine {
     if (!M || !M.layers) this.netFrames = 0;
     this.used = level === 'off' ? 'off' : M ? M.name : down ? 'down' : 'fsr';
     const sk = SR_SHARP_K[this.used === 'pro' || this.used === 'net' ? 'net' : this.used === 'anime' ? 'anime' : /^r\d/.test(this.used) ? 'ravu' : 'fsr'];
-    this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid], ['raw', this.tSrc]], (u) => {
+    this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid], ['raw', this.tRaw]], (u) => {
       gl.uniform2f(u('dst'), this.ow, this.oh); gl.uniform1f(u('flip'), 0);
-      gl.uniform1f(u('sharp'), down || level === 'off' ? 0 : sk[level] ?? sk.mid);
+      gl.uniform1f(u('sharp'), down || level === 'off' ? 0 : (sk[level] ?? sk.mid) * (this.sharpMul ?? 1));
       gl.uniform1f(u('hdr'), hdr ? 1 : 0); gl.uniform1f(u('split'), split || 0); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
     });
     return this.used;
+  }
+  // кадр без полос — в отдельную текстуру (16 бит, если видеокарта умеет в неё рисовать)
+  debandPass(vw, vh) {
+    const gl = this.gl;
+    if (!this.tDeb || this.debW !== vw || this.debH !== vh) {
+      if (!this.tDeb) { this.tDeb = this.tex(); this.fbDeb = gl.createFramebuffer(); }
+      gl.bindTexture(gl.TEXTURE_2D, this.tDeb);
+      if (this.fbf) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, vw, vh, 0, gl.RGBA, gl.HALF_FLOAT, null);
+      else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, vw, vh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbDeb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tDeb, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this.debW = vw; this.debH = vh;
+    }
+    this.run(this.pDeb, this.fbDeb, vw, vh, [['src', this.tSrc]], (u) => { gl.uniform2i(u('sz'), vw, vh); gl.uniform1f(u('thr'), 2.2 / 255); }, 1);
+    return this.tDeb;
   }
   // ступенька вниз: нейросеть Pro → лёгкая → RAVU-3 → RAVU-2 → FSR
   slower() { const i = SR_TIER[this.used]; if (i > 0) { this.cap = Math.min(this.cap, i - 1); return true; } return false; }
@@ -1373,6 +1412,57 @@ document.addEventListener('loadstart', (e) => {
 }, true);
 document.addEventListener('play', () => setTimeout(srSync, 50), true);
 document.addEventListener('loadeddata', () => setTimeout(srSync, 50), true);
+
+// ---------- 7б. Liquid RTX для картинок ----------
+// Та же сеть, что для видео: картинка ×2 (не больше 4K), с убиранием полос. Меню по правой кнопке «Улучшить картинку»,
+// а открытая отдельной вкладкой картинка меньше окна улучшается сама (если Liquid RTX включён).
+// Байты картинки берём через браузер (img:fetch): с чужого домена странице читать их нельзя
+const imgSr = { eng: null, busy: false };
+async function imgEnhance(img, src) {
+  if (!img || imgSr.busy || img.dataset.lqImg) return false;
+  src = src || img.currentSrc || img.src;
+  imgSr.busy = true;
+  try {
+    let blob = null;
+    if (/^(blob|data):/.test(src)) blob = await (await fetch(src)).blob();
+    else { const u8 = await ipcRenderer.invoke('img:fetch', src); if (u8) blob = new Blob([u8]); }
+    if (!blob) return false;
+    const bmp = await createImageBitmap(blob);
+    const w = bmp.width, h = bmp.height;
+    if (w < 16 || h < 16) return false;
+    const k = Math.min(2, Math.sqrt((3840 * 2160) / (w * h)));
+    if (k < 1.2) return false; // уже большая — увеличивать незачем
+    if (!imgSr.eng) { imgSr.eng = new RtxEngine(document.createElement('canvas')); imgSr.eng.sharpMul = 0; } // на картинках доводка резкости только мешает (проверено на JPEG)
+    const E = imgSr.eng;
+    E.size(Math.round(w * k), Math.round(h * k));
+    // ждём, пока соберётся шейдер нейросети (первый раз — секунда-другая), но не дольше 15 с
+    let used = '';
+    for (const t0 = performance.now(); performance.now() - t0 < 15000;) {
+      used = E.draw(bmp, w, h, [0, 0, 1, 1], 'mid', false, 0, contentOf(img));
+      if (/^(pro|net|anime)$/.test(used)) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const out = await new Promise((r) => E.c.toBlob(r, 'image/png'));
+    bmp.close();
+    if (!out) return false;
+    img.dataset.lqImg = used; img.dataset.lqOrig = src;
+    if (img.srcset) { img.dataset.lqSrcset = img.srcset; img.removeAttribute('srcset'); }
+    img.src = URL.createObjectURL(out);
+    return true;
+  } catch (e) { console.warn('[liquid] Liquid RTX: картинку улучшить не вышло:', e && e.message); return false; }
+  finally { imgSr.busy = false; }
+}
+document.addEventListener('liquid:imgsr', (e) => {
+  const src = e.detail && e.detail.src;
+  const img = [...document.images].find((i) => i.currentSrc === src || i.src === src) || null;
+  if (img) imgEnhance(img, src).then((ok) => { if (!ok) toHost({ type: 'rtxMsg', error: true, text: 'Liquid RTX: эту картинку улучшить не получилось — она уже большая или не скачалась' }); });
+});
+// картинка, открытая отдельной вкладкой (Chromium показывает её в документе из одного <img>)
+if (!IS_FRAME && /^image\//.test(document.contentType || '')) window.addEventListener('load', () => setTimeout(() => {
+  const img = document.images[0];
+  if (!img || vt.sr === 'off' || !img.naturalWidth) return;
+  if (img.naturalWidth < innerWidth * 0.9 && img.naturalHeight < innerHeight * 0.9) imgEnhance(img, location.href);
+}, 300), { once: true });
 
 // ---------- 8. Кнопка на видео: кружок в углу, по нажатию — компактная панель ----------
 const BAR_CSS = `
