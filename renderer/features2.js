@@ -255,7 +255,8 @@
     $('#rtxTrainStat').textContent = t.msg || (t.mine ? 'Можно доучить — станет ещё точнее.' : t.ready ? 'Пока работает встроенная. Учится на собранных роликах; лучше ставить на 6–12 часов.'
       : 'Пока работает встроенная. Нужна видеокарта NVIDIA; в первый раз браузер сам скачает Python и PyTorch (~3 ГБ).');
   }
-  setInterval(() => { if ($('#rtxTrainGo') && $('#rtxTrainGo').offsetParent) learnStat(); }, 2000);
+  // по видимой строке «Своя сеть», а не по кнопке «Обучить»: во время обучения кнопка скрыта, и статус замирал
+  setInterval(() => { if ($('#rtxMine') && $('#rtxMine').offsetParent) learnStat(); }, 2000);
   $('#rtxLearn').onchange = async (e) => { settings = await L.settings.set({ rtxLearn: e.target.checked }); renderSr(); pushVideoPrefs(); };
   $('#rtxLearnGb').onchange = async (e) => { settings = await L.settings.set({ rtxLearnGb: Number(e.target.value) }); renderSr(); };
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
