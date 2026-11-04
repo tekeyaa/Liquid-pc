@@ -89,7 +89,7 @@ elif not a.scratch and not a.resume:
 elif a.scratch:
     with torch.no_grad(): net.c[-1].weight.mul_(0.1); net.c[-1].bias.zero_()
 if a.warm:
-    net.load_state_dict(torch.load(a.warm, map_location=dev)['net']); print('продолжаю с весов', a.warm)
+    ck = torch.load(a.warm, map_location=dev); net.load_state_dict(ck.get('ema') or ck['net']); print('продолжаю с весов', a.warm)
 start = {k: v.clone() for k, v in net.state_dict().items()}
 
 # данные — целиком на видеокарте (float16): 1000 кусочков 512² — около 1 ГБ
@@ -105,7 +105,8 @@ def load_data(p):
             try: h, l, c = np.load(f), np.load(b + '_lr.npy'), np.load(b + '_cid.npy')
             except Exception as e: print('пропуск', os.path.basename(b), e); continue
             if len(h) != len(l) or len(h) != len(c): continue
-            hr.append((h / 65535).astype(np.float16)); lr.append((l / 65535).astype(np.float16)); cid.append(c.astype(np.int64) + 1000 * k)
+            # через float32, а не float64: вдвое меньше памяти и быстрее загрузка
+            hr.append((h.astype(np.float32) * (1 / 65535)).astype(np.float16)); lr.append((l.astype(np.float32) * (1 / 65535)).astype(np.float16)); cid.append(c.astype(np.int64) + 1000 * k)
         print(p, 'роликов', len(hr))
         return np.concatenate(hr), np.concatenate(lr), np.concatenate(cid)
     d = np.load(p)
@@ -116,7 +117,9 @@ for p in a.data:
     if not va.any(): va[::23] = True
     tr = ~va
     HR.append(torch.from_numpy(dH[tr]).to(dev)); LR.append(torch.from_numpy(dL[tr]).to(dev))
-    VAL.append((torch.from_numpy(dH[va][:48]).to(dev), torch.from_numpy(dL[va][:48]).to(dev)))
+    # проверка — до 128 кадров, взятых равномерно по всем роликам (было 48 первых: разница в 0,1 дБ тонула в шуме)
+    vi = np.flatnonzero(va); vi = vi[np.linspace(0, len(vi) - 1, min(128, len(vi))).astype(int)] if len(vi) else vi
+    VAL.append((torch.from_numpy(dH[vi]).to(dev), torch.from_numpy(dL[vi]).to(dev)))
     print(p, 'пар', int(tr.sum()), '+ проверка', int(va.sum()))
 cnt = np.array([len(x) for x in LR], float)
 P = a.patch or (64 if G2 else 48); S = P + 2 * M
@@ -176,8 +179,13 @@ if a.percept > 0:
 
 opt = torch.optim.Adam(net.parameters(), lr=a.lr or (1e-3 if a.scratch else 2e-4), **({'fused': True} if dev.type == 'cuda' else {}))
 lr0 = opt.param_groups[0]['lr']; it0 = 0
+# Среднее весов за последние ~1000 шагов (EMA): точнее и спокойнее, чем веса последнего шага, — их и проверяем, и сохраняем
+SD = net.state_dict()
+ema = {k: v.detach().clone() for k, v in SD.items()}
+FK = [k for k, v in SD.items() if v.is_floating_point()]
 if a.resume:
     ck = torch.load(a.resume, map_location=dev); net.load_state_dict(ck['net']); opt.load_state_dict(ck['opt']); it0 = ck['it']; start = ck['start']
+    if ck.get('ema'): ema = {k: v.clone() for k, v in ck['ema'].items()}
     print('продолжаю с шага', it0)
 v0 = validate(start)
 print(f'проверка: простое растягивание {v0[1]:.2f} дБ, сеть в начале {v0[0]:.2f} дБ')
@@ -198,13 +206,21 @@ if G2:
 
 
 def save_json(tag):
+    keep = {k: v.clone() for k, v in net.state_dict().items()}; net.load_state_dict(ema)
     layers = [(c.weight.detach().cpu().numpy(), c.bias.detach().cpu().numpy()) for c in net.c]
+    net.load_state_dict(keep)
     if G2: rtx2.save(OUT, layers, version=tag)
     else: rtxfmt.save(OUT, F, H, dims, layers, version=tag)
 
 
 def save_pt(it):
-    torch.save({'net': net.state_dict(), 'opt': opt.state_dict(), 'it': it, 'start': start}, OUT + '.pt')
+    torch.save({'net': net.state_dict(), 'ema': ema, 'opt': opt.state_dict(), 'it': it, 'start': start}, OUT + '.pt')
+
+
+EL = [ema[k] for k in FK]; PL = [SD[k] for k in FK]
+def ema_step(n):
+    d = min(0.999, (1 + n) / (10 + n))
+    torch._foreach_lerp_(EL, PL, 1 - d)
 
 
 t0 = time.time(); run = None; it = it0
@@ -223,7 +239,7 @@ try:
         if vgg is not None:
             with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == 'cuda'):
                 loss = loss + a.percept * Fn.l1_loss(feat(o), feat(y))
-        opt.zero_grad(set_to_none=True); loss.backward(); opt.step()
+        opt.zero_grad(set_to_none=True); loss.backward(); opt.step(); ema_step(it - it0)
         # среднее потерь копим на видеокарте: .item() на каждом шаге заставлял её останавливаться и ждать Python
         run = loss.detach() if run is None else 0.99 * run + 0.01 * loss.detach()
         if it % 500 == 0:
@@ -231,16 +247,16 @@ try:
             el = time.time() - t0
             if TOTAL: eta = max(0, TOTAL - el); tot = int(it / max(frac(), 1e-6))
             else: eta = el / (it - it0) * (a.steps - it); tot = a.steps
-            msg = f'{it}/{tot} потери {run:.5f}  осталось ~{eta / 60:.0f} мин'
+            msg = f'{it}/{tot} потери {run:.5f}  осталось ~{eta / 60:.0f} мин  {(it - it0) / max(el, 1e-6):.0f} шаг/с'
             if it % 2000 == 0:
-                v = validate()[0]
+                v = validate(ema)[0]
                 msg += f'  проверка {v:.2f} дБ (было {v0[0]:.2f})'
                 if v > best or vgg is not None: best = max(best, v); save_json(f'gpu-{it}'); msg += '  ✓ сохранено'
                 save_pt(it)
             print(msg, flush=True)
 except KeyboardInterrupt:
     print('остановлено')
-v = validate()[0]
+v = validate(ema)[0]
 print(f'конец: проверка {v:.2f} дБ', flush=True)
 if v > best or vgg is not None: best = v; save_json(f'gpu-{it}')
 save_pt(it)

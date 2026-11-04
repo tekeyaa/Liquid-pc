@@ -618,6 +618,7 @@ function videoCmd(m) {
     if (m.remember != null) vt.remember = !!m.remember;
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
+    if (m.lpSmooth != null) { vt.lpSmooth = !!m.lpSmooth; if (lp.open) { lp.dirty = true; lpRender(); } }
     if (m.deband != null) { vt.srDeband = !!m.deband; for (const r of vt.srMap.values()) r.dirty = true; if (lp.open) lp.dirty = true; }
     if (m.srContent) vt.srContent = m.srContent;
     if (m.learn != null) vt.learn = !!m.learn;
@@ -660,7 +661,7 @@ function videoCmd(m) {
 // Затем — резкость RCAS (FSR 1.0.2, MIT): не выходит за цвета соседей (нет ореолов) и слабее на шуме (нет ряби),
 // HDR-цвет и дизеринг против полос. «Чисто» — почти без добавочной резкости, «Чётко» — сильнее.
 // Движок общий: им рисуют и слой поверх плеера сайта, и Liquid Player (раздел 10).
-vt.sr = 'off'; vt.srHdr = false; vt.barOn = true; vt.remember = false; vt.lpAuto = true;
+vt.sr = 'off'; vt.srHdr = false; vt.barOn = true; vt.remember = false; vt.lpAuto = true; vt.lpSmooth = true;
 const SR_VS = `attribute vec2 p; uniform float flip; varying vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
 const SR_VS3 = `#version 300 es
 in vec2 p; uniform float flip; out vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
@@ -1231,12 +1232,18 @@ class RtxEngine {
   }
   // рисует кадр src (видео или VideoFrame) размером vw×vh; crop — видимая часть кадра; split — доля «как было» слева;
   // content — 'video' или 'anime' (рисованное: своя сеть)
-  draw(src, vw, vh, crop, level, hdr, split, content) {
-    const gl = this.gl, k = crop;
+  // кадр видео — в текстуру (отдельно от отрисовки: 60 кадров сначала сверяют его с прошлым)
+  upload(src, vw, vh) {
+    const gl = this.gl;
     this.si ^= 1; this.tSrc = this.tSrcs[this.si]; this.lastSrcBytes = vw * vh * 4;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tSrc);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); // кросс-доменное видео без CORS здесь бросит SecurityError
     this.tRaw = this.tSrc; // исходный кадр — для сравнения половинок экрана (клавиша C)
+  }
+  // src = null — кадр уже загружен через upload(). outFb — куда рисовать итог (null — прямо на холст)
+  draw(src, vw, vh, crop, level, hdr, split, content) {
+    const gl = this.gl, k = crop;
+    if (src) this.upload(src, vw, vh); else this.tSrc = this.tRaw;
     if (this.deband && vt.srDeband !== false && this.pDeb && level !== 'off' && this.ready(this.pDeb)) this.tSrc = this.debandPass(vw, vh);
     // видео не меньше холста (4K на 4K-экране, слой ради HDR) — увеличивать нечего: только уменьшаем/копируем
     const down = vw * k[2] >= this.ow * 0.97 && vh * k[3] >= this.oh * 0.97 || vw * k[2] > this.ow * 1.05 || vh * k[3] > this.oh * 1.05;
@@ -1258,7 +1265,7 @@ class RtxEngine {
     if (!M || !M.layers) this.netFrames = 0;
     this.used = level === 'off' ? 'off' : M ? M.name : down ? 'down' : 'fsr';
     const sk = SR_SHARP_K[/^(rtx2|pro|net)$/.test(this.used) ? 'net' : this.used === 'anime' ? 'anime' : /^r\d/.test(this.used) ? 'ravu' : 'fsr'];
-    this.run(this.pRcas, null, this.ow, this.oh, [['t', this.tMid], ['raw', this.tRaw]], (u) => {
+    this.run(this.pRcas, this.outFb || null, this.ow, this.oh, [['t', this.tMid], ['raw', this.tRaw]], (u) => {
       gl.uniform2f(u('dst'), this.ow, this.oh); gl.uniform1f(u('flip'), 0);
       gl.uniform1f(u('sharp'), down || level === 'off' ? 0 : (sk[level] ?? sk.mid) * (this.sharpMul ?? 1));
       gl.uniform1f(u('hdr'), hdr ? 1 : 0); gl.uniform1f(u('split'), split || 0); gl.uniform4f(u('crop'), k[0], k[1], k[2], k[3]);
@@ -1284,6 +1291,170 @@ class RtxEngine {
   // RTX 2 легче Pro — не успевает она, не успеет и Pro: сразу на лёгкую
   slower() { const i = SR_TIER[this.used]; if (i > 0) { this.cap = Math.min(this.cap, this.used === 'rtx2' ? 3 : i - 1); return true; } return false; }
   destroy() { this.dead = true; try { this.gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {} }
+}
+// ---------- 7в. 60 кадров: промежуточные кадры между настоящими ----------
+// Только для видео 24/25/30 кадров (у 50/60 кадров и так плавно — ничего не дорисовываем). Как работает:
+// 1) яркость кадра уменьшается до ~960 точек по ширине и ещё трижды вдвое (пирамида);
+// 2) для каждой точки ищется, куда сдвинулась картинка между прошлым и новым кадром: грубо на самой маленькой копии
+//    (до ±96 точек 1080p за кадр), потом уточняется на каждой следующей и до долей точки;
+// 3) на каждом обновлении экрана оба готовых кадра (уже после Liquid RTX) сдвигаются навстречу друг другу на нужную
+//    долю пути и смешиваются. Где сдвиг не нашёлся (быстрое движение, что-то появилось из-за края) — берётся
+//    ближайший настоящий кадр, без «ореолов». Показ отстаёт от видео на один кадр (~33–42 мс) — звук этого не замечает.
+const FG_LUMA = `#version 300 es
+precision highp float; uniform sampler2D src; uniform vec2 dsz; out vec4 o;
+void main(){ vec2 c = gl_FragCoord.xy / dsz, h = 0.25 / dsz;
+  vec3 s = texture(src, c - h).rgb + texture(src, c + vec2(h.x, -h.y)).rgb + texture(src, c + vec2(-h.x, h.y)).rgb + texture(src, c + h).rgb;
+  o = vec4(dot(s * 0.25, vec3(0.299, 0.587, 0.114)), 0.0, 0.0, 1.0); }`;
+const FG_DOWN = `#version 300 es
+precision highp float; uniform sampler2D src; uniform vec2 dsz; out vec4 o;
+void main(){ o = vec4(texture(src, gl_FragCoord.xy / dsz).r, 0.0, 0.0, 1.0); }`;
+const FG_SEARCH = `#version 300 es
+precision highp float; uniform sampler2D la, lb, init; uniform vec2 sz; uniform float useInit, sub; uniform int rad; out vec4 o;
+float cost(vec2 x, vec2 d) { float s = 0.0; vec2 ia = 1.0 / sz;
+  for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) { vec2 q = x + vec2(float(i), float(j));
+    s += abs(texture(la, (q - 0.5 * d) * ia).r - texture(lb, (q + 0.5 * d) * ia).r); }
+  return s / 25.0; }
+void main(){
+  vec2 x = gl_FragCoord.xy, d0 = useInit > 0.5 ? texture(init, x / sz).xy * 2.0 : vec2(0.0);
+  vec2 best = d0; float bc = 1e9, braw = 1e9;
+  for (int j = -rad; j <= rad; j++) for (int i = -rad; i <= rad; i++) {
+    vec2 d = d0 + vec2(float(i), float(j)); float c = cost(x, d), cr = c + 0.0015 * length(d - d0) + 0.0005 * length(d);
+    if (cr < bc) { bc = cr; braw = c; best = d; } }
+  vec2 off = vec2(0.0);
+  if (sub > 0.5) {
+    float xm = cost(x, best - vec2(1.0, 0.0)), xp = cost(x, best + vec2(1.0, 0.0)), ym = cost(x, best - vec2(0.0, 1.0)), yp = cost(x, best + vec2(0.0, 1.0));
+    float dx = xm - 2.0 * braw + xp, dy = ym - 2.0 * braw + yp;
+    if (dx > 1e-5) off.x = clamp((xm - xp) / (2.0 * dx), -0.5, 0.5);
+    if (dy > 1e-5) off.y = clamp((ym - yp) / (2.0 * dy), -0.5, 0.5); }
+  o = vec4(best + off, braw, 1.0); }`;
+const FG_SMOOTH = `#version 300 es
+precision highp float; uniform sampler2D fl; uniform ivec2 sz; out vec4 o;
+void main(){ ivec2 p = ivec2(gl_FragCoord.xy); vec4 a = vec4(0.0); float cz = 0.0, wz = 0.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) { vec4 f = texelFetch(fl, clamp(p + ivec2(i, j), ivec2(0), sz - 1), 0);
+    float w = 1.0 / (f.z + 0.004); a.xy += f.xy * w; cz += f.z * w; wz += w; }
+  o = vec4(a.xy / wz, cz / wz, 1.0); }`;
+const FG_DIFF = `#version 300 es
+precision highp float; uniform sampler2D a, b; uniform ivec2 sz; out vec4 o;
+void main(){ float s = 0.0;
+  for (int y = 0; y < sz.y; y++) for (int x = 0; x < sz.x; x++) s += abs(texelFetch(a, ivec2(x, y), 0).r - texelFetch(b, ivec2(x, y), 0).r);
+  o = vec4(clamp(s / float(sz.x * sz.y) * 50.0, 0.0, 1.0), 0.0, 0.0, 1.0); }`;
+const FG_OUT = `#version 300 es
+precision highp float; uniform sampler2D ta, tb, fl; uniform vec2 osz, fsz; uniform float t; out vec4 o;
+void main(){
+  vec2 x = gl_FragCoord.xy; vec4 f = texture(fl, vec2(x.x / osz.x, 1.0 - x.y / osz.y));
+  vec2 D = vec2(f.x * osz.x / fsz.x, -f.y * osz.y / fsz.y);
+  vec3 ca = texture(ta, (x - t * D) / osz).rgb, cb = texture(tb, (x + (1.0 - t) * D) / osz).rgb;
+  float df = dot(abs(ca - cb), vec3(0.299, 0.587, 0.114));
+  float conf = (1.0 - smoothstep(0.04, 0.16, df)) * (1.0 - smoothstep(0.03, 0.09, f.z));
+  vec3 near = t < 0.5 ? texture(ta, x / osz).rgb : texture(tb, x / osz).rgb;
+  o = vec4(mix(near, mix(ca, cb, t), conf), 1.0); }`;
+class FrameGen {
+  constructor(eng) {
+    this.e = eng; const gl = this.gl = eng.gl;
+    this.ok = !!(eng.gl2 && eng.fbf);
+    if (!this.ok) return;
+    const P = (fs) => eng.prog(fs, SR_VS3);
+    this.p = { luma: P(FG_LUMA), down: P(FG_DOWN), search: P(FG_SEARCH), smooth: P(FG_SMOOTH), diff: P(FG_DIFF), out: P(FG_OUT) };
+    this.pyr = []; this.fl = []; this.slots = []; this.vw = 0; this.vh = 0; this.ow = 0; this.oh = 0;
+    this.dupBuf = new Uint8Array(4); this.raw = []; this.dups = []; this.acc = [];
+    this.restart();
+  }
+  ready() { return this.ok && Object.values(this.p).every((p) => this.e.ready(p)); }
+  restart() { this.n = 0; this.sa = this.sb = null; this.ofs = null; this.lastT = -1; this.pb = -1; this.flowOk = false; }
+  mk(fmt, w, h) {
+    const gl = this.gl, t = this.e.tex(gl.LINEAR);
+    gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, fmt === gl.RGBA8 ? gl.RGBA : fmt === gl.R16F ? gl.RED : gl.RGBA, fmt === gl.RGBA8 ? gl.UNSIGNED_BYTE : gl.HALF_FLOAT, null);
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); return { t, f, w, h };
+  }
+  free(list) { const gl = this.gl; for (const x of list.flat()) { gl.deleteTexture(x.t); gl.deleteFramebuffer(x.f); } }
+  // пирамида яркости под размер видео: 3 штуки по кругу (прошлый, текущий, входящий)
+  ensureSrc(vw, vh) {
+    if (vw === this.vw && vh === this.vh) return;
+    const gl = this.gl; this.free(this.pyr); this.free(this.fl); this.free(this.dd ? [this.dd] : []);
+    let f = 1; while (vw / f > 960) f *= 2;
+    const lv = []; for (let i = 0, w = Math.ceil(vw / f), h = Math.ceil(vh / f); i < 4; i++, w = Math.ceil(w / 2), h = Math.ceil(h / 2)) lv.push([Math.max(2, w), Math.max(2, h)]);
+    this.lv = lv;
+    this.pyr = [0, 1, 2].map(() => lv.map(([w, h]) => this.mk(gl.R16F, w, h)));
+    this.fl = lv.map(([w, h]) => this.mk(gl.RGBA16F, w, h)); this.flS = this.mk(gl.RGBA16F, lv[0][0], lv[0][1]);
+    this.fl.push(this.flS);
+    this.dd = this.mk(gl.RGBA8, 1, 1);
+    this.vw = vw; this.vh = vh; this.pi = 0; this.pa = -1; this.pb = -1; this.restart();
+  }
+  // готовые кадры (после Liquid RTX) — 2 штуки по кругу, размером с холст
+  ensureOut(ow, oh) {
+    if (ow === this.ow && oh === this.oh) return;
+    this.free(this.slots); const gl = this.gl;
+    this.slots = [this.mk(gl.RGBA8, ow, oh), this.mk(gl.RGBA8, ow, oh)]; this.ow = ow; this.oh = oh; this.sB = 0; this.n = 0;
+  }
+  pass(P, dst, ins, set) { this.e.run(P, dst.f, dst.w, dst.h, ins, (u) => { this.gl.uniform1f(u('flip'), 0); set && set(u); }); }
+  // новый кадр видео (уже в e.tRaw): пирамида, «повтор ли это прошлого кадра», частота. true — кадр настоящий новый
+  push(vw, vh, stamp, now) {
+    this.ensureSrc(vw, vh);
+    const gl = this.gl, inc = this.pyr[this.pi], lv = this.lv;
+    this.pass(this.p.luma, inc[0], [['src', this.e.tRaw]], (u) => gl.uniform2f(u('dsz'), lv[0][0], lv[0][1]));
+    for (let i = 1; i < 4; i++) this.pass(this.p.down, inc[i], [['src', inc[i - 1].t]], (u) => gl.uniform2f(u('dsz'), lv[i][0], lv[i][1]));
+    // сырой поток отметок времени — для частоты
+    if (this.lastStamp != null) { const d = stamp - this.lastStamp; if (d > 0 && d < 0.25) { this.raw.push(d); if (this.raw.length > 40) this.raw.shift(); } else this.restart(); }
+    this.lastStamp = stamp;
+    let dup = false;
+    if (this.pb >= 0) {
+      const L = lv[3];
+      this.pass(this.p.diff, this.dd, [['a', inc[3].t], ['b', this.pyr[this.pb][3].t]], (u) => gl.uniform2i(u('sz'), L[0], L[1]));
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.dd.f); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.dupBuf); gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      dup = this.dupBuf[0] / 255 / 50 < 0.0015;
+    }
+    this.dups.push(dup ? 1 : 0); if (this.dups.length > 60) this.dups.shift();
+    if (dup) return false;
+    this.pa = this.pb; this.pb = this.pi; this.pi = [0, 1, 2].find((i) => i !== this.pa && i !== this.pb);
+    // часы видео: смещение «время кадра − время экрана», сглаженное (кадры замечаем с точностью до обновления экрана)
+    const o = stamp - now / 1000 * this.rate;
+    this.ofs = this.ofs == null || Math.abs(o - this.ofs) > 0.25 ? o : this.ofs + 0.08 * (o - this.ofs);
+    this.sa = this.sb; this.sb = stamp;
+    return true;
+  }
+  // сколько кадров в секунду на самом деле: по меткам времени, а если каждый второй — повтор (30 в 60), то вдвое меньше
+  fps() {
+    if (this.raw.length < 10) return 0;
+    const m = [...this.raw].sort((a, b) => a - b)[this.raw.length >> 1];
+    let f = 1 / m;
+    const n = this.dups.length, r = n ? this.dups.reduce((a, b) => a + b, 0) / n : 0;
+    this.dbl = false;
+    if (n >= 30 && r > 0.35 && r < 0.65) { let pairs = 0; for (let i = 1; i < n; i++) if (this.dups[i] && this.dups[i - 1]) pairs++; if (pairs < n * 0.1) { f /= 2; this.dbl = true; } }
+    return f;
+  }
+  // кадр только что нарисован в slots[next]: он — новый B, считаем сдвиг между A и B
+  commit() {
+    this.sB = this.nextSlot(); this.n++;
+    if (this.n < 2 || this.pa < 0) { this.flowOk = false; return; }
+    const gl = this.gl, A = this.pyr[this.pa], B = this.pyr[this.pb], lv = this.lv;
+    for (let i = 3; i >= 0; i--) {
+      this.pass(this.p.search, this.fl[i], [['la', A[i].t], ['lb', B[i].t], ['init', i < 3 ? this.fl[i + 1].t : A[3].t]], (u) => {
+        gl.uniform2f(u('sz'), lv[i][0], lv[i][1]); gl.uniform1f(u('useInit'), i < 3 ? 1 : 0);
+        gl.uniform1i(u('rad'), i === 3 ? 6 : i === 2 ? 2 : 1); gl.uniform1f(u('sub'), i === 0 ? 1 : 0);
+      });
+    }
+    this.pass(this.p.smooth, this.flS, [['fl', this.fl[0].t]], (u) => gl.uniform2i(u('sz'), lv[0][0], lv[0][1]));
+    this.flowOk = true; this.lastT = -1;
+  }
+  nextSlot() { return this.n ? 1 - this.sB : this.sB; }
+  fbFor(fresh) { return this.slots[fresh ? this.nextSlot() : this.sB].f; }
+  // показ: доля пути между A и B по часам видео (с отставанием на один кадр)
+  present(now, paused) {
+    if (!this.n) return;
+    let t = 1;
+    if (!paused && this.flowOk && this.sa != null && this.sb > this.sa && this.ofs != null) {
+      const md = this.ofs + now / 1000 * this.rate - (this.sb - this.sa);
+      t = Math.max(0, Math.min(1, (md - this.sa) / (this.sb - this.sa)));
+    }
+    if (!this.flowOk) t = 1;
+    if (Math.abs(t - this.lastT) < 1e-3 && !this.fresh) return;
+    this.lastT = t; this.fresh = false;
+    const gl = this.gl, A = this.slots[1 - this.sB], B = this.slots[this.sB];
+    this.e.run(this.p.out, null, this.ow, this.oh, [['ta', this.flowOk ? A.t : B.t], ['tb', B.t], ['fl', this.flS.t]], (u) => {
+      gl.uniform1f(u('flip'), 0); gl.uniform2f(u('osz'), this.ow, this.oh); gl.uniform2f(u('fsz'), this.lv[0][0], this.lv[0][1]); gl.uniform1f(u('t'), t);
+    });
+  }
 }
 // Следит, успевает ли видеокарта: браузер пропускает кадры видео или наша отрисовка тормозит кадры экрана.
 class RtxPerf {
@@ -2067,6 +2238,7 @@ function lpBuild() {
         <span class="time"></span><span class="grow"></span>
         <span class="seg" title="Liquid RTX: Выкл — как в обычном плеере; Чисто — нейросеть убирает сжатие и восстанавливает детали; Чётко — плюс резкость">
           <button data-sr="off">Выкл</button><button data-sr="mid">Чисто</button><button data-sr="max">Чётко</button></span>
+        <button data-a="fg" class="acc" title="60 кадров: дорисовывать промежуточные кадры у видео 24/25/30 кадров (у 50/60 — не нужно)">60</button>
         <button data-a="hdr" class="acc" title="HDR-цвет">HDR</button>
         <button data-a="cmp" class="acc" title="Сравнить: слева как было, справа Liquid RTX (C)">${LPI.cmp}</button>
         <button data-a="speed" title="Скорость (Shift+< / >)"><span data-v="speed">1×</span></button>
@@ -2146,6 +2318,7 @@ function lpAct(b) {
   else if (a === 'fwd') lpSeek(10);
   else if (a === 'mute') setVolume(v, getVolume(v) > 0 ? 0 : 1);
   else if (a === 'hdr') { vt.srHdr = !vt.srHdr; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); lp.dirty = true; }
+  else if (a === 'fg') { vt.lpSmooth = !vt.lpSmooth; toHost({ type: 'lpPref', smooth: vt.lpSmooth }); lp.dirty = true; lpHud(vt.lpSmooth ? '60 кадров: вкл' : '60 кадров: выкл'); }
   else if (a === 'cmp') { lp.split = lp.split ? 0 : 0.5; lp.dirty = true; lpPlaceSplit(); }
   else if (a === 'full') lpFull();
   else if (a === 'pip') pipToggle(v);
@@ -2261,37 +2434,75 @@ function lpRender() {
   const vol = getVolume(v); setHTML(q('[data-a="mute"]'), vol > 0 ? LPI.vol : LPI.mute); q('[data-r="vol"]').value = Math.round(vol * 100);
   q('[data-v="speed"]').textContent = fmtRate(v.playbackRate);
   for (const b of lp.root.querySelectorAll('[data-sr]')) b.classList.toggle('on', b.dataset.sr === vt.sr);
-  q('[data-a="hdr"]').classList.toggle('on', vt.srHdr); q('[data-a="cmp"]').classList.toggle('on', !!lp.split);
+  q('[data-a="hdr"]').classList.toggle('on', vt.srHdr); q('[data-a="cmp"]').classList.toggle('on', !!lp.split); q('[data-a="fg"]').classList.toggle('on', !!vt.lpSmooth);
   q('.title').textContent = document.title.replace(/ - YouTube$/, '');
   const bd = q('.badge'), out = `${lp.eng.ow}×${lp.eng.oh}`;
   const how = SR_NAMES[lp.used] || '';
   if (vt.sr === 'off') { bd.className = 'badge off'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · Liquid RTX выкл`; }
   else if (lp.used === 'down') { bd.className = 'badge off'; bd.textContent = `Видео ${v.videoWidth}×${v.videoHeight} — уже не меньше экрана, показываю как есть`; }
   else { bd.className = 'badge'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · ${how}${lp.slow ? ' (видеокарта не успевала за лучшим)' : ''}${vt.srHdr ? ' · HDR' : ''}`; }
+  // 60 кадров: что происходит — дорисовываем или не нужно
+  const f = lp.fg, fps = lp.fps ? Math.round(lp.fps) : 0;
+  let fgt = '';
+  if (vt.lpSmooth && f && !f.ok) fgt = '60 кадров: видеокарта не умеет';
+  else if (vt.lpSmooth && lp.fgActive) fgt = `${fps}${f.dbl ? ' (в 60)' : ''} → ${Math.round(lp.hz)} к/с`;
+  else if (vt.lpSmooth && fps && !lp.split) fgt = fps > 34 ? `${fps} к/с — дорисовка не нужна` : lp.hz && lp.hz < fps * 1.5 ? `${fps} к/с — экран ${Math.round(lp.hz)} Гц, дорисовка не нужна` : '';
+  if (fgt) bd.textContent += ' · ' + fgt;
   q('.spin').classList.toggle('on', v.readyState < 3 && !v.paused);
   lpRenderTime();
 }
-// кадр: рисуем, только когда у видео действительно новый кадр (VideoFrame знает его время), иначе — по времени видео
+// кадр: рисуем, только когда у видео действительно новый кадр (VideoFrame знает его время), иначе — по времени видео.
+// С «60 кадрами» новый кадр рисуется в запас (slots), а на экран на каждом обновлении — промежуточный
+function lpFgWanted(v, fg) {
+  if (!fg || !fg.ok || !vt.lpSmooth || lp.split || !fg.ready()) return false;
+  const fps = fg.fps() * (v.playbackRate || 1);
+  const d = lp.hzD; if (!fps || d.length < 30) return false;
+  const hz = 1000 / [...d].sort((x, y) => x - y)[d.length >> 1];
+  lp.fps = fps; lp.hz = hz;
+  return fps <= (lp.fgActive ? 40 : 34) && hz >= fps * 1.5;
+}
 function lpLoop() {
   if (!lp.open) return;
   lp.raf = requestAnimationFrame(lpLoop);
   const v = lp.v, now = performance.now();
   lp.perf.frame(now);
+  // частота экрана — по своим замерам (у RtxPerf они сбрасываются, когда Liquid RTX выключен)
+  if (lp.hzT) { const dt = now - lp.hzT; if (dt > 2 && dt < 60) { lp.hzD.push(dt); if (lp.hzD.length > 90) lp.hzD.shift(); } } lp.hzT = now;
   if (v.readyState < 2 || !v.videoWidth) return;
   if (lp.vw !== v.videoWidth || lp.vh !== v.videoHeight) { lp.vw = v.videoWidth; lp.vh = v.videoHeight; lpLayout(); }
   let src = v, vf = null, stamp = v.currentTime;
   if (typeof VideoFrame === 'function' && !lp.noVF) {
-    try { vf = new VideoFrame(v); stamp = vf.timestamp; src = vf; } catch (e) { lp.noVF = true; }
+    try { vf = new VideoFrame(v); stamp = vf.timestamp / 1e6; src = vf; } catch (e) { lp.noVF = true; }
   }
-  if (stamp === lp.last && !lp.dirty) { if (vf) vf.close(); return; }
-  lp.last = stamp; lp.dirty = false;
+  const fg = lp.fg, isNew = stamp !== lp.last;
+  if (!isNew && !lp.dirty && !lp.fgActive) { if (vf) vf.close(); return; }
   try {
-    const was = lp.used;
-    lp.used = lp.eng.draw(src, v.videoWidth, v.videoHeight, [0, 0, 1, 1], vt.sr, vt.srHdr, lp.split, contentOf(v));
-    lp.frames++;
-    lp.host.dataset.lqUsed = lp.used;
-    if (was !== lp.used) lpRender();
+    let fresh = false;
+    if (isNew) {
+      lp.last = stamp;
+      lp.eng.upload(src, v.videoWidth, v.videoHeight);
+      fresh = true;
+      if (fg && fg.ok && vt.lpSmooth) { fg.rate = v.playbackRate || 1; fresh = fg.push(v.videoWidth, v.videoHeight, stamp, now); }
+      if (fresh) lp.dirty = true;
+    }
+    const want = lpFgWanted(v, fg);
+    if (want !== lp.fgActive) { lp.fgActive = want; if (fg) fg.restart(); lp.dirty = true; lp.badgeDirty = true; }
+    if (lp.dirty) {
+      lp.dirty = false;
+      if (lp.fgActive) { fg.ensureOut(lp.eng.ow, lp.eng.oh); lp.eng.outFb = fg.fbFor(fresh); } else lp.eng.outFb = null;
+      const was = lp.used;
+      lp.used = lp.eng.draw(null, v.videoWidth, v.videoHeight, [0, 0, 1, 1], vt.sr, vt.srHdr, lp.split, contentOf(v));
+      lp.eng.outFb = null;
+      if (lp.fgActive) { if (fresh) fg.commit(); fg.fresh = true; }
+      lp.frames++;
+      lp.host.dataset.lqUsed = lp.used;
+      if (was !== lp.used) lp.badgeDirty = true;
+    }
+    if (lp.fgActive) fg.present(now, v.paused);
+    if (fg && isNew && lp.frames % 30 === 0) { lp.host.dataset.lqFps = String(Math.round(fg.fps() * 10) / 10); lp.host.dataset.lqFg = lp.fgActive ? '1' : '0'; }
+    if (lp.badgeDirty || (fg && lp.frames % 60 === 0 && isNew)) { lp.badgeDirty = false; lpRender(); }
   } catch (e) {
+    console.warn('[liquid] Liquid Player:', e && e.message);
     lpError('Этот сайт не разрешает обрабатывать своё видео (защита от копирования или чужой сервер). Открой обычный плеер.');
   } finally { if (vf) vf.close(); }
   // пока на паузе: шейдер нейросети мог собраться — перерисуем лучшим
@@ -2324,11 +2535,13 @@ function lpOpen(v, fromFs) {
   cv.addEventListener('webglcontextlost', (e) => { if (!lp.open || lp.cv !== cv) return; e.preventDefault(); console.warn('[liquid] Liquid Player: видеокарта сбросила холст — закрываю плеер'); lpClose(); });
   try { lp.eng = new RtxEngine(lp.cv); } catch (e) { toHost({ type: 'videoErr', error: 'нет WebGL — Liquid Player не может рисовать видео' }); return; }
   lp.v = v; lp.open = true; lp.fromFs = !!fromFs; lp.perf = new RtxPerf(); lp.used = ''; lp.slow = false; lp.last = -1; lp.dirty = true; lp.frames = 0; lp.split = 0;
+  lp.fgActive = false; lp.fps = 0; lp.hz = 0; lp.fg = null; lp.hzD = []; lp.hzT = 0;
+  try { lp.fg = new FrameGen(lp.eng); } catch (e) { console.warn('[liquid] 60 кадров недоступны:', e && e.message); }
   lp.root.querySelector('.err').classList.remove('on');
   // слой чёткости поверх плеера сайта не нужен, пока открыт наш (видеокарта занята одним)
   vt.srMap.get(v)?.destroy();
   document.documentElement.appendChild(lp.host);
-  lp.onEv = () => lpRender(); lp.onTime = () => { lpRenderTime(); lpCaptions(); };
+  lp.onEv = (e) => { if (e && (e.type === 'seeked' || e.type === 'ratechange') && lp.fg) { lp.fg.restart(); lp.dirty = true; } lpRender(); }; lp.onTime = () => { lpRenderTime(); lpCaptions(); };
   for (const ev of LP_EV) v.addEventListener(ev, lp.onEv);
   v.addEventListener('timeupdate', lp.onTime);
   window.addEventListener('keydown', lpKey, true);

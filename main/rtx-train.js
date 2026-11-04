@@ -146,7 +146,8 @@ class RtxTrain {
             const pct = Math.round(m[1] / m[2] * 100);
             const gain = best != null && best > v0 ? ` · лучше на ${db(best - v0)} дБ` : '';
             const gap = bar != null && best != null && best < bar ? ` · до Pro ${db(bar - best)} дБ` : '';
-            this.set('train', `${tag}: ${pct}%, осталось ~${fmt(+m[3])}${gain}${gap}`, pct);
+            const sp = l.match(/(\d+) шаг\/с/);
+            this.set('train', `${tag}: ${pct}%, осталось ~${fmt(+m[3])}${gain}${gap}${sp ? ` · ${sp[1]} шагов/с` : ''}`, pct);
           }
           if (/^В .* пока нет данных/.test(l)) this.set('train', l);
         });
