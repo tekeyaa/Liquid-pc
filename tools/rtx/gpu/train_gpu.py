@@ -122,14 +122,22 @@ cnt = np.array([len(x) for x in LR], float)
 P = a.patch or (64 if G2 else 48); S = P + 2 * M
 
 
+AR_S = torch.arange(S, device=dev); AR_2P = torch.arange(2 * P, device=dev)
+
+
+def cut(lr, hr, n):
+    # n кусков из одного набора одной операцией на видеокарте (раньше — по одному в цикле: сотни мелких команд на шаг)
+    i = torch.randint(len(lr), (n,), device=dev)
+    y0 = torch.randint(0, lr.shape[1] - S + 1, (n,), device=dev); x0 = torch.randint(0, lr.shape[2] - S + 1, (n,), device=dev)
+    xs = lr[i[:, None, None], (y0[:, None] + AR_S)[:, :, None], (x0[:, None] + AR_S)[:, None, :]]
+    ys = hr[i[:, None, None], (2 * (y0 + M)[:, None] + AR_2P)[:, :, None], (2 * (x0 + M)[:, None] + AR_2P)[:, None, :]]
+    return xs, ys
+
+
 def batch(B):
     ds = np.random.choice(len(LR), B, p=cnt / cnt.sum())
-    xs, ys = [], []
-    for k in ds:
-        lr, hr = LR[k], HR[k]
-        i = np.random.randint(len(lr)); y0 = np.random.randint(0, lr.shape[1] - S + 1); x0 = np.random.randint(0, lr.shape[2] - S + 1)
-        xs.append(lr[i, y0:y0 + S, x0:x0 + S]); ys.append(hr[i, 2 * (y0 + M):2 * (y0 + M + P), 2 * (x0 + M):2 * (x0 + M + P)])
-    x = torch.stack(xs)[:, None].float(); y = torch.stack(ys)[:, None].float()
+    parts = [cut(LR[k], HR[k], int((ds == k).sum())) for k in range(len(LR)) if (ds == k).any()]
+    x = torch.cat([p[0] for p in parts])[:, None].float(); y = torch.cat([p[1] for p in parts])[:, None].float()
     k = np.random.randint(4)
     if k: x = torch.rot90(x, k, (2, 3)); y = torch.rot90(y, k, (2, 3))
     if np.random.rand() < 0.5: x = x.flip(3); y = y.flip(3)
@@ -166,7 +174,7 @@ if a.percept > 0:
     MEAN = torch.tensor([0.485, 0.456, 0.406], device=dev).view(1, 3, 1, 1); STD = torch.tensor([0.229, 0.224, 0.225], device=dev).view(1, 3, 1, 1)
     feat = lambda z: vgg((z.repeat(1, 3, 1, 1) - MEAN) / STD)
 
-opt = torch.optim.Adam(net.parameters(), lr=a.lr or (1e-3 if a.scratch else 2e-4))
+opt = torch.optim.Adam(net.parameters(), lr=a.lr or (1e-3 if a.scratch else 2e-4), **({'fused': True} if dev.type == 'cuda' else {}))
 lr0 = opt.param_groups[0]['lr']; it0 = 0
 if a.resume:
     ck = torch.load(a.resume, map_location=dev); net.load_state_dict(ck['net']); opt.load_state_dict(ck['opt']); it0 = ck['it']; start = ck['start']
@@ -216,8 +224,10 @@ try:
             with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == 'cuda'):
                 loss = loss + a.percept * Fn.l1_loss(feat(o), feat(y))
         opt.zero_grad(set_to_none=True); loss.backward(); opt.step()
-        run = loss.item() if run is None else 0.99 * run + 0.01 * loss.item()
+        # среднее потерь копим на видеокарте: .item() на каждом шаге заставлял её останавливаться и ждать Python
+        run = loss.detach() if run is None else 0.99 * run + 0.01 * loss.detach()
         if it % 500 == 0:
+            run = float(run)
             el = time.time() - t0
             if TOTAL: eta = max(0, TOTAL - el); tot = int(it / max(frac(), 1e-6))
             else: eta = el / (it - it0) * (a.steps - it); tot = a.steps
@@ -231,6 +241,7 @@ try:
 except KeyboardInterrupt:
     print('остановлено')
 v = validate()[0]
+print(f'конец: проверка {v:.2f} дБ', flush=True)
 if v > best or vgg is not None: best = v; save_json(f'gpu-{it}')
 save_pt(it)
 print(f'итог: лучшая проверка {best:.2f} дБ (в начале {v0[0]:.2f}, простое растягивание {v0[1]:.2f})')

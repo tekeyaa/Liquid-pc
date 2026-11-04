@@ -103,10 +103,8 @@ class RtxTrain {
     for (const f of Object.values(NETS)) { const src = path.join(this.weights, f); if (fs.existsSync(src)) fs.writeFileSync(path.join(d, f), fs.readFileSync(src)); }
     return d;
   }
-  // Обучение кругами. Круг — полное обучение (~40 минут на RTX 4070) от лучшей версии прошлого круга: улучшилась —
-  // записалась, и следующий круг начинается уже с неё. Без срока — один круг. Со сроком (3/6/12 ч) — круги, пока
-  // не выйдет время или пока круг не даст меньше +0,1 дБ: дальше сеть на этих данных почти не растёт, нужны новые.
-  // net 'auto' (кнопка «Обучить») — одна сеть для всего (Liquid RTX 2) на всех собранных роликах
+  // Обучение. Без срока — один заход (~100 тыс. шагов). Со сроком (3/6/12 ч) — один заход на весь срок, шаг обучения
+  // плавно спадает к концу. Лучшие веса train_gpu сам записывает по ходу (только если стало лучше), .pt — для продолжения.
   start(net = 'auto', extra = [], hours = 0) {
     hours = Math.max(0, Number(hours) || 0);
     if (this.busy) return false;
@@ -129,48 +127,46 @@ class RtxTrain {
         const restShare = plan.slice(pi).reduce((a, p) => a + p[3], 0);
         const deadline = hours ? Date.now() + Math.max(0, deadlineAll - Date.now()) * (share / restShare) : 0;
         const tag = plan.length > 1 ? `Сеть для ${label}` : 'Обучение';
-        let round = 0, first = null, last = null, lastDur = 0, why = '';
-        for (;;) {
-          round++;
-          const args = [...extra];
-          const left = deadline - Date.now();
-          if (hours && lastDur && left < lastDur * 1.1) args.push('--hours', String(Math.max(left, 60e3) / 3600e3)); // последний круг — сколько осталось
-          // продолжение: лучшие веса (json), а если RTX 2 ещё не обогнала Pro и json нет — веса прошлого круга (.pt)
-          if (fs.existsSync(out)) args.push('--init', out); else if (fs.existsSync(out + '.pt') && !args.includes('--scratch')) args.push('--warm', out + '.pt');
-          this.set('train', `${tag}${hours ? `, круг ${round}` : ''}: запуск…`, 0);
-          const t0 = Date.now();
-          let v0 = null, best = null;
-          await this.run(this.py, ['-u', path.join(d, 'train_gpu.py'), '--net', name, '--data', data, '--out', out, ...args], (l) => {
-            let m;
-            if ((m = l.match(/сеть в начале ([\d.]+)/))) { v0 = +m[1]; if (first == null) first = v0; }
-            if ((m = l.match(/проверка ([\d.]+) дБ/)) && v0 != null) best = Math.max(best ?? v0, +m[1]);
-            if ((m = l.match(/^(\d+)\/(\d+) потери.*?осталось ~(\d+) мин/))) {
-              const pct = Math.round(m[1] / m[2] * 100);
-              const tot = hours ? `, всего осталось ~${fmt(Math.max(0, deadlineAll - Date.now()) / 60e3)}` : `, осталось ~${fmt(+m[3])}`;
-              const gain = best != null && first != null && best > first ? ` · лучше на ${db(best - first)} дБ` : '';
-              this.set('train', `${tag}${hours ? `, круг ${round}` : ''}: ${pct}%${tot}${gain}`, pct);
-            }
-            if (/^В .* пока нет данных/.test(l)) this.set('train', l);
-          });
-          lastDur = Date.now() - t0;
-          const gain = best != null && v0 != null ? best - v0 : 0;
-          if (best != null && best > (last ?? -1)) last = best;
-          if (!hours) break;
-          this.log('info', 'Liquid RTX обучение', `${label}, круг ${round}: ${gain > 0 ? '+' + db(gain) : 'без прибавки'} дБ`);
-          if (gain < this.minGain) { why = 'gain'; break; }
-          if (deadline - Date.now() < this.minLeft) { why = 'time'; break; }
-        }
-        results.push({ name, label, first, last, round, why, total: last != null && first != null ? last - first : 0 });
+        // Одним заходом на весь срок: шаг обучения плавно спадает к концу срока. Раньше срок резался на «круги» по
+        // ~12 минут, и каждый начинался с большого шага заново — сеть каждый раз частично «разучивалась»
+        const args = [...extra];
+        if (hours) args.push('--hours', String(Math.max(deadline - Date.now(), 60e3) / 3600e3));
+        // продолжение: лучшие веса (json), а если RTX 2 ещё не обогнала Pro и json нет — последние веса (.pt)
+        if (fs.existsSync(out)) args.push('--init', out); else if (fs.existsSync(out + '.pt') && !args.includes('--scratch')) args.push('--warm', out + '.pt');
+        this.set('train', `${tag}: запуск…`, 0);
+        const t0 = Date.now();
+        // v0 — сеть в начале, best — лучшая проверка САМОЙ сети за этот заход, bar — планка (Pro) на тех же кадрах
+        let v0 = null, best = null, bar = null;
+        await this.run(this.py, ['-u', path.join(d, 'train_gpu.py'), '--net', name, '--data', data, '--out', out, ...args], (l) => {
+          let m;
+          if ((m = l.match(/сеть в начале ([\d.]+)/))) v0 = +m[1];
+          if ((m = l.match(/^планка: Pro ([\d.]+)/))) bar = +m[1];
+          if ((m = l.match(/^(?:\d+\/\d+ потери|конец:).*?проверка ([\d.]+) дБ/)) && v0 != null) best = Math.max(best ?? v0, +m[1]);
+          if ((m = l.match(/^(\d+)\/(\d+) потери.*?осталось ~(\d+) мин/))) {
+            const pct = Math.round(m[1] / m[2] * 100);
+            const gain = best != null && best > v0 ? ` · лучше на ${db(best - v0)} дБ` : '';
+            const gap = bar != null && best != null && best < bar ? ` · до Pro ${db(bar - best)} дБ` : '';
+            this.set('train', `${tag}: ${pct}%, осталось ~${fmt(+m[3])}${gain}${gap}`, pct);
+          }
+          if (/^В .* пока нет данных/.test(l)) this.set('train', l);
+        });
+        // браузеру отдано, только если файл весов записан в этот заход (train_gpu пишет его, лишь когда стало лучше)
+        let saved = false; try { saved = fs.statSync(out).mtimeMs >= t0; } catch {}
+        results.push({ name, label, first: v0, last: best, round: 1, why: '', bar, saved, total: best != null && v0 != null ? best - v0 : 0 });
       }
       const r0 = results[0];
-      this.result = { v0: r0.first, best: r0.last, better: results.some((r) => r.total > 0), rounds: results.reduce((a, r) => a + r.round, 0), nets: results };
-      const part = (r) => (results.length > 1 ? `${r.label}: ` : '') + (r.total > 0 ? `точнее на ${db(r.total)} дБ` : 'лучше не стала — оставил прежнюю');
-      const anyGain = results.some((r) => r.why === 'gain');
-      this.set('done', `Готово${hours ? ` за ${this.result.rounds} ${this.result.rounds === 1 ? 'круг' : this.result.rounds < 5 ? 'круга' : 'кругов'}` : ''} — ${results.map(part).join(' · ')}`
-        + (this.result.better ? '. Уже работает в новых вкладках' : '. Соберите больше разных роликов')
-        + (anyGain ? '. Круги перестали давать прибавку (меньше +0,1 дБ) — дальше нужны новые ролики' : ''), 100);
+      this.result = { v0: r0.first, best: r0.last, better: results.some((r) => r.saved), rounds: 1, nets: results };
+      const part = (r) => {
+        const up = r.total > 0.005 ? `стала точнее на ${db(r.total)} дБ` : 'на этих данных не прибавила';
+        if (r.saved) return `${up}. Уже работает в новых вкладках`;
+        if (r.bar != null && r.last != null && r.last < r.bar) return `${up}, но ещё не догнала твою Pro (осталось ${db(r.bar - r.last)} дБ) — пока работает Pro, прогресс сохранён, следующее обучение продолжит`;
+        return `${up} — оставил прежнюю. Соберите больше разных роликов`;
+      };
+      this.set('done', `Готово — ${results.map(part).join(' · ')}`, 100);
       this.log('info', 'Liquid RTX обучение', this.st.msg);
       // «твоя сеть»: когда обучалась и сколько прибавила за все обучения — для строки в настройках
+      // запись «твоя сеть» без самой сети (осталась от старой версии с неверным подсчётом) — убрать
+      if (!fs.existsSync(path.join(this.out, NETS.rtx2))) try { fs.unlinkSync(path.join(this.out, 'liquid-rtx2.meta.json')); } catch {}
       if (this.result.better) try {
         const mf = path.join(this.out, 'liquid-rtx2.meta.json');
         let m = {}; try { m = JSON.parse(fs.readFileSync(mf, 'utf8')); } catch {}

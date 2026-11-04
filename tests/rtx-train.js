@@ -41,16 +41,13 @@ async function go(extra, hours, net = 'pro') {
   await go(['--allow-cpu', '--steps', '20', '--batch', '4']);                  // дообучение встроенной сети (ставит Python и PyTorch)
   if (!T.ready()) { console.error('::error::Python/PyTorch не отмечены как готовые'); process.exit(1); }
   await go(['--allow-cpu', '--steps', '30', '--batch', '4', '--scratch']);     // с нуля — файл весов пишется всегда
-  // круги по времени (кнопки 3/6/12 ч): здесь срок 40 с и круги по 20 шагов — кругов должно быть несколько,
-  // каждый следующий — от лучшей версии прошлого; порог «меньше +0,1 дБ — стоп» здесь выключен
-  T.minGain = -1; T.minLeft = 0;
+  // срок (кнопки 3/6/12 ч): один заход на весь срок, здесь 40 с — должен уложиться и закончиться сам
   const t1 = Date.now();
-  await go(['--allow-cpu', '--steps', '20', '--batch', '4'], 40 / 3600);
+  await go(['--allow-cpu', '--batch', '4'], 40 / 3600);
   const dt = (Date.now() - t1) / 1000;
-  if (!(T.result.rounds >= 2) || dt > 150) { console.error(`::error::круги: ${T.result.rounds}, ${dt.toFixed(0)} с`); process.exit(1); }
-  console.log(`круги: ${T.result.rounds} за ${dt.toFixed(0)} с`);
+  if (dt > 150 || T.result.best == null) { console.error(`::error::обучение по сроку: ${dt.toFixed(0)} с, проверка ${T.result.best}`); process.exit(1); }
+  console.log(`по сроку: ${dt.toFixed(0)} с`);
   // «Обучить» (auto): одна сеть для всего — Liquid RTX 2 с нуля на всех данных, включая вложенную папку
-  T.minGain = 0.1; T.minLeft = 5 * 60e3;
   await go(['--allow-cpu', '--steps', '20', '--batch', '4', '--scratch', '--no-baseline'], 0, 'auto');
   const nets = (T.result.nets || []).map((r) => r.name).join(',');
   if (nets !== 'rtx2' || !fs.existsSync(path.join(out, 'liquid-rtx2.json')) || !T.mine()) { console.error('::error::«Обучить» выучило не Liquid RTX 2: ' + nets); process.exit(1); }
