@@ -54,7 +54,10 @@ if (TEST && process.env.LIQUID_PROFILE) {
 }
 
 const PARTITION = 'persist:liquid';
-const UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
+// Кем представляемся сайтам (Настройки → Защита): строка, заголовки Sec-CH-UA и navigator.userAgentData — из одного описания
+const Identity = require('./main/identity');
+let ID = Identity.build((() => { try { return JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')).uaMode; } catch { return 'chrome'; } })(), process.versions.chrome);
+let UA = ID.ua;
 app.userAgentFallback = UA;
 // Код приложения для Windows: без него (и без такого же кода в ярлыке «Пуска») Windows прячет уведомления
 const AUMID = 'app.liquid.browser';
@@ -110,18 +113,30 @@ const AUTH_FILTER = { urls: ['*://*.google.com/*', '*://*.gstatic.com/*', '*://*
 function hardenSession(sess) {
   sess.setUserAgent(UA);
   if (TEST && process.env.LIQUID_PERF_NOHOOKS) return; // замер: сколько стоит сам перехват запросов
-  sess.webRequest.onBeforeSendHeaders(AUTH_FILTER, (d, cb) => {
+  // Режим «как есть» — перехват только для Google, как раньше. Под другой браузер — на всех запросах: заголовки
+  // Sec-CH-UA сам Electron пишет «Chromium» без названия браузера, и их нужно подставить на каждом запросе.
+  // Обработчик короткий: адрес страницы спрашиваем у фрейма только для запросов к Google
+  const all = !!ID.brands;
+  const listener = (d, cb) => {
     const h = d.requestHeaders;
+    const g = GOOGLEISH.test(d.url);
     // для запросов к Google — всегда точный адрес из фрейма, как раньше: от этого зависит вход в аккаунт
-    const topUrl = topUrlOf(d, GOOGLEISH.test(d.url));
-    const auth = AUTH_HOSTS.test(d.url) || AUTH_HOSTS.test(topUrl);
+    const auth = g && (AUTH_HOSTS.test(d.url) || AUTH_HOSTS.test(topUrlOf(d, true)));
+    if (!auth) Identity.fixHeaders(h, ID);
     for (const k of Object.keys(h)) {
       const lk = k.toLowerCase();
-      if (lk === 'user-agent') h[k] = auth ? FF_UA : h[k].replace(/\s*Electron\/\S+/, '').replace(/\s*liquid-browser\/\S+/i, '');
+      if (lk === 'user-agent') h[k] = auth ? FF_UA : ID.brands ? UA : h[k].replace(/\s*Electron\/\S+/, '').replace(/\s*liquid-browser\/\S+/i, '');
       else if (auth && lk.startsWith('sec-ch-ua')) delete h[k]; // Firefox такие заголовки не шлёт
     }
     cb({ requestHeaders: h });
-  });
+  };
+  if (all) sess.webRequest.onBeforeSendHeaders(listener);
+  else sess.webRequest.onBeforeSendHeaders(AUTH_FILTER, listener);
+}
+// Сменили «представляться как» — сразу для всех сессий; скрипты страниц узнают в новых вкладках
+function applyIdentity(mode) {
+  ID = Identity.build(mode, process.versions.chrome); UA = ID.ua; app.userAgentFallback = UA;
+  for (const s of [session.defaultSession, ...allSessions()]) { try { hardenSession(s); } catch {} }
 }
 
 // ---------- плавность: GPU и частота монитора (до app.ready) ----------
@@ -250,7 +265,7 @@ function publicSettings() {
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
-    srDeband: s.srDeband !== false, rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
+    srDeband: s.srDeband !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
@@ -405,6 +420,8 @@ app.on('web-contents-created', (_e, contents) => {
     wp.nodeIntegrationInSubFrames = true;
     wp.contextIsolation = true;
     wp.sandbox = true;
+    // кем представляться в скриптах страницы (navigator.userAgentData) — preload читает из своей командной строки
+    wp.additionalArguments = [...(wp.additionalArguments || []).filter((a) => !String(a).startsWith('--lq-id=')), '--lq-id=' + Identity.forPreload(ID)];
   });
 });
 
@@ -1456,6 +1473,7 @@ function registerIpc() {
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
     if ('srDeband' in patch) s.srDeband = !!patch.srDeband;
+    if ('uaMode' in patch) { s.uaMode = Identity.MODES.includes(patch.uaMode) ? patch.uaMode : 'chrome'; if (s.uaMode !== ID.mode) applyIdentity(s.uaMode); }
     if ('rtxAutoTrain' in patch) s.rtxAutoTrain = !!patch.rtxAutoTrain;
     if ('rtxTrainHours' in patch) s.rtxTrainHours = [3, 6, 12].includes(Number(patch.rtxTrainHours)) ? Number(patch.rtxTrainHours) : 0;
     if ('rtxLearn' in patch) { s.rtxLearn = !!patch.rtxLearn; if (!s.rtxLearn && rtxLearn) rtxLearn.close(); }

@@ -146,6 +146,8 @@ function takeSpare() {
   return wv;
 }
 window.spareReady = () => !!(spareWv && spareWv.__ready);
+// заготовка помнит, кем представляться (сменили в настройках) — делаем новую
+window.dropSpare = () => { if (spareWv) { spareWv.remove(); spareWv = null; } makeSpare(); };
 
 function attachWebview(tab, url) {
   // Заготовка подходит, если вкладка открывается сразу с адресом (а не просыпается из сна со своей историей)

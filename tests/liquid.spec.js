@@ -44,6 +44,7 @@ function startServer() {
         { tStartMs: 0, segs: [{ utf8: 'Привет, это вступление' }] }, { tStartMs: 12000, segs: [{ utf8: 'про вкладки' }] },
         { tStartMs: 35000, segs: [{ utf8: 'теперь про видео' }] }, { tStartMs: 95000, segs: [{ utf8: 'и выводы' }] }] })); return; }
       if (p === '/v1/messages') return fakeClaude(req, res);
+      if (p === '/hdrs') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.headers)); return; }
       // подписка VPN (как у панелей 3x-ui / Marzban: base64 со списком ключей) и общий список заблокированных сайтов
       if (p === '/sub') { res.writeHead(200, { 'content-type': 'text/plain' }); res.end(Buffer.from('socks5://127.0.0.1:9#Из подписки 1\nvless://1d6b8f2e-0000-4000-8000-000000000001@203.0.113.7:443?security=reality&sni=example.com&pbk=AbCdEf&sid=01&type=tcp&fp=chrome#Из подписки 2\n').toString('base64')); return; }
       if (p === '/blocklist') { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('blocked-e2e.test\n.zz-e2e\n'); return; }
@@ -274,6 +275,36 @@ test('Liquid Player: свой плеер на весь экран рисует �
 
 // ---------------- 1.8: надёжность ----------------
 const logText = () => { try { const d = path.join(dataDir, 'logs'); return fs.readdirSync(d).map((f) => fs.readFileSync(path.join(d, f), 'utf8')).join('\n'); } catch { return ''; } };
+
+test('представляется сайтам как Chrome или Edge: строка, заголовки и скрипты совпадают', async () => {
+  const look = async () => {
+    await expect.poll(() => win.evaluate(() => window.spareReady()), { timeout: 15_000 }).toBe(true);
+    await win.evaluate((u) => new Promise((done) => { const t = createTab(u); t.wv.addEventListener('did-finish-load', () => done(), { once: true }); }), `${base}/hdrs`);
+    const r = await inTab(`(async () => ({ h: JSON.parse(document.body.innerText), ua: navigator.userAgent,
+      brands: navigator.userAgentData.brands.map((b) => b.brand), full: (await navigator.userAgentData.getHighEntropyValues(['fullVersionList'])).fullVersionList.map((b) => b.brand),
+      chrome: typeof window.chrome, loadTimes: typeof (window.chrome && window.chrome.loadTimes), native: Function.prototype.toString.call(Object.getOwnPropertyDescriptor(NavigatorUAData.prototype, 'brands').get) }))()`);
+    await win.evaluate(() => closeTab(active));
+    return r;
+  };
+  expect(await win.evaluate(() => settings.uaMode)).toBe('chrome');
+  let r = await look();
+  expect(r.ua).toMatch(/Chrome\/\d+\.0\.0\.0 Safari\/537\.36$/);
+  expect(r.h['user-agent']).toBe(r.ua);
+  expect(r.brands).toContain('Google Chrome');
+  expect(r.full).toContain('Google Chrome');
+  if (r.h['sec-ch-ua']) expect(r.h['sec-ch-ua']).toContain('"Google Chrome"');
+  expect(r.chrome).toBe('object'); expect(r.loadTimes).toBe('function');
+  expect(r.native).toContain('[native code]');
+  await win.evaluate(() => document.querySelector('#uaMode [data-v="edge"]').click());
+  await expect.poll(() => win.evaluate(() => settings.uaMode)).toBe('edge');
+  r = await look();
+  expect(r.ua).toMatch(/Edg\/\d+/);
+  expect(r.h['user-agent']).toBe(r.ua);
+  expect(r.brands).toContain('Microsoft Edge');
+  if (r.h['sec-ch-ua']) expect(r.h['sec-ch-ua']).toContain('"Microsoft Edge"');
+  await win.evaluate(() => document.querySelector('#uaMode [data-v="chrome"]').click());
+  await expect.poll(() => win.evaluate(() => settings.uaMode)).toBe('chrome');
+});
 
 test('безопасный DNS включается и выключается в настройках', async () => {
   expect(await win.evaluate(() => settings.dns)).toBe('auto');

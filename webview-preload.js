@@ -111,6 +111,61 @@ if (AUTH.test(location.hostname)) {
   else webFrame.executeJavaScript(`(${patch.toString()})(${JSON.stringify(ua)})`);
 }
 
+// ---------- 1б. Кем представляемся скриптам страниц ----------
+// Строку User-Agent и заголовки Sec-CH-UA ставит основной процесс; здесь — то же самое для скриптов:
+// navigator.userAgentData (бренды, полные версии) и window.chrome, который есть у любого Chrome/Edge/Яндекса.
+// Защиты от ботов сверяют это с заголовками — расхождение и было «подозрительной активностью»
+if (!AUTH.test(location.hostname)) {
+  let id = null;
+  try { const a = (process.argv || []).find((x) => x.startsWith('--lq-id=')); if (a) id = JSON.parse(atob(a.slice(8))); } catch {}
+  if (id && id.brands) {
+    const patchId = (id) => {
+      try {
+        const nat = new WeakMap();
+        const fnStr = Function.prototype.toString;
+        const toStr = function toString() { return nat.has(this) ? nat.get(this) : fnStr.call(this); };
+        nat.set(toStr, 'function toString() { [native code] }');
+        Function.prototype.toString = toStr;
+        const mark = (f, name) => { nat.set(f, `function ${name}() { [native code] }`); return f; };
+        const P = window.NavigatorUAData && NavigatorUAData.prototype;
+        if (P) {
+          const brands = () => id.brands.map((b) => Object.freeze({ brand: b.brand, version: b.version }));
+          const d = Object.getOwnPropertyDescriptor(P, 'brands');
+          Object.defineProperty(P, 'brands', { get: mark(function () { return Object.freeze(brands()); }, 'get brands'), configurable: true, enumerable: d ? d.enumerable : true });
+          const orig = P.getHighEntropyValues;
+          const sig = id.fullList.find((b) => b.brand !== 'Chromium' && !/^Not/.test(b.brand));
+          P.getHighEntropyValues = mark(function getHighEntropyValues(hints) {
+            return orig.call(this, hints).then((r) => {
+              const o = Object.assign({}, r, { brands: brands() });
+              if ('fullVersionList' in r || (Array.isArray(hints) && hints.includes('fullVersionList'))) o.fullVersionList = id.fullList.map((b) => ({ brand: b.brand, version: b.version }));
+              if ('uaFullVersion' in r) o.uaFullVersion = sig ? sig.version : r.uaFullVersion;
+              return o;
+            });
+          }, 'getHighEntropyValues');
+          const tj = P.toJSON;
+          if (tj) P.toJSON = mark(function toJSON() { return Object.assign({}, tj.call(this), { brands: brands() }); }, 'toJSON');
+        }
+        // window.chrome: в Electron его нет, а у любого браузера на Chromium он есть (app, csi, loadTimes)
+        if (!window.chrome) {
+          const t0 = performance.timeOrigin / 1000;
+          const chrome = {
+            app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+              getDetails: mark(function getDetails() { return null; }, 'getDetails'), getIsInstalled: mark(function getIsInstalled() { return false; }, 'getIsInstalled'), runningState: mark(function runningState() { return 'cannot_run'; }, 'runningState') },
+            csi: mark(function csi() { return { startE: Math.round(t0 * 1000), onloadT: Date.now(), pageT: performance.now(), tran: 15 }; }, 'csi'),
+            loadTimes: mark(function loadTimes() {
+              const n = performance.getEntriesByType('navigation')[0] || {};
+              return { requestTime: t0, startLoadTime: t0, commitLoadTime: t0 + (n.responseStart || 0) / 1000, finishDocumentLoadTime: t0 + (n.domContentLoadedEventEnd || 0) / 1000, finishLoadTime: t0 + (n.loadEventEnd || 0) / 1000, firstPaintTime: t0 + (n.responseEnd || 0) / 1000, firstPaintAfterLoadTime: 0, navigationType: 'Other', wasFetchedViaSpdy: n.nextHopProtocol === 'h2', wasNpnNegotiated: true, npnNegotiatedProtocol: n.nextHopProtocol || 'h2', wasAlternateProtocolAvailable: false, connectionInfo: n.nextHopProtocol || 'h2' };
+            }, 'loadTimes'),
+          };
+          Object.defineProperty(window, 'chrome', { value: chrome, writable: true, configurable: true, enumerable: true });
+        }
+      } catch {}
+    };
+    if (contextBridge.executeInMainWorld) contextBridge.executeInMainWorld({ func: patchId, args: [id] });
+    else webFrame.executeJavaScript(`(${patchId.toString()})(${JSON.stringify(id)})`);
+  }
+}
+
 // ---------- 2. Перевод ----------
 const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'CODE', 'PRE', 'TEXTAREA', 'INPUT', 'SELECT', 'OPTION', 'SVG', 'MATH', 'KBD', 'SAMP', 'TEMPLATE', 'IFRAME', 'CANVAS']);
 const tr = { on: false, orig: new Map(), observer: null, queue: new Set(), timer: 0, busy: false, done: 0 };
