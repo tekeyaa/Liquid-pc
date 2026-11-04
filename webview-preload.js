@@ -1604,13 +1604,13 @@ if (!IS_FRAME && /^image\//.test(document.contentType || '')) window.addEventLis
 const BAR_CSS = `
 :host { all: initial; }
 .dot, .bar { position: fixed; z-index: 2147483647; box-sizing: border-box;
-  background: linear-gradient(180deg, rgba(40,38,52,.74), rgba(22,20,30,.8)); backdrop-filter: blur(18px) saturate(170%);
-  border: 1px solid rgba(255,255,255,.18); box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 12px 30px -12px rgba(0,0,0,.7);
+  background: rgba(24,24,32,.55); backdrop-filter: blur(20px) saturate(180%); /* жидкое стекло, как окно браузера */
+  border: 1px solid rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 12px 30px -12px rgba(0,0,0,.7);
   font: 12px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: rgba(255,255,255,.92); user-select: none; }
 .dot { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; cursor: pointer; padding: 0;
   opacity: 0; transform: scale(.8); pointer-events: none; transition: opacity .2s, transform .35s cubic-bezier(.2,.9,.25,1.2), background .2s; }
 .dot.vis { opacity: 1; transform: none; pointer-events: auto; }
-.dot:hover, .dot.open { background: linear-gradient(180deg, #e88a68, #c9633f); }
+.dot:hover, .dot.open { background: rgba(255,255,255,.18); }
 .dot svg { width: 18px; height: 18px; }
 .bar { width: 268px; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 16px;
   opacity: 0; transform: translateY(-6px) scale(.96); transform-origin: top right; transition: opacity .18s, transform .3s cubic-bezier(.2,.9,.25,1.15); pointer-events: none; }
@@ -1620,9 +1620,9 @@ const BAR_CSS = `
 button { all: unset; cursor: pointer; height: 28px; min-width: 28px; padding: 0 7px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; box-sizing: border-box; color: rgba(255,255,255,.85); transition: background .15s, transform .3s cubic-bezier(.2,.9,.25,1.2); white-space: nowrap; }
 button:hover { background: rgba(255,255,255,.12); color: #fff; }
 button:active { transform: scale(.92); }
-button.on { background: linear-gradient(180deg, #e88a68, #c9633f); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3); }
-button.sr { min-width: 98px; } button.sr.on { background: linear-gradient(180deg, #34d399, #059669); }
-button.lp { background: rgba(232,138,104,.22); color: #fff; } button.lp:hover { background: linear-gradient(180deg, #e88a68, #c9633f); }
+button.on { background: rgba(255,255,255,.16); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3); }
+button.sr { min-width: 98px; } button.sr.on { background: rgba(52,211,153,.22); color: #d1fae5; box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 0 0 1px rgba(110,231,183,.35); }
+button.lp { background: rgba(255,255,255,.08); color: #fff; } button.lp:hover { background: rgba(255,255,255,.16); }
 button.sr i { font-style: normal; font-size: 10px; font-weight: 700; opacity: .85; }
 svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 .val { width: 36px; text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -1854,7 +1854,7 @@ function miniBuild(opacity) {
  background:linear-gradient(180deg,rgba(10,10,16,.85),rgba(10,10,16,0));-webkit-app-region:drag;opacity:0;transition:opacity .2s;font:12px "Segoe UI",system-ui,sans-serif;color:#fff}
 .bar.on{opacity:1}
 button{all:unset;-webkit-app-region:no-drag;cursor:pointer;height:26px;min-width:26px;padding:0 8px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,.1);box-sizing:border-box;white-space:nowrap}
-button:hover{background:rgba(255,255,255,.22)} button.on{background:linear-gradient(180deg,#e88a68,#c9633f)}
+button:hover{background:rgba(255,255,255,.22)} button.on{background:rgba(255,255,255,.2);box-shadow:inset 0 1px 0 rgba(255,255,255,.3)}
 .grow{flex:1} .val{min-width:34px;text-align:center;opacity:.8}
 .ct{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);z-index:2147483647;padding:6px 12px;border-radius:10px;background:rgba(10,10,16,.75);font:12px "Segoe UI",system-ui,sans-serif;color:#fff;display:none}
 .ct.on{display:block}
@@ -1940,7 +1940,7 @@ canvas { position: absolute; display: block; }
 .seek .tr { position: absolute; left: 0; right: 0; height: 4px; border-radius: 4px; background: rgba(255,255,255,.2); transition: height .15s; }
 .seek:hover .tr { height: 7px; }
 .seek .bf, .seek .pl { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
-.seek .bf { background: rgba(255,255,255,.3); } .seek .pl { background: linear-gradient(90deg, #e88a68, #f2a081); }
+.seek .bf { background: rgba(255,255,255,.3); } .seek .pl { background: rgba(255,255,255,.92); }
 .seek .knob { position: absolute; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
 .seek .tip { position: absolute; bottom: 22px; transform: translateX(-50%); padding: 3px 7px; border-radius: 6px; background: rgba(0,0,0,.8); font-size: 12px; font-variant-numeric: tabular-nums; display: none; }
 .seek:hover .tip { display: block; }
@@ -1948,8 +1948,8 @@ canvas { position: absolute; display: block; }
 .grow { flex: 1; }
 button { all: unset; cursor: pointer; height: 38px; min-width: 38px; padding: 0 10px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; color: rgba(255,255,255,.9); font-size: 13px; transition: background .15s, transform .25s cubic-bezier(.2,.9,.25,1.2); white-space: nowrap; }
 button:hover { background: rgba(255,255,255,.14); color: #fff; } button:active { transform: scale(.92); }
-button.on { background: linear-gradient(180deg, #34d399, #059669); color: #fff; }
-button.acc.on { background: linear-gradient(180deg, #e88a68, #c9633f); }
+button.on { background: rgba(255,255,255,.16); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3); }
+button.acc.on { background: rgba(255,255,255,.2); }
 svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 svg.fill { fill: currentColor; stroke: none; }
 .time { font-variant-numeric: tabular-nums; color: rgba(255,255,255,.85); padding: 0 8px; }
@@ -1957,7 +1957,7 @@ input[type=range] { -webkit-appearance: none; appearance: none; width: 90px; hei
 input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #fff; }
 .seg { display: inline-flex; background: rgba(255,255,255,.08); border-radius: 12px; padding: 2px; }
 .seg button { height: 34px; border-radius: 10px; padding: 0 12px; }
-.menu { position: absolute; bottom: 92px; right: 24px; min-width: 200px; padding: 6px; border-radius: 14px; background: rgba(24,22,32,.92); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.14); display: none; flex-direction: column; }
+.menu { position: absolute; bottom: 92px; right: 24px; min-width: 200px; padding: 6px; border-radius: 16px; background: rgba(24,24,32,.6); backdrop-filter: blur(24px) saturate(180%); border: 1px solid rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 20px 50px -20px rgba(0,0,0,.8); display: none; flex-direction: column; }
 .menu.on { display: flex; } .menu button { justify-content: flex-start; height: 34px; } .menu b { padding: 6px 10px 4px; font-size: 11px; font-weight: 600; color: rgba(255,255,255,.5); text-transform: uppercase; letter-spacing: .04em; }
 .split { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: rgba(255,255,255,.85); box-shadow: 0 0 10px rgba(0,0,0,.6); display: none; cursor: ew-resize; }
 .split.on { display: block; }

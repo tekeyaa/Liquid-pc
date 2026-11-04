@@ -71,6 +71,10 @@
   #sug svg { width: 16px; height: 16px; flex: none; fill: none; stroke: rgba(255,255,255,.5); stroke-width: 2; stroke-linecap: round; }
   #sug b { color: #fff; font-weight: 650; }
   @keyframes rise { from { opacity: 0; transform: translate3d(0, 18px, 0) scale(.97); } }
+  /* жидкое стекло (1.27), как окно браузера: без градиентов-заливок, акцент — лёгким оттенком стекла */
+  .dlg, #sug { background: rgba(24,24,32,.62) !important; backdrop-filter: blur(24px) saturate(180%); border: 1px solid rgba(255,255,255,.13); box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 24px 60px -20px rgba(0,0,0,.8); }
+  .dlg button.primary, body.edit .edit-btn { background: color-mix(in srgb, var(--accent) 28%, rgba(255,255,255,.06)) !important; border: 1px solid color-mix(in srgb, var(--accent-hi) 45%, rgba(255,255,255,.12)) !important; box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
+  .tile:hover { background: rgba(255,255,255,.14) !important; }
 </style>
 </head>
 <body>
