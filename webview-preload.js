@@ -1425,7 +1425,14 @@ class FrameGen {
   }
   fps() {
     if (this.raw.length < 10 && !this.qf) return 0;
-    let f = this.qf || 1 / [...this.raw].sort((a, b) => a - b)[this.raw.length >> 1];
+    // метки времени кадров точные: самый короткий промежуток — длительность кадра (или кратное, если мы не успевали
+    // забирать каждый); кратность уточняем по числу декодированных кадров
+    let f;
+    if (this.raw.length >= 10) {
+      const d0 = Math.min(...this.raw.filter((d) => d > 0.004));
+      const k = this.qf ? Math.max(1, Math.round(d0 * this.qf)) : 1;
+      f = k / d0;
+    } else f = this.qf;
     const n = this.dups.length, r = n ? this.dups.reduce((a, b) => a + b, 0) / n : 0;
     this.dbl = false;
     if (n >= 30 && r > 0.35 && r < 0.65) { let pairs = 0; for (let i = 1; i < n; i++) if (this.dups[i] && this.dups[i - 1]) pairs++; if (pairs < n * 0.1) { f /= 2; this.dbl = true; } }
