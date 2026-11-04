@@ -12,6 +12,7 @@ const PY_URL = `https://www.python.org/ftp/python/${PY_VER}/python-${PY_VER}-emb
 // его новые версии отказываются ставить pip во встроенный Python на Windows («To modify pip, please run…»)
 const PIP_URL = 'https://files.pythonhosted.org/packages/py3/p/pip/pip-24.3.1-py3-none-any.whl';
 const SETUP_V = '1'; // поменять — поставится заново
+const GAN = 'liquid-rtx2-gan.json'; // дорисовка: RTX 2, дообученная с сетью-судьёй (рядом -base.json — с чего начинала)
 const NETS = { rtx2: 'liquid-rtx2.json', pro: 'liquid-rtx-pro.json', lite: 'liquid-rtx.json', anime: 'liquid-rtx-anime.json' };
 
 class RtxTrain {
@@ -23,8 +24,9 @@ class RtxTrain {
     this.st = { phase: 'idle', msg: '', pct: 0 };
     this.proc = null; this.stopping = false; this.minGain = 0.1; this.minLeft = 5 * 60e3;
   }
-  state() { return { ...this.st, running: !!this.busy, ready: this.ready(), mine: this.mine() }; }
+  state() { return { ...this.st, running: !!this.busy, ready: this.ready(), mine: this.mine(), gan: this.gan() }; }
   // своя обученная сеть (Liquid RTX 2): есть ли, когда обучалась, сколько прибавила
+  gan() { return fs.existsSync(path.join(this.out, GAN)) && fs.existsSync(path.join(this.out, GAN.replace('.json', '-base.json'))); }
   mine() {
     if (!fs.existsSync(path.join(this.out, NETS.rtx2))) return null;
     try { return JSON.parse(fs.readFileSync(path.join(this.out, 'liquid-rtx2.meta.json'), 'utf8')); } catch { return {}; }
@@ -109,7 +111,11 @@ class RtxTrain {
     hours = Math.max(0, Number(hours) || 0);
     if (this.busy) return false;
     // одна сеть для всего: Liquid RTX 2 на всех собранных роликах (train_gpu берёт и вложенные папки — старая data/anime тоже)
-    const plan = net === 'auto' || !NETS[net] ? [['rtx2', this.data, 'видео', 1]] : [[net, this.data, 'видео', 1]];
+    const gan = net === 'gan';
+    if (gan && !fs.existsSync(path.join(this.out, NETS.rtx2)) && !fs.existsSync(path.join(this.out, NETS.rtx2 + '.pt'))) {
+      this.set('error', 'Сначала обычное обучение: дорисовка учится поверх твоей Liquid RTX 2'); return false;
+    }
+    const plan = gan || net === 'auto' || !NETS[net] ? [['rtx2', this.data, gan ? 'дорисовка' : 'видео', 1]] : [[net, this.data, 'видео', 1]];
     this.stopping = false; this.result = null;
     this.set('setup', 'Проверяю видеокарту…', 0);
     const fmt = (min) => (min >= 90 ? `${Math.floor(min / 60)} ч ${Math.round(min % 60)} мин` : `${Math.round(min)} мин`);
@@ -123,7 +129,7 @@ class RtxTrain {
       const results = [];
       for (let pi = 0; pi < plan.length; pi++) {
         const [name, data, label, share] = plan[pi];
-        const out = path.join(this.out, NETS[name]);
+        const base = path.join(this.out, NETS[name]), out = gan ? path.join(this.out, GAN) : base;
         const restShare = plan.slice(pi).reduce((a, p) => a + p[3], 0);
         const deadline = hours ? Date.now() + Math.max(0, deadlineAll - Date.now()) * (share / restShare) : 0;
         const tag = plan.length > 1 ? `Сеть для ${label}` : 'Обучение';
@@ -132,7 +138,8 @@ class RtxTrain {
         const args = [...extra];
         if (hours) args.push('--hours', String(Math.max(deadline - Date.now(), 60e3) / 3600e3));
         // продолжение: лучшие веса (json), а если RTX 2 ещё не обогнала Pro и json нет — последние веса (.pt)
-        if (fs.existsSync(out)) args.push('--init', out); else if (fs.existsSync(out + '.pt') && !args.includes('--scratch')) args.push('--warm', out + '.pt');
+        if (gan) { args.push('--gan', '0.01'); if (fs.existsSync(base)) args.push('--init', base); else args.push('--warm', base + '.pt'); }
+        else if (fs.existsSync(out)) args.push('--init', out); else if (fs.existsSync(out + '.pt') && !args.includes('--scratch')) args.push('--warm', out + '.pt');
         this.set('train', `${tag}: запуск…`, 0);
         const t0 = Date.now();
         // v0 — сеть в начале, best — лучшая проверка САМОЙ сети за этот заход, bar — планка (Pro) на тех же кадрах
@@ -158,6 +165,7 @@ class RtxTrain {
       const r0 = results[0];
       this.result = { v0: r0.first, best: r0.last, better: results.some((r) => r.saved), rounds: 1, nets: results };
       const part = (r) => {
+        if (gan) return r.saved ? 'дорисовка обучена. Силу настрой ползунком «Дорисовка деталей» — в новых вкладках и плеере' : 'дорисовка не сохранилась — запусти ещё раз';
         const up = r.total > 0.005 ? `стала точнее на ${db(r.total)} дБ` : 'на этих данных не прибавила';
         if (r.saved) return `${up}. Уже работает в новых вкладках`;
         if (r.bar != null && r.last != null && r.last < r.bar) return `${up}, но ещё не догнала твою Pro (осталось ${db(r.bar - r.last)} дБ) — пока работает Pro, прогресс сохранён, следующее обучение продолжит`;
@@ -168,7 +176,7 @@ class RtxTrain {
       // «твоя сеть»: когда обучалась и сколько прибавила за все обучения — для строки в настройках
       // запись «твоя сеть» без самой сети (осталась от старой версии с неверным подсчётом) — убрать
       if (!fs.existsSync(path.join(this.out, NETS.rtx2))) try { fs.unlinkSync(path.join(this.out, 'liquid-rtx2.meta.json')); } catch {}
-      if (this.result.better) try {
+      if (this.result.better && !gan) try {
         const mf = path.join(this.out, 'liquid-rtx2.meta.json');
         let m = {}; try { m = JSON.parse(fs.readFileSync(mf, 'utf8')); } catch {}
         m.at = Date.now(); m.gain = (m.gain || 0) + Math.max(0, r0.total); m.times = (m.times || 0) + 1;

@@ -14,16 +14,37 @@ const ravu = require('./main/ravu');
 // Читаются с диска по первому запросу, без остановки основного процесса
 const RTX_FILES = { rtx2: 'liquid-rtx2.json', lite: 'liquid-rtx.json', pro: 'liquid-rtx-pro.json', anime: 'liquid-rtx-anime.json' };
 const rtxNetCache = new Map();
+// свои веса (обученные tools/rtx/gpu) — в %APPDATA%\Liquid\rtx\ — важнее встроенных
+const read = (p) => fs.promises.readFile(p, 'utf8').then(JSON.parse);
+// Liquid RTX 2 (граф U-Net): у каждого слоя 9·cin строк весов по cout (у up — 4·cout) и столько же смещений
+const sane2 = (j) => Array.isArray(j.layers) && j.layers.length > 2 && j.layers.every((l) => ['conv', 'up'].includes(l.op) && typeof l.in === 'string' && typeof l.out === 'string'
+  && l.cin > 0 && l.cout > 0 && [1, 2].includes(l.s) && Array.isArray(l.w) && l.w.length === 9 * l.cin && l.w.every((r) => Array.isArray(r) && r.length === l.cout * (l.op === 'up' ? 4 : 1))
+  && Array.isArray(l.b) && l.b.length === l.cout * (l.op === 'up' ? 4 : 1)) && j.layers[j.layers.length - 1].out === 'res';
+const sane = (j) => j && Array.isArray(j.dims) && Array.isArray(j.layers) && j.layers.length === j.dims.length - 1 && j.dims[0] === 1 && j.dims[j.dims.length - 1] === 4
+  && j.layers.every((l, i) => Array.isArray(l.w) && l.w.length === 9 * j.dims[i] && l.w.every((r) => Array.isArray(r) && r.length === j.dims[i + 1]) && Array.isArray(l.b) && l.b.length === j.dims[i + 1]);
 const rtxNet = (n) => {
+  // дорисовка: веса «как было» и «с дорисовкой» смешиваются по ползунку (одна сеть — та же скорость)
+  if (n === 'rtx2') {
+    let a = 0.5; try { const g = loadSettings().srGan; if (Number.isFinite(g)) a = g / 100; } catch {}
+    const dir = path.join(app.getPath('userData'), 'rtx'), gf = path.join(dir, 'liquid-rtx2-gan.json'), bf = path.join(dir, 'liquid-rtx2-gan-base.json');
+    if (a > 0 && fs.existsSync(gf) && fs.existsSync(bf)) {
+      const key = 'gan:' + a;
+      if (!rtxNetCache.has(key)) rtxNetCache.set(key, Promise.all([read(gf), read(bf)]).then(([G, B]) => {
+        if (!sane2(G) || !sane2(B) || G.layers.length !== B.layers.length) throw new Error('не тот формат');
+        const mix = (x, y) => y * (1 - a) + x * a;
+        return { ...G, version: `${G.version}·${Math.round(a * 100)}%`, layers: G.layers.map((L, i) => {
+          const K = B.layers[i]; if (K.w.length !== L.w.length || K.b.length !== L.b.length) throw new Error('не те размеры');
+          return { ...L, w: L.w.map((r, j) => r.map((x, k) => mix(x, K.w[j][k]))), b: L.b.map((x, k) => mix(x, K.b[k])) };
+        }) };
+      }).catch((e) => { console.warn('[liquid] дорисовка не подошла:', e.message); rtxNetCache.delete(key); return null; }));
+      return rtxNetCache.get(key).then((j) => j || (rtxNetCache.delete(key), rtxNet0(n)));
+    }
+  }
+  return rtxNet0(n);
+};
+const rtxNet0 = (n) => {
   const f = RTX_FILES[n] || RTX_FILES.lite;
-  // свои веса (обученные tools/rtx/gpu) — в %APPDATA%\Liquid\rtx\ — важнее встроенных
   const read = (p) => fs.promises.readFile(p, 'utf8').then(JSON.parse);
-  // Liquid RTX 2 (граф U-Net): у каждого слоя 9·cin строк весов по cout (у up — 4·cout) и столько же смещений
-  const sane2 = (j) => Array.isArray(j.layers) && j.layers.length > 2 && j.layers.every((l) => ['conv', 'up'].includes(l.op) && typeof l.in === 'string' && typeof l.out === 'string'
-    && l.cin > 0 && l.cout > 0 && [1, 2].includes(l.s) && Array.isArray(l.w) && l.w.length === 9 * l.cin && l.w.every((r) => Array.isArray(r) && r.length === l.cout * (l.op === 'up' ? 4 : 1))
-    && Array.isArray(l.b) && l.b.length === l.cout * (l.op === 'up' ? 4 : 1)) && j.layers[j.layers.length - 1].out === 'res';
-  const sane = (j) => j && Array.isArray(j.dims) && Array.isArray(j.layers) && j.layers.length === j.dims.length - 1 && j.dims[0] === 1 && j.dims[j.dims.length - 1] === 4
-    && j.layers.every((l, i) => Array.isArray(l.w) && l.w.length === 9 * j.dims[i] && l.w.every((r) => Array.isArray(r) && r.length === j.dims[i + 1]) && Array.isArray(l.b) && l.b.length === j.dims[i + 1]);
   if (!rtxNetCache.has(f)) rtxNetCache.set(f, read(path.join(app.getPath('userData'), 'rtx', f))
     .then((j) => { if (!(j && j.arch === 'g2' ? sane2(j) : sane(j))) throw new Error('не тот формат'); console.log(`[liquid] Liquid RTX: свои веса ${f}`); return j; })
     .catch((e) => { if (e.code !== 'ENOENT') console.warn(`[liquid] Liquid RTX: свои веса ${f} не подошли (${e.message}), беру встроенные`); return read(path.join(__dirname, 'main', 'rtx', f)); })
@@ -264,7 +285,7 @@ function publicSettings() {
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
-    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
+    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srGan: Number.isFinite(s.srGan) ? s.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
     srDeband: s.srDeband !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1, rtxLearnWatch: s.rtxLearnWatch !== false,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
@@ -1473,6 +1494,7 @@ function registerIpc() {
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
     if ('lpSmooth' in patch) s.lpSmooth = !!patch.lpSmooth;
+    if ('srGan' in patch) { s.srGan = Math.max(0, Math.min(100, Math.round(Number(patch.srGan) || 0))); }
     if ('srDeband' in patch) s.srDeband = !!patch.srDeband;
     if ('uaMode' in patch) { s.uaMode = Identity.MODES.includes(patch.uaMode) ? patch.uaMode : 'chrome'; if (s.uaMode !== ID.mode) applyIdentity(s.uaMode); }
     if ('rtxAutoTrain' in patch) s.rtxAutoTrain = !!patch.rtxAutoTrain;
@@ -1559,12 +1581,12 @@ function registerIpc() {
     } catch { return null; }
   });
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
-  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, lpSmooth: st.lpSmooth !== false, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false }; });
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, lpSmooth: st.lpSmooth !== false, gan: Number.isFinite(st.srGan) ? st.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false }; });
   // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
   ipcMain.handle('rtxlearn:add', async (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
-  ipcMain.handle('rtxtrain:start', (_e, net, hours) => (rtxTrain ? rtxTrain.start('auto', [], [3, 6, 12].includes(Number(hours)) ? Number(hours) : 0) : false));
+  ipcMain.handle('rtxtrain:start', (_e, net, hours) => (rtxTrain ? rtxTrain.start(net === 'gan' ? 'gan' : 'auto', [], [3, 6, 12].includes(Number(hours)) ? Number(hours) : 0) : false));
   ipcMain.handle('rtxtrain:stop', () => { if (rtxTrain) rtxTrain.stop(); });
   ipcMain.handle('rtxtrain:state', () => (rtxTrain ? rtxTrain.state() : null));
   ipcMain.handle('rtxlearn:open', () => { if (!rtxLearn) return; fs.mkdirSync(rtxLearn.dir, { recursive: true }); shell.openPath(rtxLearn.dir); });

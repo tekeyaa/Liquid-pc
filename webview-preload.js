@@ -618,6 +618,12 @@ function videoCmd(m) {
     if (m.remember != null) vt.remember = !!m.remember;
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
+    if (m.gan != null && vt.gan != null && m.gan !== vt.gan) {
+      delete SR_NET.rtx2;
+      for (const r of vt.srMap.values()) { try { r.eng && r.eng.dropNet('rtx2'); r.dirty = true; } catch {} }
+      if (lp.open && lp.eng) { lp.eng.dropNet('rtx2'); lp.dirty = true; }
+    }
+    if (m.gan != null) vt.gan = m.gan;
     if (m.lpSmooth != null) { vt.lpSmooth = !!m.lpSmooth; if (lp.open) { lp.dirty = true; lpRender(); } }
     if (m.deband != null) { vt.srDeband = !!m.deband; for (const r of vt.srMap.values()) r.dirty = true; if (lp.open) lp.dirty = true; }
     if (m.srContent) vt.srContent = m.srContent;
@@ -1059,6 +1065,12 @@ class RtxEngine {
         hr: this.prog(S.hr, SR_VS3), cfl: this.prog(S.cfl, SR_VS3), compose: this.prog(S.compose, SR_VS3), ok: false };
     }).catch((e) => { this.nets[name] = null; console.warn('[liquid] нейросеть Liquid RTX не загрузилась:', e && e.message); });
   }
+  // забыть сеть (сменили силу дорисовки — веса другие): при следующем кадре загрузится заново
+  dropNet(name) {
+    const gl = this.gl, N = this.nets[name];
+    if (N && N.layers) for (const P of [...N.layers, N.hr, N.cfl, N.compose]) { try { gl.deleteProgram(P.p); if (P.ubo) gl.deleteBuffer(P.ubo); } catch {} }
+    delete this.nets[name]; this.netReq[name] = false;
+  }
   // Liquid RTX 2: проходы по графу + общие hr / cfl / compose (как у прежних сетей)
   loadNet2(name, d) {
     const gl = this.gl;
@@ -1246,8 +1258,15 @@ class RtxEngine {
     if (src) this.upload(src, vw, vh); else this.tSrc = this.tRaw;
     if (this.deband && vt.srDeband !== false && this.pDeb && level !== 'off' && this.ready(this.pDeb)) this.tSrc = this.debandPass(vw, vh);
     // видео не меньше холста (4K на 4K-экране, слой ради HDR) — увеличивать нечего: только уменьшаем/копируем
-    const down = vw * k[2] >= this.ow * 0.97 && vh * k[3] >= this.oh * 0.97 || vw * k[2] > this.ow * 1.05 || vh * k[3] > this.oh * 1.05;
-    const M = down || level === 'off' ? null : this.pick(level, content);
+    // Видео того же размера, что экран (1080p на 1080p) или чуть крупнее: увеличивать некуда, но нейросеть всё равно
+    // полезна — «очистка»: сеть делает кадр ×2 (убирает сжатие, восстанавливает детали), потом он сжимается обратно до
+    // экрана — как снятое в большем разрешении. Только если готова нейросеть; иначе — как раньше, просто показываем
+    const same = vw * k[2] >= this.ow * 0.97 && vh * k[3] >= this.oh * 0.97 || vw * k[2] > this.ow * 1.05 || vh * k[3] > this.oh * 1.05;
+    const huge = vw * k[2] > this.ow * 1.6 || vh * k[3] > this.oh * 1.6;
+    let M = huge || level === 'off' ? null : this.pick(level, content);
+    if (same && !(M && M.layers)) M = null;
+    const down = same && !M;
+    this.clean = same && !!M;
     if (M && M.layers) {
       if (M.g2) this.drawNet2(M, vw, vh, k); else this.drawNet(M, vw, vh, k);
       if (Object.keys(this.ravu).length && ++this.netFrames > 120) this.freeRavu(); // нейросеть работает стабильно — запасной RAVU не держим
@@ -2455,6 +2474,7 @@ function lpRender() {
   const how = SR_NAMES[lp.used] || '';
   if (vt.sr === 'off') { bd.className = 'badge off'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · Liquid RTX выкл`; }
   else if (lp.used === 'down') { bd.className = 'badge off'; bd.textContent = `Видео ${v.videoWidth}×${v.videoHeight} — уже не меньше экрана, показываю как есть`; }
+  else if (lp.eng.clean) { bd.className = 'badge'; bd.textContent = `${v.videoWidth}×${v.videoHeight} · очистка (${how}): кадр ×2 и обратно до экрана${lp.slow ? ' (видеокарта не успевала за лучшим)' : ''}${vt.srHdr ? ' · HDR' : ''}`; }
   else { bd.className = 'badge'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · ${how}${lp.slow ? ' (видеокарта не успевала за лучшим)' : ''}${vt.srHdr ? ' · HDR' : ''}`; }
   // 60 кадров: что происходит — дорисовываем или не нужно
   const f = lp.fg, fps = lp.fps ? Math.round(lp.fps) : 0;

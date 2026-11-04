@@ -54,6 +54,14 @@ async function go(extra, hours, net = 'pro') {
   console.log('одна кнопка: ' + nets + ' — ' + T.state().msg);
   // цепочка: сеть на PyTorch (как учится) == эталон на numpy по файлу (а эталон == шейдеры браузера — проверено отдельно)
   await T.run(T.py, [path.join(__dirname, '..', 'tools', 'rtx', 'gpu', 'check_rtx2.py'), path.join(out, 'liquid-rtx2.json')], (l) => console.log(l)).catch((e) => { console.error('::error::PyTorch и эталон RTX 2 расходятся: ' + e.message); process.exit(1); });
+  // дорисовка: дообучение RTX 2 с сетью-судьёй — свой файл и «с чего начинала», оба того же формата
+  await go(['--allow-cpu', '--steps', '20', '--batch', '4'], 0, 'gan');
+  for (const g of ['liquid-rtx2-gan.json', 'liquid-rtx2-gan-base.json']) {
+    if (!fs.existsSync(path.join(out, g))) { console.error('::error::дорисовка не записала ' + g); process.exit(1); }
+    await T.run(T.py, [path.join(__dirname, '..', 'tools', 'rtx', 'gpu', 'check_rtx2.py'), path.join(out, g)], (l) => console.log(l)).catch((e) => { console.error('::error::' + g + ': ' + e.message); process.exit(1); });
+  }
+  if (!T.state().gan) { console.error('::error::дорисовка не видна в состоянии'); process.exit(1); }
+  console.log('дорисовка: ' + T.state().msg);
   const f = path.join(out, 'liquid-rtx-pro.json');
   const j = JSON.parse(fs.readFileSync(f, 'utf8'));
   if (!sane(j) || j.F !== 24 || j.H !== 5) { console.error('::error::веса не того формата'); process.exit(1); }

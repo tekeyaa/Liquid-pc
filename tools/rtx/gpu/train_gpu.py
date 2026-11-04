@@ -35,6 +35,7 @@ ap.add_argument('--resume', default=None, help='продолжить с .pt')
 ap.add_argument('--warm', default=None, help='начать с весов из .pt (новый круг: шаг обучения заново)')
 ap.add_argument('--allow-cpu', action='store_true', help=argparse.SUPPRESS)
 ap.add_argument('--no-baseline', action='store_true', help=argparse.SUPPRESS)   # проверка: сохранять, даже если хуже Pro   # только для проверки на машине без видеокарты
+ap.add_argument('--gan', type=float, default=0.0, help='дорисовка деталей: вес сети-судьи (напр. 0.01). Учится от RTX 2, пишет отдельный файл')
 ap.add_argument('--percept', type=float, default=0.0, help='вес «на глаз» (VGG), напр. 0.02: детальнее, но PSNR ниже — смотреть глазами')
 a = ap.parse_args()
 F, H, fname = NETS[a.net]
@@ -91,6 +92,10 @@ elif a.scratch:
 if a.warm:
     ck = torch.load(a.warm, map_location=dev); net.load_state_dict(ck.get('ema') or ck['net']); print('продолжаю с весов', a.warm)
 start = {k: v.clone() for k, v in net.state_dict().items()}
+if a.gan and G2:
+    # с чего начали — отдельным файлом: браузер смешивает веса «как было» и «с дорисовкой» ползунком (0–100 %)
+    rtx2.save(OUT[:-5] + '-base.json', [(c.weight.detach().cpu().numpy(), c.bias.detach().cpu().numpy()) for c in net.c], version='base')
+    print('дорисовка: учусь от этих весов, они сохранены как', OUT[:-5] + '-base.json')
 
 # данные — целиком на видеокарте (float16): 1000 кусочков 512² — около 1 ГБ
 HR, LR, VAL = [], [], []
@@ -177,7 +182,27 @@ if a.percept > 0:
     MEAN = torch.tensor([0.485, 0.456, 0.406], device=dev).view(1, 3, 1, 1); STD = torch.tensor([0.229, 0.224, 0.225], device=dev).view(1, 3, 1, 1)
     feat = lambda z: vgg((z.repeat(1, 3, 1, 1) - MEAN) / STD)
 
-opt = torch.optim.Adam(net.parameters(), lr=a.lr or (1e-3 if a.scratch else 2e-4), **({'fused': True} if dev.type == 'cuda' else {}))
+opt = torch.optim.Adam(net.parameters(), lr=a.lr or (1e-4 if a.gan else 1e-3 if a.scratch else 2e-4), **({'fused': True} if dev.type == 'cuda' else {}))
+
+# Сеть-судья для дорисовки: учится отличать настоящие кусочки 4K от того, что нарисовала наша сеть, а наша — её
+# обманывать. Тогда сеть перестаёт рисовать «гладкое среднее» там, где не уверена, и дорисовывает правдоподобную
+# текстуру (трава, кожа, ткань). Судья нужен только при обучении — в браузер не попадает
+D = None
+if a.gan:
+    SN = nn.utils.spectral_norm
+    class Disc(nn.Module):
+        def __init__(self):
+            super().__init__()
+            ch = [1, 32, 64, 128, 128]
+            self.c = nn.ModuleList([SN(nn.Conv2d(ch[i], ch[i + 1], 3 if i == 0 else 4, stride=1 if i == 0 else 2, padding=1)) for i in range(4)])
+            self.out = SN(nn.Conv2d(128, 1, 3, padding=1))
+        def forward(self, z):
+            h, f = z * 2 - 1, []
+            for c in self.c: h = Fn.leaky_relu(c(h), 0.2); f.append(h)
+            return self.out(h), f
+    D = Disc().to(dev)
+    optD = torch.optim.Adam(D.parameters(), lr=1e-4, betas=(0.9, 0.99))
+    print(f'дорисовка: вес судьи {a.gan}')
 lr0 = opt.param_groups[0]['lr']; it0 = 0
 # Среднее весов за последние ~1000 шагов (EMA): точнее и спокойнее, чем веса последнего шага, — их и проверяем, и сохраняем
 SD = net.state_dict()
@@ -193,7 +218,7 @@ best = v0[0] if not a.scratch else -1
 if G2:
     # планка — Pro (твоя, иначе встроенная) на тех же проверочных кадрах: браузеру отдаём, только когда RTX 2 её обогнала
     pro = next((p for p in (os.path.join(APPD, 'rtx', 'liquid-rtx-pro.json'), os.path.join(HERE, 'liquid-rtx-pro.json'), os.path.join(HERE, '..', '..', '..', 'main', 'rtx', 'liquid-rtx-pro.json')) if os.path.exists(p)), None)
-    if pro and not a.no_baseline:
+    if pro and not a.no_baseline and not a.gan:
         F, H = 24, 5; L = H + 2; M = L + 1; dims = [1] + [F] * (L - 1) + [4]
         keepnet, G2, net = net, False, Net().to(dev)
         _, _, _, lay = rtxfmt.load(pro)
@@ -236,6 +261,15 @@ try:
             o = net(x, P)
         if G2: o, y = o[:, :, 2 * CR:-2 * CR, 2 * CR:-2 * CR], y[:, :, 2 * CR:-2 * CR, 2 * CR:-2 * CR]  # края куска — не настоящие
         loss = torch.sqrt((o - y) ** 2 + 1e-6).mean()
+        if D is not None:
+            o32, y32 = o.float(), y.float()
+            dr, _ = D(y32); df, _ = D(o32.detach())
+            ld = Fn.softplus(-dr).mean() + Fn.softplus(df).mean()
+            optD.zero_grad(set_to_none=True); ld.backward(); optD.step()
+            gf, ff = D(o32)
+            with torch.no_grad(): _, fr = D(y32)
+            fm = sum(Fn.l1_loss(p, q) for p, q in zip(ff, fr)) / len(ff)
+            loss = loss + a.gan * Fn.softplus(-gf).mean() + 10 * a.gan * fm
         if vgg is not None:
             with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == 'cuda'):
                 loss = loss + a.percept * Fn.l1_loss(feat(o), feat(y))
@@ -251,14 +285,14 @@ try:
             if it % 2000 == 0:
                 v = validate(ema)[0]
                 msg += f'  проверка {v:.2f} дБ (было {v0[0]:.2f})'
-                if v > best or vgg is not None: best = max(best, v); save_json(f'gpu-{it}'); msg += '  ✓ сохранено'
+                if v > best or vgg is not None or D is not None: best = max(best, v); save_json(f'gpu-{it}'); msg += '  ✓ сохранено'
                 save_pt(it)
             print(msg, flush=True)
 except KeyboardInterrupt:
     print('остановлено')
 v = validate(ema)[0]
 print(f'конец: проверка {v:.2f} дБ', flush=True)
-if v > best or vgg is not None: best = v; save_json(f'gpu-{it}')
+if v > best or vgg is not None or D is not None: best = v; save_json(f'gpu-{it}')
 save_pt(it)
 print(f'итог: лучшая проверка {best:.2f} дБ (в начале {v0[0]:.2f}, простое растягивание {v0[1]:.2f})')
 print('веса:', OUT if os.path.exists(OUT) and os.path.getmtime(OUT) >= t0 else 'не стали лучше — файл не менялся')

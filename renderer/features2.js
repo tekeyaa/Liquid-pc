@@ -220,7 +220,7 @@
   };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, lpSmooth: settings.lpSmooth !== false, learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, lpSmooth: settings.lpSmooth !== false, gan: settings.srGan ?? 50, learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
@@ -232,6 +232,7 @@
     $('#rtxLearn').checked = !!settings.rtxLearn; $('#rtxLearnBox').hidden = !settings.rtxLearn;
     $('#rtxLearnGb').value = String(settings.rtxLearnGb || 1);
     $('#rtxLearnWatch').checked = settings.rtxLearnWatch !== false;
+    { const v = settings.srGan ?? 50; $('#srGan').value = v; $('#srGanV').textContent = v + ' %'; }
     $('#rtxTrainHours').value = String(settings.rtxTrainHours || 0);
     $('#rtxAutoTrain').checked = !!settings.rtxAutoTrain;
     learnStat();
@@ -251,7 +252,8 @@
       }
     }
     const t = await L.rtxLearn.trainState().catch(() => null); if (!t) return;
-    $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainHours').disabled = t.running;
+    $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainHours').disabled = t.running; $('#rtxGanGo').hidden = t.running;
+    $('#rtxGanBox').hidden = !t.gan;
     const day = (x) => new Date(x).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
     $('#rtxMine').textContent = t.mine ? `Твоя сеть обучена${t.mine.at ? ' ' + day(t.mine.at) : ''}${t.mine.gain ? ` · точнее на ${t.mine.gain.toFixed(2).replace('.', ',')} дБ` : ''}` : 'Своя сеть ещё не обучена';
     $('#rtxTrainStat').textContent = t.msg || (t.mine ? 'Можно доучить — станет ещё точнее.' : t.ready ? 'Пока работает встроенная. Учится на собранных роликах; лучше ставить на 6–12 часов.'
@@ -265,6 +267,10 @@
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
     const n = await L.rtxLearn.add(txt); $('#rtxLinks').value = ''; learnStat(); if (window.toast) window.toast(n ? `В очередь: ${n}` : 'Новых ссылок YouTube не нашлось'); };
   $('#rtxLearnOpen').onclick = () => L.rtxLearn.open();
+  $('#rtxGanGo').onclick = async () => { await L.rtxLearn.train('gan', Number($('#rtxTrainHours').value)); learnStat(); };
+  const ganV = () => { const v = settings.srGan ?? 50; $('#srGan').value = v; $('#srGanV').textContent = v + ' %'; };
+  $('#srGan').oninput = (e) => { $('#srGanV').textContent = e.target.value + ' %'; };
+  $('#srGan').onchange = async (e) => { settings = await L.settings.set({ srGan: Number(e.target.value) }); ganV(); pushVideoPrefs(); };
   $('#rtxTrainGo').onclick = async () => { await L.rtxLearn.train('auto', Number($('#rtxTrainHours').value)); learnStat(); };
   $('#rtxTrainHours').onchange = async (e) => { settings = await L.settings.set({ rtxTrainHours: Number(e.target.value) }); };
   $('#rtxAutoTrain').onchange = async (e) => { settings = await L.settings.set({ rtxAutoTrain: e.target.checked }); };

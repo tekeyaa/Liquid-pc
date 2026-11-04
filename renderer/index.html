@@ -311,6 +311,11 @@
               <select id="rtxTrainHours" class="glass-select" title="Сколько учить"><option value="0">~40 минут</option><option value="3">3 часа</option><option value="6">6 часов</option><option value="12">12 часов</option></select>
               <button id="rtxTrainGo" class="btn primary sm">Обучить</button>
               <button id="rtxTrainStop" class="btn ghost sm" hidden>Остановить</button>
+              <button id="rtxGanGo" class="btn ghost sm" title="Дообучить сеть дорисовывать мелкие детали (трава, кожа, ткань): сеть-судья учит её не замыливать">Обучить дорисовку</button>
+            </div>
+            <div class="set-row col" id="rtxGanBox" hidden>
+              <div class="set-t"><b>Дорисовка деталей: <span id="srGanV">50 %</span></b><small>0 % — только точность, как обычно. Больше — сеть смелее дорисовывает мелкие детали; если появились выдуманные узоры — убавь</small></div>
+              <input type="range" id="srGan" min="0" max="100" step="10" />
             </div>
             <label class="set-row"><div class="set-t"><b>Учить автоматически</b><small>Когда место под данные заполнится и видео не играет</small></div><input type="checkbox" id="rtxAutoTrain" class="switch" /></label>
           </div>
