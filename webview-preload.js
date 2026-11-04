@@ -2515,7 +2515,7 @@ function lpLoop() {
       if (was !== lp.used) lp.badgeDirty = true;
     }
     if (lp.fgActive) fg.present(now, v.paused);
-    if (fg && isNew && lp.frames % 30 === 0) { lp.host.dataset.lqFps = String(Math.round(fg.fps() * 10) / 10); lp.host.dataset.lqFg = lp.fgActive ? '1' : '0'; }
+    if (fg && isNew && lp.frames % 10 === 0) { lp.host.dataset.lqFps = String(Math.round(fg.fps() * 10) / 10); lp.host.dataset.lqFg = lp.fgActive ? '1' : '0'; }
     if (lp.badgeDirty || (fg && lp.frames % 60 === 0 && isNew)) { lp.badgeDirty = false; lpRender(); }
   } catch (e) {
     console.warn('[liquid] Liquid Player:', e && e.message);

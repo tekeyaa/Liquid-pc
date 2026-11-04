@@ -255,7 +255,7 @@ test('Liquid Player: свой плеер на весь экран рисует �
     console.log('60 кадров: дорисовка', await inTab(`document.querySelector('lq-player').dataset.lqFg`));
     // включаем дорисовку принудительно (здесь экран обновляется редко) — кадры идут, ошибок нет
     await inTab(`document.dispatchEvent(new CustomEvent('liquid:fgtest'))`);
-    await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqFg`), { timeout: 20_000 }).toBe('1');
+    await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqFg`), { timeout: 60_000 }).toBe('1'); // без видеокарты шейдеры поиска сдвига собираются долго
     const f0 = await inTab(`document.getElementById('v').currentTime`);
     await win.waitForTimeout(1500);
     expect(await inTab(`document.getElementById('v').currentTime`)).not.toBe(f0);
