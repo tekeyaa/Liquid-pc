@@ -253,6 +253,14 @@ test('Liquid Player: свой плеер на весь экран рисует �
     await expect.poll(() => inTab(`+(document.querySelector('lq-player').dataset.lqFps || 0)`), { timeout: 30_000 }).toBeGreaterThan(23);
     expect(await inTab(`+document.querySelector('lq-player').dataset.lqFps`)).toBeLessThan(27);
     console.log('60 кадров: дорисовка', await inTab(`document.querySelector('lq-player').dataset.lqFg`));
+    // включаем дорисовку принудительно (здесь экран обновляется редко) — кадры идут, ошибок нет
+    await inTab(`document.dispatchEvent(new CustomEvent('liquid:fgtest'))`);
+    await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqFg`), { timeout: 20_000 }).toBe('1');
+    const f0 = await inTab(`document.getElementById('v').currentTime`);
+    await win.waitForTimeout(1500);
+    expect(await inTab(`document.getElementById('v').currentTime`)).not.toBe(f0);
+    expect(await inTab(`document.querySelector('lq-player').dataset.lqErr || ''`)).toBe('');
+    expect(await inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`)).not.toBe('');
   }
   // видео сайта продолжает идти под нашим плеером
   const t0 = await inTab(`document.getElementById('v').currentTime`);

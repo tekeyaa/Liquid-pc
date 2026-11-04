@@ -2470,6 +2470,7 @@ function lpRender() {
 // С «60 кадрами» новый кадр рисуется в запас (slots), а на экран на каждом обновлении — промежуточный
 function lpFgWanted(v, fg) {
   if (!fg || !fg.ok || !vt.lpSmooth || lp.split || !fg.ready()) return false;
+  if (lp.fgForce) return true; // проверка в автотестах: без видеокарты экран обновляется реже, чем нужно для дорисовки
   const fps = fg.fps() * (v.playbackRate || 1);
   const d = lp.hzD; if (!fps || d.length < 30) return false;
   const hz = 1000 / [...d].sort((x, y) => x - y)[d.length >> 1];
@@ -2523,7 +2524,7 @@ function lpLoop() {
   // пока на паузе: шейдер нейросети мог собраться — перерисуем лучшим
   if (v.paused && vt.sr !== 'off' && /^(fsr|r2|r3|net|pro)$/.test(lp.used) && lp.frames % 30 === 0) { const best = lp.eng.pick(vt.sr, contentOf(v)); if ((best ? best.name : 'fsr') !== lp.used) lp.dirty = true; }
 }
-function lpError(t) { const e = lp.root.querySelector('.err'); e.textContent = t; e.classList.add('on'); }
+function lpError(t) { const e = lp.root.querySelector('.err'); e.textContent = t; e.classList.add('on'); if (lp.host) lp.host.dataset.lqErr = t; }
 // клавиши — как в обычных плеерах; сайт их не получает, пока открыт наш
 function lpKey(e) {
   if (!lp.open) return;
@@ -2550,7 +2551,7 @@ function lpOpen(v, fromFs) {
   cv.addEventListener('webglcontextlost', (e) => { if (!lp.open || lp.cv !== cv) return; e.preventDefault(); console.warn('[liquid] Liquid Player: видеокарта сбросила холст — закрываю плеер'); lpClose(); });
   try { lp.eng = new RtxEngine(lp.cv); } catch (e) { toHost({ type: 'videoErr', error: 'нет WebGL — Liquid Player не может рисовать видео' }); return; }
   lp.v = v; lp.open = true; lp.fromFs = !!fromFs; lp.perf = new RtxPerf(); lp.used = ''; lp.slow = false; lp.last = -1; lp.dirty = true; lp.frames = 0; lp.split = 0;
-  lp.fgActive = false; lp.fps = 0; lp.hz = 0; lp.fg = null; lp.hzD = []; lp.hzT = 0;
+  lp.fgActive = false; lp.fps = 0; lp.hz = 0; lp.fg = null; lp.hzD = []; lp.hzT = 0; lp.fgForce = false; delete lp.host.dataset.lqErr;
   try { lp.fg = new FrameGen(lp.eng); } catch (e) { console.warn('[liquid] 60 кадров недоступны:', e && e.message); }
   lp.root.querySelector('.err').classList.remove('on');
   // слой чёткости поверх плеера сайта не нужен, пока открыт наш (видеокарта занята одним)
@@ -2606,6 +2607,7 @@ window.addEventListener('keydown', (e) => {
   e.preventDefault(); e.stopImmediatePropagation(); lpOpen(v);
 }, true);
 // из меню правой кнопки: браузер присылает событие с «нажатием пользователя», чтобы можно было включить полный экран
+document.addEventListener('liquid:fgtest', () => { lp.fgForce = true; });
 document.addEventListener('liquid:player', (e) => { const d = e.detail || {}; const v = (d.x != null && videoAt(d.x, d.y)) || mainVideo(); if (v) lpOpen(v); });
 
 function liquidCmd(msg) {
