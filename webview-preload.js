@@ -1414,10 +1414,18 @@ class FrameGen {
     return true;
   }
   // сколько кадров в секунду на самом деле: по меткам времени, а если каждый второй — повтор (30 в 60), то вдвое меньше
+  // q — сколько кадров видео декодировано на секунду его времени (getVideoPlaybackQuality): не зависит от того,
+  // успеваем ли мы забирать каждый кадр (на слабой видеокарте метки времени приходят через один-два)
+  quality(v) {
+    const q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality(); if (!q || v.paused) { this.q0 = null; return; }
+    const t = v.currentTime;
+    if (!this.q0 || t < this.q0.t) { this.q0 = { n: q.totalVideoFrames, t }; return; }
+    const dn = q.totalVideoFrames - this.q0.n, dt = t - this.q0.t;
+    if (dt >= 1) { if (dn > 0 && dt < 5) this.qf = dn / dt; this.q0 = { n: q.totalVideoFrames, t }; }
+  }
   fps() {
-    if (this.raw.length < 10) return 0;
-    const m = [...this.raw].sort((a, b) => a - b)[this.raw.length >> 1];
-    let f = 1 / m;
+    if (this.raw.length < 10 && !this.qf) return 0;
+    let f = this.qf || 1 / [...this.raw].sort((a, b) => a - b)[this.raw.length >> 1];
     const n = this.dups.length, r = n ? this.dups.reduce((a, b) => a + b, 0) / n : 0;
     this.dbl = false;
     if (n >= 30 && r > 0.35 && r < 0.65) { let pairs = 0; for (let i = 1; i < n; i++) if (this.dups[i] && this.dups[i - 1]) pairs++; if (pairs < n * 0.1) { f /= 2; this.dbl = true; } }
@@ -2482,7 +2490,7 @@ function lpLoop() {
       lp.last = stamp;
       lp.eng.upload(src, v.videoWidth, v.videoHeight);
       fresh = true;
-      if (fg && fg.ok && vt.lpSmooth) { fg.rate = v.playbackRate || 1; fresh = fg.push(v.videoWidth, v.videoHeight, stamp, now); }
+      if (fg && fg.ok && vt.lpSmooth) { fg.rate = v.playbackRate || 1; fg.quality(v); fresh = fg.push(v.videoWidth, v.videoHeight, stamp, now); }
       if (fresh) lp.dirty = true;
     }
     const want = lpFgWanted(v, fg);
