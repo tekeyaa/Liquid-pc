@@ -169,7 +169,7 @@ class RtxLearn {
   // почему сейчас не нарезает (для строки в настройках)
   why() {
     if (!this.on()) return '';
-    if (this.pause && this.pause()) return 'пауза: идёт обучение — сбор продолжится после него';
+    if (this.pause && this.pause()) return 'пауза: обучение скачивает Python и PyTorch — сбор продолжится после';
     if (this.bytes() >= this.budget()) return 'место заполнено';
     if (!this.q.some((x) => x.st === 'new')) return 'очередь пуста — открой ролик с 4K или добавь ссылки';
     if (this.blocked()) return 'пауза: во вкладке играет звук (так выбрано в настройках)';

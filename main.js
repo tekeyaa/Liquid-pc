@@ -2126,7 +2126,10 @@ app.whenReady().then(async () => {
   rtxTrain = new RtxTrain({ dir: path.join(app.getPath('userData'), 'rtx-train'), scripts: path.join(__dirname, 'tools', 'rtx', 'gpu'), weights: path.join(__dirname, 'main', 'rtx'),
     data: path.join(app.getPath('userData'), 'rtx-learn', 'data'), out: path.join(app.getPath('userData'), 'rtx'),
     log: (lv, src, msg) => diag.log(lv, src, msg), onDone: () => rtxNetCache.clear() }); // новые веса — новым вкладкам
-  rtxLearn.pause = () => !!rtxTrain.busy; // пока учится — кадры не собираем (одна видеокарта)
+  // Сбор идёт и во время обучения: обучение упирается в количество данных, а не в скорость, и новые ролики важнее
+  // тех процентов скорости, что отнимает нарезка (видеодекодер у видеокарты отдельный). Ждём только пока скачивается
+  // Python/PyTorch (первый запуск) — чтобы не делить интернет
+  rtxLearn.pause = () => !!rtxTrain.busy && rtxTrain.st.phase === 'setup';
   // автообучение: место под данные заполнилось — учим сами (когда никто не смотрит видео и кадры не нарезаются).
   // Учим один раз на каждый новый набор: пока данные те же (размер и число роликов), повторно не начинаем
   setInterval(() => {
