@@ -243,7 +243,7 @@
       if (s) {
         const full = s.bytes >= s.budget;
         $('#rtxLearnStat').textContent = `Собрано ${mb(s.bytes)} из ${mb(s.budget)} · роликов ${s.done}, в очереди ${s.queued}` + (s.skipped ? `, пропущено ${s.skipped}` : '') +
-          (s.busy ? ` · сейчас: ${s.cur}` : full ? ' · место заполнено' : '');
+          (s.busy ? ` · сейчас: ${s.cur}` : s.wait ? ` · ${s.wait}` : '') + (s.last ? ` · прошлый ролик за ${Math.max(1, Math.round(s.last / 1000))} с` : '');
         $('#rtxMeter i').style.width = Math.min(100, (s.bytes / s.budget) * 100).toFixed(1) + '%';
         $('#rtxMeter').classList.toggle('full', full);
       }
