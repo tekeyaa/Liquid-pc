@@ -145,10 +145,10 @@ if (!AUTH.test(location.hostname)) {
           const tj = P.toJSON;
           if (tj) P.toJSON = mark(function toJSON() { return Object.assign({}, tj.call(this), { brands: brands() }); }, 'toJSON');
         }
-        // window.chrome: в Electron его нет, а у любого браузера на Chromium он есть (app, csi, loadTimes)
-        if (!window.chrome) {
+        // window.chrome: в Electron он почти пустой, а у любого браузера на Chromium в нём есть app, csi, loadTimes
+        {
           const t0 = performance.timeOrigin / 1000;
-          const chrome = {
+          const add = {
             app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
               getDetails: mark(function getDetails() { return null; }, 'getDetails'), getIsInstalled: mark(function getIsInstalled() { return false; }, 'getIsInstalled'), runningState: mark(function runningState() { return 'cannot_run'; }, 'runningState') },
             csi: mark(function csi() { return { startE: Math.round(t0 * 1000), onloadT: Date.now(), pageT: performance.now(), tran: 15 }; }, 'csi'),
@@ -157,7 +157,9 @@ if (!AUTH.test(location.hostname)) {
               return { requestTime: t0, startLoadTime: t0, commitLoadTime: t0 + (n.responseStart || 0) / 1000, finishDocumentLoadTime: t0 + (n.domContentLoadedEventEnd || 0) / 1000, finishLoadTime: t0 + (n.loadEventEnd || 0) / 1000, firstPaintTime: t0 + (n.responseEnd || 0) / 1000, firstPaintAfterLoadTime: 0, navigationType: 'Other', wasFetchedViaSpdy: n.nextHopProtocol === 'h2', wasNpnNegotiated: true, npnNegotiatedProtocol: n.nextHopProtocol || 'h2', wasAlternateProtocolAvailable: false, connectionInfo: n.nextHopProtocol || 'h2' };
             }, 'loadTimes'),
           };
-          Object.defineProperty(window, 'chrome', { value: chrome, writable: true, configurable: true, enumerable: true });
+          let chrome = window.chrome;
+          if (!chrome || typeof chrome !== 'object') { chrome = {}; Object.defineProperty(window, 'chrome', { value: chrome, writable: true, configurable: true, enumerable: true }); }
+          for (const k of Object.keys(add)) if (!(k in chrome)) { try { chrome[k] = add[k]; } catch {} }
         }
       } catch {}
     };
