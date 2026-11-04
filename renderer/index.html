@@ -315,12 +315,13 @@
             <label class="set-row"><div class="set-t"><b>Учить автоматически</b><small>Когда место под данные заполнится и видео не играет</small></div><input type="checkbox" id="rtxAutoTrain" class="switch" /></label>
           </div>
           <div class="set-card">
-            <label class="set-row"><div class="set-t"><b>Сбор данных с YouTube</b><small>Ролики с 4K и 8K, которые ты смотришь, сами попадают в очередь; кадры нарезаются в фоне, пока видео не играет</small></div><input type="checkbox" id="rtxLearn" class="switch" /></label>
+            <label class="set-row"><div class="set-t"><b>Сбор данных с YouTube</b><small>Ролики с 4K и 8K, которые ты смотришь, сами попадают в очередь; кадры нарезаются в фоне без звука</small></div><input type="checkbox" id="rtxLearn" class="switch" /></label>
             <div id="rtxLearnBox" hidden>
               <div class="set-row col">
                 <div class="set-t"><small id="rtxLearnStat"></small></div>
                 <div class="meter" id="rtxMeter"><i></i></div>
               </div>
+              <label class="set-row"><div class="set-t"><b>Собирать и во время просмотра</b><small>Пока ты смотришь видео, в фоне нарезается другое. Выключи, если интернет слабый и твоё видео начинает подтормаживать</small></div><input type="checkbox" id="rtxLearnWatch" class="switch" /></label>
               <div class="set-row tools">
                 <span class="muted sm">Место под данные</span>
                 <select id="rtxLearnGb" class="glass-select"><option value="0.5">0,5 ГБ</option><option value="1">1 ГБ</option><option value="2">2 ГБ</option><option value="5">5 ГБ</option><option value="10">10 ГБ</option></select>

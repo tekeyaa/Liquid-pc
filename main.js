@@ -265,7 +265,7 @@ function publicSettings() {
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
-    srDeband: s.srDeband !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1,
+    srDeband: s.srDeband !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1, rtxLearnWatch: s.rtxLearnWatch !== false,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
   };
@@ -1478,6 +1478,7 @@ function registerIpc() {
     if ('rtxAutoTrain' in patch) s.rtxAutoTrain = !!patch.rtxAutoTrain;
     if ('rtxTrainHours' in patch) s.rtxTrainHours = [3, 6, 12].includes(Number(patch.rtxTrainHours)) ? Number(patch.rtxTrainHours) : 0;
     if ('rtxLearn' in patch) { s.rtxLearn = !!patch.rtxLearn; if (!s.rtxLearn && rtxLearn) rtxLearn.close(); }
+    if ('rtxLearnWatch' in patch) s.rtxLearnWatch = !!patch.rtxLearnWatch;
     if ('rtxLearnGb' in patch) s.rtxLearnGb = Math.min(50, Math.max(0.2, Number(patch.rtxLearnGb) || 1));
     if ('srContent' in patch) s.srContent = ['auto', 'video', 'anime'].includes(patch.srContent) ? patch.srContent : 'auto';
     if ('adblock' in patch) { s.adblock = !!patch.adblock; if (adblock) adblock.enabled = s.adblock; }

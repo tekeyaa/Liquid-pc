@@ -172,15 +172,18 @@ class RtxLearn {
     if (this.pause && this.pause()) return 'пауза: идёт обучение — сбор продолжится после него';
     if (this.bytes() >= this.budget()) return 'место заполнено';
     if (!this.q.some((x) => x.st === 'new')) return 'очередь пуста — открой ролик с 4K или добавь ссылки';
-    if (this.watching()) return 'пауза: во вкладке играет звук';
+    if (this.blocked()) return 'пауза: во вкладке играет звук (так выбрано в настройках)';
     return 'начну в течение 20 секунд';
   }
-  // кто-то смотрит/слушает — не мешаем (фоновой декодер 4K отнимет видеокарту и сеть)
+  // мешает ли просмотр сбору: по умолчанию нет — нарезка идёт и пока ты смотришь видео (окно сбора без звука,
+  // кадры берёт на паузе, видеокарте это почти ничего не стоит). Можно выключить в настройках («только когда видео не играет»)
+  blocked() { return this.settings().rtxLearnWatch === false && this.watching(); }
+  // кто-то смотрит/слушает
   watching() {
     return this.webContents.getAllWebContents().some((wc) => wc !== this.wc && !wc.isDestroyed() && wc.isCurrentlyAudible && wc.isCurrentlyAudible());
   }
   tick() {
-    if (this.busy || !this.on() || (this.pause && this.pause()) || this.watching() || this.bytes() >= this.budget()) return;
+    if (this.busy || !this.on() || (this.pause && this.pause()) || this.blocked() || this.bytes() >= this.budget()) return;
     const it = this.q.find((x) => x.st === 'new'); if (!it) return;
     const t0 = Date.now();
     this.busy = this.run(it).then(() => { this.lastDur = Date.now() - t0; }).catch((e) => { it.why = String(e && e.message || e).slice(0, 160); if (/^прервано/.test(it.why) || this.stopped) return; it.tries++; if (it.tries >= 3) it.st = 'fail'; else { const j = this.q.indexOf(it); if (j >= 0) { this.q.splice(j, 1); this.q.push(it); } } /* не вышло — в конец очереди: сначала другие ролики */ })
@@ -213,7 +216,7 @@ class RtxLearn {
     const dur = info.dur;
     if (!(dur > 20)) { it.st = 'skip'; it.why = 'короткий'; return; }
     const ts = Array.from({ length: PLACES }, (_, k) => dur * (0.05 + 0.9 * (k + Math.random()) / PLACES));
-    const stop = () => { if (this.watching() || !this.on()) throw new Error('прервано: включилось видео'); };
+    const stop = () => { if (this.blocked() || !this.on()) throw new Error('прервано: включилось видео'); };
     await ex(`__lqLearn.setQ('hd1080')`);
     const flats = [];
     for (let i = 0; i < ts.length; i++) { stop(); const r = await ex(`__lqLearn.grabLo(${i}, ${ts[i].toFixed(3)})`); if (r && r.flat != null) flats.push(r.flat); }

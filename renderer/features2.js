@@ -231,6 +231,7 @@
     $('#srDeband').checked = settings.srDeband !== false;
     $('#rtxLearn').checked = !!settings.rtxLearn; $('#rtxLearnBox').hidden = !settings.rtxLearn;
     $('#rtxLearnGb').value = String(settings.rtxLearnGb || 1);
+    $('#rtxLearnWatch').checked = settings.rtxLearnWatch !== false;
     $('#rtxTrainHours').value = String(settings.rtxTrainHours || 0);
     $('#rtxAutoTrain').checked = !!settings.rtxAutoTrain;
     learnStat();
@@ -259,6 +260,7 @@
   // по видимой строке «Своя сеть», а не по кнопке «Обучить»: во время обучения кнопка скрыта, и статус замирал
   setInterval(() => { if ($('#rtxMine') && $('#rtxMine').offsetParent) learnStat(); }, 2000);
   $('#rtxLearn').onchange = async (e) => { settings = await L.settings.set({ rtxLearn: e.target.checked }); renderSr(); pushVideoPrefs(); };
+  $('#rtxLearnWatch').onchange = async (e) => { settings = await L.settings.set({ rtxLearnWatch: e.target.checked }); renderSr(); };
   $('#rtxLearnGb').onchange = async (e) => { settings = await L.settings.set({ rtxLearnGb: Number(e.target.value) }); renderSr(); };
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
     const n = await L.rtxLearn.add(txt); $('#rtxLinks').value = ''; learnStat(); if (window.toast) window.toast(n ? `В очередь: ${n}` : 'Новых ссылок YouTube не нашлось'); };
