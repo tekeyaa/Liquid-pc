@@ -255,7 +255,7 @@
     $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainHours').disabled = t.running; $('#rtxGanGo').hidden = t.running;
     $('#rtxGanBox').hidden = !t.gan;
     const day = (x) => new Date(x).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-    $('#rtxMine').textContent = t.mine ? `Твоя сеть обучена${t.mine.at ? ' ' + day(t.mine.at) : ''}${t.mine.gain ? ` · точнее на ${t.mine.gain.toFixed(2).replace('.', ',')} дБ` : ''}` : 'Своя сеть ещё не обучена';
+    $('#rtxMine').textContent = t.mine ? `Твоя сеть обучена${t.mine.at ? ' ' + day(t.mine.at) : ''}${t.mine.vsPro > 0 ? ` · точнее Pro на ${t.mine.vsPro.toFixed(2).replace('.', ',')} дБ` : ''}` : 'Своя сеть ещё не обучена';
     $('#rtxTrainStat').textContent = t.msg || (t.mine ? 'Можно доучить — станет ещё точнее.' : t.ready ? 'Пока работает встроенная. Учится на собранных роликах; лучше ставить на 6–12 часов.'
       : 'Пока работает встроенная. Нужна видеокарта NVIDIA; в первый раз браузер сам скачает Python и PyTorch (~3 ГБ).');
   }

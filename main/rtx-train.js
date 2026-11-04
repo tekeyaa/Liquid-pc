@@ -31,6 +31,16 @@ class RtxTrain {
     if (!fs.existsSync(path.join(this.out, NETS.rtx2))) return null;
     try { return JSON.parse(fs.readFileSync(path.join(this.out, 'liquid-rtx2.meta.json'), 'utf8')); } catch { return {}; }
   }
+  // «твоя сеть»: когда обучалась и насколько точнее Pro на проверочных кадрах (и после «Остановить» — лучшее уже записано)
+  writeMeta() {
+    const r = this.run0, mf = path.join(this.out, 'liquid-rtx2.meta.json'); this.run0 = null;
+    if (!fs.existsSync(path.join(this.out, NETS.rtx2))) { try { fs.unlinkSync(mf); } catch {} return; }
+    if (!r || r.gan) return;
+    let saved = false; try { saved = fs.statSync(r.out).mtimeMs >= r.t0; } catch {}
+    if (!saved || r.best == null) return;
+    let m = {}; try { m = JSON.parse(fs.readFileSync(mf, 'utf8')); } catch {}
+    try { fs.writeFileSync(mf, JSON.stringify({ at: Date.now(), vsPro: r.bar != null ? r.best - r.bar : null, times: (m.times || 0) + 1 })); } catch {}
+  }
   ready() { try { return fs.readFileSync(path.join(this.dir, 'py', '.ready'), 'utf8') === SETUP_V; } catch { return false; } }
   set(phase, msg, pct) { this.st = { ...this.st, phase, msg, pct: pct ?? this.st.pct }; }
 
@@ -144,11 +154,12 @@ class RtxTrain {
         const t0 = Date.now();
         // v0 — сеть в начале, best — лучшая проверка САМОЙ сети за этот заход, bar — планка (Pro) на тех же кадрах
         let v0 = null, best = null, bar = null;
+        const r0 = this.run0 = { t0, out, gan, v0: null, best: null, bar: null };
         await this.run(this.py, ['-u', path.join(d, 'train_gpu.py'), '--net', name, '--data', data, '--out', out, ...args], (l) => {
           let m;
-          if ((m = l.match(/сеть в начале ([\d.]+)/))) v0 = +m[1];
-          if ((m = l.match(/^планка: Pro ([\d.]+)/))) bar = +m[1];
-          if ((m = l.match(/^(?:\d+\/\d+ потери|конец:).*?проверка ([\d.]+) дБ/)) && v0 != null) best = Math.max(best ?? v0, +m[1]);
+          if ((m = l.match(/сеть в начале ([\d.]+)/))) r0.v0 = v0 = +m[1];
+          if ((m = l.match(/^планка: Pro ([\d.]+)/))) r0.bar = bar = +m[1];
+          if ((m = l.match(/^(?:\d+\/\d+ потери|конец:).*?проверка ([\d.]+) дБ/)) && v0 != null) r0.best = best = Math.max(best ?? v0, +m[1]);
           if ((m = l.match(/^(\d+)\/(\d+) потери.*?осталось ~(\d+) мин/))) {
             const pct = Math.round(m[1] / m[2] * 100);
             const gain = best != null && best > v0 ? ` · лучше на ${db(best - v0)} дБ` : '';
@@ -173,21 +184,12 @@ class RtxTrain {
       };
       this.set('done', `Готово — ${results.map(part).join(' · ')}`, 100);
       this.log('info', 'Liquid RTX обучение', this.st.msg);
-      // «твоя сеть»: когда обучалась и сколько прибавила за все обучения — для строки в настройках
-      // запись «твоя сеть» без самой сети (осталась от старой версии с неверным подсчётом) — убрать
-      if (!fs.existsSync(path.join(this.out, NETS.rtx2))) try { fs.unlinkSync(path.join(this.out, 'liquid-rtx2.meta.json')); } catch {}
-      if (this.result.better && !gan) try {
-        const mf = path.join(this.out, 'liquid-rtx2.meta.json');
-        let m = {}; try { m = JSON.parse(fs.readFileSync(mf, 'utf8')); } catch {}
-        m.at = Date.now(); m.gain = (m.gain || 0) + Math.max(0, r0.total); m.times = (m.times || 0) + 1;
-        fs.writeFileSync(mf, JSON.stringify(m));
-      } catch {}
       if (this.onDone) this.onDone(this.result);
     })().catch((e) => {
       if (this.stopping) { this.set('idle', this.st.phase === 'train' ? 'Остановлено. Лучший результат уже сохранён' : 'Остановлено', 0); return; }
       this.set('error', `Не вышло: ${e.message}`); this.log('warn', 'Liquid RTX обучение', e.message);
     })
-      .finally(() => { this.busy = null; });
+      .finally(() => { this.writeMeta(); this.busy = null; });
     return true;
   }
   stop() {
