@@ -33,8 +33,8 @@ window.__lqLearn = {
     return { dur: p.getDuration(), hi, levels: L };
   },
   async setQ(x) { q = x; const p = P(); p.setPlaybackQualityRange(x, x); p.playVideo(); await sleep(1500); p.pauseVideo(); return p.getPlaybackQuality(); },
-  async seek(t) { const p = P(), v = V(); await ads(); p.seekTo(t, true); p.pauseVideo();
-    const ok = await until(() => !v.seeking && v.readyState >= 2 && Math.abs(v.currentTime - t) < 0.2 && P().getPlaybackQuality() === q, 25000);
+  async seek(t, ms = 12000) { const p = P(), v = V(); await ads(); p.seekTo(t, true); p.pauseVideo();
+    const ok = await until(() => !v.seeking && v.readyState >= 2 && Math.abs(v.currentTime - t) < 0.2 && P().getPlaybackQuality() === q, ms);
     await sleep(250); return ok ? v : null; },
   // 1080p: место t → случайные кусочки 256² (с деталями), держим их тут до прохода 4K
   async grabLo(i, t) {
@@ -58,9 +58,13 @@ window.__lqLearn = {
   // 4K/8K: тот же кадр (пробуем и соседние: потоки могут разойтись на кадр), 8K рисуем в 4K — среднее 2×2.
   async grabHi(i) {
     const L0 = lo[i]; if (!L0 || !L0.crops.length) return { pairs: [] };
+    // Сначала сам кадр: если он хорошо совпал с 1080p (33 дБ и выше — так и бывает почти всегда), соседние кадры
+    // не грузим вовсе. Не дождались 4K-кадра за 12 с — место пропускаем, соседние не перебираем (раньше одно такое
+    // место стоило больше двух минут: 5 перемоток по 25 с). Соседние кадры — только при плохом совпадении, по 6 с
     let best = null;
     for (const dt of [0, 1 / 60, -1 / 60, 1 / 30, -1 / 30]) {
-      const v = await this.seek(L0.t + dt); if (!v) continue;
+      const v = await this.seek(L0.t + dt, dt ? 6000 : 12000);
+      if (!v) { if (dt === 0) break; continue; }
       const W = v.videoWidth, k = W / L0.w; if (k !== 2 && k !== 4) return { err: 'не вдвое/вчетверо больше: ' + W };
       cv.width = 2 * L0.w; cv.height = 2 * L0.h; cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = 'high'; cx.drawImage(v, 0, 0, cv.width, cv.height);
       const pairs = []; let ps = 0;
@@ -72,6 +76,7 @@ window.__lqLearn = {
       }
       ps /= pairs.length;
       if (!best || ps > best.ps) best = { ps, pairs, k, dt };
+      if (best.ps >= 33) break;
     }
     if (!best) return { err: 'не дождался кадра 4K' };
     lo[i] = null;
@@ -168,7 +173,7 @@ class RtxLearn {
   tick() {
     if (this.busy || !this.on() || (this.pause && this.pause()) || this.watching() || this.bytes() >= this.budget()) return;
     const it = this.q.find((x) => x.st === 'new'); if (!it) return;
-    this.busy = this.run(it).catch((e) => { it.why = String(e && e.message || e).slice(0, 160); if (/^прервано/.test(it.why) || this.stopped) return; it.tries++; if (it.tries >= 3) it.st = 'fail'; })
+    this.busy = this.run(it).catch((e) => { it.why = String(e && e.message || e).slice(0, 160); if (/^прервано/.test(it.why) || this.stopped) return; it.tries++; if (it.tries >= 3) it.st = 'fail'; else { const j = this.q.indexOf(it); if (j >= 0) { this.q.splice(j, 1); this.q.push(it); } } /* не вышло — в конец очереди: сначала другие ролики */ })
       .finally(() => { this.close(); this.busy = null; this.cur = ''; this.save(); });
   }
   close() { this.stopped = !!this.busy; try { if (this.win && !this.win.isDestroyed()) this.win.destroy(); } catch {} this.win = null; this.wc = null; }
@@ -194,11 +199,18 @@ class RtxLearn {
     flats.sort((a, b) => a - b);
     const anime = flats.length >= 3 && flats[flats.length >> 1] > 0.22;
     await ex(`__lqLearn.setQ('${info.hi}')`);
-    const HR = [], LR = [], CID = []; let k8 = 0;
+    const HR = [], LR = [], CID = []; let k8 = 0, fails4k = 0;
     for (let i = 0; i < ts.length; i++) {
       stop();
-      const r = await ex(`__lqLearn.grabHi(${i})`, 240000); // до 5 перемоток по 25 с (8K грузится дольше)
-      if (r.err) { this.log('warn', 'Liquid RTX обучение', r.err); if (/вдвое/.test(r.err)) { it.st = 'skip'; it.why = r.err; return; } continue; }
+      const r = await ex(`__lqLearn.grabHi(${i})`, 90000);
+      if (r.err) {
+        this.log('warn', 'Liquid RTX обучение', r.err);
+        if (/вдвое/.test(r.err)) { it.st = 'skip'; it.why = r.err; return; }
+        // 4K у этого ролика сейчас не грузится — не тратим на него минуты, попробуем позже (до 3 раз)
+        if (/4K/.test(r.err) && ++fails4k >= 3) throw new Error('4K не грузится — отложил ролик');
+        continue;
+      }
+      fails4k = 0;
       if (r.k === 4) k8 = 1;
       for (const p of r.pairs) { HR.push(Buffer.from(p.hr, 'base64')); LR.push(Buffer.from(p.lr, 'base64')); CID.push(i); }
     }
