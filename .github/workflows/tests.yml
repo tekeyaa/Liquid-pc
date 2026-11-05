@@ -91,3 +91,27 @@ jobs:
           node-version: 22
       - name: Обучение Liquid RTX из браузера
         run: node tests/rtx-train.js
+
+  # шейдеры Liquid RTX 2 (раздел 7 webview-preload.js) == эталон на numpy: Chromium без видеокарты (SwiftShader),
+  # случайная сеть на один и на два кадра, кадр нечётного размера; плюс память движка не растёт при смене сетей
+  rtx-gl:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: numpy и Chromium
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          pip install numpy
+          npm install --no-save --no-fund --no-audit playwright@1
+          npx playwright install --with-deps chromium
+      - name: Шейдеры RTX 2 == эталон
+        run: node tests/rtx2-gl.js

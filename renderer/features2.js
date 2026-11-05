@@ -175,7 +175,7 @@
     if (m.type === 'lpOpen') return;
     if (m.type === 'videoPrefs') { const h = hostOf(tab.url); if (vidPrefs[h]) { vidPrefs[h] = m.speed; lsSet('liquid.videoSpeed', vidPrefs); } return; }
     if (m.type === 'benchRes') { const el = document.getElementById('srBenchRes'); if (el) el.textContent = m.text; const b = document.getElementById('srBench'); if (b) b.disabled = false;
-      if (m.maxG) window.saveSrPref({ srMaxG: m.maxG }); toast(m.maxG ? 'Замер готов — лучший способ уже включён' : m.text); return; }
+      if (m.maxG) window.saveSrPref({ srMaxG: m.maxG, srPreG: m.preG || 0 }); toast(m.maxG ? 'Замер готов — лучший способ уже включён' : m.text); return; }
     if (m.type === 'videoErr') { toast('Видео: ' + m.error, true); return; }
     if (m.type === 'rtxMsg') { toast(m.text, !!m.error); return; }
     if (m.type === 'frame') {
@@ -222,7 +222,7 @@
   };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, lpSmooth: settings.lpSmooth !== false, srNet: settings.srNet || 'auto', gan: settings.srGan ?? 50, maxG: settings.srMaxG || 8, learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, lpSmooth: settings.lpSmooth !== false, srNet: settings.srNet || 'auto', gan: settings.srGan ?? 50, maxG: settings.srMaxG || 8, preG: settings.srPreG || 0, learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
