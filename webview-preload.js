@@ -618,6 +618,7 @@ function videoCmd(m) {
     if (m.remember != null) vt.remember = !!m.remember;
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
+    if (m.srNet) { vt.srNet = m.srNet; if (lp.open) lpApplyNet(); }
     if (m.gan != null && vt.gan != null && m.gan !== vt.gan) {
       delete SR_NET.rtx2;
       for (const r of vt.srMap.values()) { try { r.eng && r.eng.dropNet('rtx2'); r.dirty = true; } catch {} }
@@ -667,7 +668,7 @@ function videoCmd(m) {
 // Затем — резкость RCAS (FSR 1.0.2, MIT): не выходит за цвета соседей (нет ореолов) и слабее на шуме (нет ряби),
 // HDR-цвет и дизеринг против полос. «Чисто» — почти без добавочной резкости, «Чётко» — сильнее.
 // Движок общий: им рисуют и слой поверх плеера сайта, и Liquid Player (раздел 10).
-vt.sr = 'off'; vt.srHdr = false; vt.barOn = true; vt.remember = false; vt.lpAuto = true; vt.lpSmooth = true;
+vt.sr = 'off'; vt.srHdr = false; vt.barOn = true; vt.remember = false; vt.lpAuto = true; vt.lpSmooth = true; vt.srNet = 'auto';
 const SR_VS = `attribute vec2 p; uniform float flip; varying vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
 const SR_VS3 = `#version 300 es
 in vec2 p; uniform float flip; out vec2 uv; void main(){ uv = p * 0.5 + 0.5; if (flip > 0.5) uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }`;
@@ -1148,6 +1149,16 @@ class RtxEngine {
   // Пока шейдер нейросети собирается (секунда-другая), рисуем FSR — RAVU ради этого не грузим (лишняя память)
   pick(level, content) {
     if (!this.gl2) return null;
+    // ручной выбор в Liquid Player: только эта сеть (пока собирается — FSR), без автоматики ступенек
+    if (this.force) {
+      this.forceMissing = false;
+      if (this.force === 'fsr' || !this.fbf) return null;
+      this.loadNet(this.force);
+      const N = this.nets[this.force];
+      if (N && this.netReady(N)) return N;
+      if (N === null || (N && N.bad)) this.forceMissing = true; // такой сети нет (например, своя RTX 2 ещё не обучена)
+      return null;
+    }
     if (this.cap >= 3 && this.fbf) {
       // одна сеть для всего — Liquid RTX 2 (и видео, и аниме). Пока её нет или видеокарта не тянет —
       // встроенные запасные: для рисованного своя аниме-сеть, для съёмки Pro, на слабых видеокартах лёгкая
@@ -2381,7 +2392,7 @@ function lpUi() {
   lp.uiT = setTimeout(() => { if (!lp.v || lp.v.paused || lp.menu) return; lp.wrap.classList.remove('ui'); }, 2600);
 }
 function lpHud(t) { const h = lp.root.querySelector('.hud'); h.textContent = t; h.classList.add('on'); clearTimeout(lp.hudT); lp.hudT = setTimeout(() => h.classList.remove('on'), 700); }
-function lpToggle() { const v = lp.v; if (!v) return; if (v.paused) v.play().catch(() => {}); else v.pause(); }
+function lpToggle() { const v = lp.v; if (!v) return; if (v.paused) { if (lp.netWarn) { lp.root.querySelector('.err').classList.remove('on'); lp.netWarn = false; lp.perf.reset(); } v.play().catch(() => {}); } else v.pause(); }
 function lpVol(x) { setVolume(lp.v, Math.max(0, Math.min(1, Math.round(x * 100) / 100))); lpHud('Громкость ' + Math.round(getVolume(lp.v) * 100) + '%'); lpRender(); }
 function lpSeek(d) { const v = lp.v; v.currentTime = Math.max(0, Math.min((v.duration || 1e9) - 0.1, v.currentTime + d)); lpHud((d > 0 ? '+' : '−') + Math.abs(d) + ' с'); }
 function lpRate(d) { const v = lp.v; const r = Math.max(0.25, Math.min(4, Math.round((v.playbackRate + d) * 4) / 4)); v.playbackRate = r; vt.want.speed = r; lpHud('Скорость ' + fmtRate(r)); lpRender(); }
@@ -2404,6 +2415,7 @@ function lpAct(b) {
   const a = b.dataset.a, v = lp.v;
   if (b.dataset.sr) { vt.sr = b.dataset.sr; toHost({ type: 'srPref', level: vt.sr, hdr: vt.srHdr }); lp.dirty = true; lpRender(); return; }
   if (b.dataset.q) { lpSetQuality(b.dataset.q); lpMenu(false); return; }
+  if (b.dataset.net) { vt.srNet = b.dataset.net; toHost({ type: 'lpPref', net: vt.srNet }); lpApplyNet(); lpMenu('q'); lpHud(vt.srNet === 'auto' ? 'Нейросеть: авто' : 'Нейросеть: ' + (SR_NAMES[vt.srNet] || vt.srNet)); return; }
   if (b.dataset.rate) { v.playbackRate = +b.dataset.rate; vt.want.speed = +b.dataset.rate; lpMenu(false); lpRender(); return; }
   if (a === 'close') lpClose();
   else if (a === 'play') lpToggle();
@@ -2435,6 +2447,8 @@ async function lpMenu(kind) {
       const NAME = { hd2160: '2160p (4K)', hd1440: '1440p', hd1080: '1080p', hd720: '720p', large: '480p', medium: '360p', small: '240p', tiny: '144p', auto: 'Авто' };
       h += '<b>Качество YouTube</b>' + yq.list.map((x) => `<button data-q="${x}" class="${x === yq.cur ? 'on' : ''}">${NAME[x] || x}</button>`).join('');
     }
+    const NETS = [['auto', 'Авто — подбирает под видеокарту'], ['rtx2', 'Liquid RTX 2'], ['pro', 'Liquid RTX Pro'], ['net', 'Лёгкая'], ['anime', 'Аниме'], ['fsr', 'Без нейросети (FSR)']];
+    h += '<b>Нейросеть</b>' + NETS.map(([k, t]) => `<button data-net="${k}" class="${vt.srNet === k ? 'on' : ''}">${t}</button>`).join('');
     h += `<b>Liquid Player</b><button data-a="auto" class="${vt.lpAuto ? 'on' : ''}">Открывать вместо полного экрана сайта</button>`;
     if (lp.eng) h += `<b>Видеопамять: ~${lp.eng.vram()} МБ</b>`;
   }
@@ -2542,6 +2556,7 @@ function lpRender() {
   else if (vt.lpSmooth && lp.fgActive) fgt = `${fps}${f.dbl ? ' (в 60)' : ''} → ${Math.round(lp.hz)} к/с`;
   else if (vt.lpSmooth && fps && !lp.split) fgt = fps > 34 ? `${fps} к/с — дорисовка не нужна` : lp.hz && lp.hz < fps * 1.5 ? `${fps} к/с — экран ${Math.round(lp.hz)} Гц, дорисовка не нужна` : '';
   if (fgt) bd.textContent += ' · ' + fgt;
+  if (lp.eng.force && vt.sr !== 'off') bd.textContent += lp.eng.forceMissing ? ` · ручной режим: «${SR_NAMES[lp.eng.force] || lp.eng.force}» нет — показываю FSR` : ' · ручной режим';
   if (vt.sr !== 'off' && lp.eng.gpuMs) bd.textContent += ` · ${lp.eng.gpuMs.toFixed(1).replace('.', ',')} мс на кадр`;
   q('.spin').classList.toggle('on', v.readyState < 3 && !v.paused);
   lpRenderTime();
@@ -2604,6 +2619,15 @@ function lpLoop() {
   // пока на паузе: шейдер нейросети мог собраться — перерисуем лучшим
   if (v.paused && vt.sr !== 'off' && /^(fsr|r2|r3|net|pro)$/.test(lp.used) && lp.frames % 30 === 0) { const best = lp.eng.pick(vt.sr, contentOf(v)); if ((best ? best.name : 'fsr') !== lp.used) lp.dirty = true; }
 }
+// ручной выбор сети: движку — какую рисовать, автоматике — не трогать; предупреждение «не вывозит» снимаем
+function lpApplyNet() {
+  if (!lp.eng) return;
+  lp.eng.force = vt.srNet && vt.srNet !== 'auto' ? vt.srNet : null;
+  if (!lp.eng.force) { lp.eng.cap = lp.eng.capMax; lp.slow = false; }
+  lp.perf && lp.perf.reset(); lp.manualStop = false;
+  const e = lp.root && lp.root.querySelector('.err'); if (e && lp.netWarn) { e.classList.remove('on'); lp.netWarn = false; }
+  lp.dirty = true; lpRender();
+}
 function lpError(t) { const e = lp.root.querySelector('.err'); e.textContent = t; e.classList.add('on'); if (lp.host) lp.host.dataset.lqErr = t; }
 // клавиши — как в обычных плеерах; сайт их не получает, пока открыт наш
 function lpKey(e) {
@@ -2633,16 +2657,32 @@ function lpOpen(v, fromFs) {
   lp.v = v; lp.open = true; lp.fromFs = !!fromFs; lp.perf = new RtxPerf(); lp.used = ''; lp.slow = false; lp.last = -1; lp.dirty = true; lp.frames = 0; lp.split = 0;
   lp.fgActive = false; lp.fps = 0; lp.hz = 0; lp.fg = null; lp.hzD = []; lp.hzT = 0; lp.fgForce = false; delete lp.host.dataset.lqErr;
   try { lp.fg = new FrameGen(lp.eng); } catch (e) { console.warn('[liquid] 60 кадров недоступны:', e && e.message); }
+  lp.eng.force = vt.srNet && vt.srNet !== 'auto' ? vt.srNet : null;
   lp.root.querySelector('.err').classList.remove('on');
   // слой чёткости поверх плеера сайта не нужен, пока открыт наш (видеокарта занята одним)
   vt.srMap.get(v)?.destroy();
   document.documentElement.appendChild(lp.host);
-  lp.onEv = (e) => { if (e && (e.type === 'seeked' || e.type === 'ratechange') && lp.fg) { lp.fg.restart(); lp.dirty = true; } lpRender(); }; lp.onTime = () => { lpRenderTime(); lpCaptions(); };
+  lp.onEv = (e) => {
+    if (e && (e.type === 'seeked' || e.type === 'ratechange') && lp.fg) { lp.fg.restart(); lp.dirty = true; }
+    // сам нажал «играть» (пробел, кнопка сайта) после «сеть не вывозит» — убираем надпись, судим заново
+    if (e && e.type === 'play' && lp.netWarn) { lp.root.querySelector('.err').classList.remove('on'); lp.netWarn = false; lp.perf.reset(); }
+    lpRender();
+  }; lp.onTime = () => { lpRenderTime(); lpCaptions(); };
   for (const ev of LP_EV) v.addEventListener(ev, lp.onEv);
   v.addEventListener('timeupdate', lp.onTime);
   window.addEventListener('keydown', lpKey, true);
   lp.perfT = setInterval(() => {
     const r = lp.perf.tick(v, lp.used, lp.eng);
+    if (lp.eng.force) {
+      // ручной режим: сеть не меняем сами — ставим видео на паузу и говорим, что делать
+      if (r === 'down') {
+        v.pause(); lp.netWarn = true;
+        lpError(`У вас ручной режим: «${SR_NAMES[lp.used] || lp.used}» не успевает на этой видеокарте${lp.eng.gpuMs ? ` (${lp.eng.gpuMs.toFixed(1).replace('.', ',')} мс на кадр)` : ''}, видео поставлено на паузу. Смените нейросеть или включите «Авто» — меню ⚙ внизу справа.`);
+        console.warn(`[liquid] Liquid Player: ручной режим, ${lp.used} не успевает — пауза`);
+      }
+      if (lp.eng.gpuMs) lpRender();
+      return;
+    }
     if (r === 'down' && lp.eng.slower()) { lp.slow = true; console.warn(`[liquid] Liquid Player: видеокарта не успевает (${lp.used}, ${lp.eng.gpuMs.toFixed(1)} мс на кадр) — ступенька вниз`); lpRender(); }
     else if (r === 'up' && lp.eng.faster()) { lp.slow = lp.eng.cap < lp.eng.capMax; lp.dirty = true; lpRender(); }
     else if (lp.eng.gpuMs) lpRender(); // обновить «мс на кадр» в строке

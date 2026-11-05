@@ -285,7 +285,7 @@ function publicSettings() {
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
-    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srGan: Number.isFinite(s.srGan) ? s.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
+    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'net', 'anime', 'fsr'].includes(s.srNet) ? s.srNet : 'auto', srGan: Number.isFinite(s.srGan) ? s.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
     srDeband: s.srDeband !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1, rtxLearnWatch: s.rtxLearnWatch !== false,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
@@ -1494,6 +1494,7 @@ function registerIpc() {
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
     if ('lpSmooth' in patch) s.lpSmooth = !!patch.lpSmooth;
+    if ('srNet' in patch) s.srNet = ['auto', 'rtx2', 'pro', 'net', 'anime', 'fsr'].includes(patch.srNet) ? patch.srNet : 'auto';
     if ('srGan' in patch) { s.srGan = Math.max(0, Math.min(100, Math.round(Number(patch.srGan) || 0))); }
     if ('srDeband' in patch) s.srDeband = !!patch.srDeband;
     if ('uaMode' in patch) { s.uaMode = Identity.MODES.includes(patch.uaMode) ? patch.uaMode : 'chrome'; if (s.uaMode !== ID.mode) applyIdentity(s.uaMode); }
@@ -1581,7 +1582,7 @@ function registerIpc() {
     } catch { return null; }
   });
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
-  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, lpSmooth: st.lpSmooth !== false, gan: Number.isFinite(st.srGan) ? st.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false }; });
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, lpSmooth: st.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'net', 'anime', 'fsr'].includes(st.srNet) ? st.srNet : 'auto', gan: Number.isFinite(st.srGan) ? st.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false }; });
   // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));

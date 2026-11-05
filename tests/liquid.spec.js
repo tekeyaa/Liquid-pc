@@ -262,6 +262,13 @@ test('Liquid Player: свой плеер на весь экран рисует �
     expect(await inTab(`document.querySelector('lq-player').dataset.lqErr || ''`)).toBe('');
     expect(await inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`)).not.toBe('');
   }
+  // ручной выбор сети: «без нейросети» — рисует FSR, «авто» — снова нейросеть
+  if (caps.fbf) {
+    await win.evaluate(() => window.saveSrPref({ srNet: 'fsr' }));
+    await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 20_000 }).toBe('fsr');
+    await win.evaluate(() => window.saveSrPref({ srNet: 'auto' }));
+    await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 40_000 }).toMatch(/^(rtx2|pro|net|anime)$/);
+  }
   // видео сайта продолжает идти под нашим плеером
   const t0 = await inTab(`document.getElementById('v').currentTime`);
   await win.waitForTimeout(1200);
