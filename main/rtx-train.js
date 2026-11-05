@@ -14,17 +14,36 @@ const PIP_URL = 'https://files.pythonhosted.org/packages/py3/p/pip/pip-24.3.1-py
 const SETUP_V = '1'; // поменять — поставится заново
 const GAN = 'liquid-rtx2-gan.json'; // дорисовка: RTX 2, дообученная с сетью-судьёй (рядом -base.json — с чего начинала)
 const NETS = { rtx2: 'liquid-rtx2.json', pro: 'liquid-rtx-pro.json', lite: 'liquid-rtx.json', anime: 'liquid-rtx-anime.json' };
+const TWO = 'liquid-rtx2-2f.json'; // Liquid RTX 2 на два кадра (второй вход — прошлый кадр), учится поверх сети на один кадр
+
+// сколько пар с прошлым кадром собрано (<ролик>_lp.npy, с 1.35): число — из заголовка .npy, сам файл не читаем
+function lpPairs(dir) {
+  let n = 0, files = 0;
+  const walk = (d) => { let es = []; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of es) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) { walk(f); continue; }
+      if (!e.name.endsWith('_lp.npy') || !fs.existsSync(f.replace(/_lp\.npy$/, '_lr.npy'))) continue;
+      try { const fd = fs.openSync(f, 'r'), b = Buffer.alloc(256); fs.readSync(fd, b, 0, 256, 0); fs.closeSync(fd);
+        const m = b.toString('latin1').match(/'shape': \((\d+),/); if (m) { n += +m[1]; files++; } } catch {}
+    } };
+  walk(dir);
+  return { n, files };
+}
 
 class RtxTrain {
-  constructor({ dir, scripts, weights, data, out, log, torchIndex, onDone }) {
+  constructor({ dir, scripts, weights, data, out, log, torchIndex, onDone, minLp }) {
     Object.assign(this, { dir, scripts, weights, data, out, onDone });
     this.log = log || (() => {});
     this.torchIndex = torchIndex || 'https://download.pytorch.org/whl/cu126';
     this.py = path.join(dir, 'py', 'python.exe');
     this.st = { phase: 'idle', msg: '', pct: 0 };
     this.proc = null; this.stopping = false; this.minGain = 0.1; this.minLeft = 5 * 60e3;
+    this.minLp = minLp || 300; // столько пар с прошлым кадром нужно, чтобы учить сеть на два кадра
   }
-  state() { return { ...this.st, running: !!this.busy, ready: this.ready(), mine: this.mine(), gan: this.gan() }; }
+  state() { return { ...this.st, running: !!this.busy, ready: this.ready(), mine: this.mine(), gan: this.gan(), two: this.two() }; }
+  // своя сеть на два кадра: когда записана (null — нет)
+  two() { try { return { at: fs.statSync(path.join(this.out, TWO)).mtimeMs }; } catch { return null; } }
   // своя обученная сеть (Liquid RTX 2): есть ли, когда обучалась, сколько прибавила
   gan() { return fs.existsSync(path.join(this.out, GAN)) && fs.existsSync(path.join(this.out, GAN.replace('.json', '-base.json'))); }
   mine() {
@@ -126,6 +145,14 @@ class RtxTrain {
       this.set('error', 'Сначала обычное обучение: дорисовка учится поверх твоей Liquid RTX 2'); return false;
     }
     const plan = gan || net === 'auto' || !NETS[net] ? [['rtx2', this.data, gan ? 'дорисовка' : 'видео', 1]] : [[net, this.data, 'видео', 1]];
+    // «Обучить»: следом — сеть на два кадра (треть срока), если собрано достаточно пар с прошлым кадром. Мало — честно
+    // пишем об этом в итоговой строке, а не молча пропускаем
+    const lp = lpPairs(this.data);
+    let twoNote = '';
+    if (net === 'auto' && !gan) {
+      if (lp.n >= this.minLp) { plan[0][3] = 2; plan.push(['rtx2', this.data, 'два кадра', 1, true]); }
+      else twoNote = `сеть на два кадра не учил: мало данных с прошлым кадром (собрано пар: ${lp.n}, роликов: ${lp.files}, нужно пар: ${this.minLp}). Сбор сохраняет прошлый кадр с версии 1.35 — посмотри ещё ролики с 4K`;
+    }
     this.stopping = false; this.result = null;
     this.set('setup', 'Проверяю видеокарту…', 0);
     const fmt = (min) => (min >= 90 ? `${Math.floor(min / 60)} ч ${Math.round(min % 60)} мин` : `${Math.round(min)} мин`);
@@ -138,24 +165,34 @@ class RtxTrain {
       fs.mkdirSync(this.out, { recursive: true });
       const results = [];
       for (let pi = 0; pi < plan.length; pi++) {
-        const [name, data, label, share] = plan[pi];
-        const base = path.join(this.out, NETS[name]), out = gan ? path.join(this.out, GAN) : base;
+        const [name, data, label, share, two] = plan[pi];
+        const base = path.join(this.out, NETS[name]), out = gan ? path.join(this.out, GAN) : two ? path.join(this.out, TWO) : base;
         const restShare = plan.slice(pi).reduce((a, p) => a + p[3], 0);
         const deadline = hours ? Date.now() + Math.max(0, deadlineAll - Date.now()) * (share / restShare) : 0;
-        const tag = plan.length > 1 ? `Сеть для ${label}` : 'Обучение';
+        const tag = two ? 'Сеть на два кадра' : plan.length > 1 ? 'Сеть на один кадр' : 'Обучение';
         // Одним заходом на весь срок: шаг обучения плавно спадает к концу срока. Раньше срок резался на «круги» по
         // ~12 минут, и каждый начинался с большого шага заново — сеть каждый раз частично «разучивалась»
-        const args = [...extra];
+        const args = two ? extra.filter((x) => x !== '--scratch') : [...extra];
         if (hours) args.push('--hours', String(Math.max(deadline - Date.now(), 60e3) / 3600e3));
+        else if (two && !args.includes('--steps')) args.push('--steps', '25000'); // без срока — короткое дообучение (~10 мин)
         // продолжение: лучшие веса (json), а если RTX 2 ещё не обогнала Pro и json нет — последние веса (.pt)
-        if (gan) { args.push('--gan', '0.01'); if (fs.existsSync(base)) args.push('--init', base); else args.push('--warm', base + '.pt'); }
+        if (two) {
+          // поверх своей сети на два кадра, а если её ещё нет — поверх сети на один кадр (вход прошлого кадра = 0)
+          args.push('--frames', '2', '--min-pairs', String(this.minLp));
+          if (fs.existsSync(out)) args.push('--init', out); else if (fs.existsSync(out + '.pt')) args.push('--warm', out + '.pt');
+          else if (fs.existsSync(base)) args.push('--init', base);
+          else { results.push({ name, label, two, skip: 'сеть на два кадра учится поверх твоей Liquid RTX 2 — она ещё не обогнала Pro, пока не учу' }); continue; }
+        } else if (gan) { args.push('--gan', '0.01'); if (fs.existsSync(base)) args.push('--init', base); else args.push('--warm', base + '.pt'); }
         else if (fs.existsSync(out)) args.push('--init', out); else if (fs.existsSync(out + '.pt') && !args.includes('--scratch')) args.push('--warm', out + '.pt');
         this.set('train', `${tag}: запуск…`, 0);
         const t0 = Date.now();
         // v0 — сеть в начале, best — лучшая проверка САМОЙ сети за этот заход, bar — планка (Pro) на тех же кадрах
         let v0 = null, best = null, bar = null;
-        const r0 = this.run0 = { t0, out, gan, v0: null, best: null, bar: null };
-        await this.run(this.py, ['-u', path.join(d, 'train_gpu.py'), '--net', name, '--data', data, '--out', out, ...args], (l) => {
+        const r0 = { t0, out, gan, v0: null, best: null, bar: null };
+        if (!two) this.run0 = r0; // «твоя сеть обучена …» — про сеть на один кадр
+        let few = '';
+        const go = this.run(this.py, ['-u', path.join(d, 'train_gpu.py'), '--net', name, '--data', data, '--out', out, ...args], (l) => {
+          if (/^мало данных/.test(l)) few = l;
           let m;
           if ((m = l.match(/сеть в начале ([\d.]+)/))) r0.v0 = v0 = +m[1];
           if ((m = l.match(/^планка: Pro ([\d.]+)/))) r0.bar = bar = +m[1];
@@ -169,20 +206,25 @@ class RtxTrain {
           }
           if (/^В .* пока нет данных/.test(l)) this.set('train', l);
         });
+        // сеть на два кадра — дополнительная: не вышла (мало данных, ошибка) — обучение на один кадр всё равно засчитано
+        if (two) { try { await go; } catch (e) { if (this.stopping) throw e; results.push({ name, label, two, skip: few || `сеть на два кадра не обучилась: ${e.message}` }); continue; } }
+        else await go;
         // браузеру отдано, только если файл весов записан в этот заход (train_gpu пишет его, лишь когда стало лучше)
         let saved = false; try { saved = fs.statSync(out).mtimeMs >= t0; } catch {}
-        results.push({ name, label, first: v0, last: best, round: 1, why: '', bar, saved, total: best != null && v0 != null ? best - v0 : 0 });
+        results.push({ name, label, two, first: v0, last: best, round: 1, why: '', bar, saved, total: best != null && v0 != null ? best - v0 : 0 });
       }
       const r0 = results[0];
       this.result = { v0: r0.first, best: r0.last, better: results.some((r) => r.saved), rounds: 1, nets: results };
       const part = (r) => {
+        if (r.skip) return r.skip;
+        if (r.two) return r.saved ? `сеть на два кадра стала точнее на ${db(r.total)} дБ — уже работает в новых вкладках` : 'сеть на два кадра не прибавила — оставил прежнюю';
         if (gan) return r.saved ? 'дорисовка обучена. Силу настрой ползунком «Дорисовка деталей» — в новых вкладках и плеере' : 'дорисовка не сохранилась — запусти ещё раз';
         const up = r.total > 0.005 ? `стала точнее на ${db(r.total)} дБ` : 'на этих данных не прибавила';
         if (r.saved) return `${up}. Уже работает в новых вкладках`;
         if (r.bar != null && r.last != null && r.last < r.bar) return `${up}, но ещё не догнала твою Pro (осталось ${db(r.bar - r.last)} дБ) — пока работает Pro, прогресс сохранён, следующее обучение продолжит`;
         return `${up} — оставил прежнюю. Соберите больше разных роликов`;
       };
-      this.set('done', `Готово — ${results.map(part).join(' · ')}`, 100);
+      this.set('done', `Готово — ${[...results.map(part), ...(twoNote ? [twoNote] : [])].join(' · ')}`, 100);
       this.log('info', 'Liquid RTX обучение', this.st.msg);
       if (this.onDone) this.onDone(this.result);
     })().catch((e) => {
@@ -198,4 +240,4 @@ class RtxTrain {
   }
 }
 
-module.exports = { RtxTrain, NETS };
+module.exports = { RtxTrain, NETS, TWO, lpPairs };

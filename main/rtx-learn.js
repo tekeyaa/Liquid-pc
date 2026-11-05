@@ -2,7 +2,8 @@
 // Ролики попадают в очередь сами (открыл ролик, у которого есть 1080p и 4K) или списком ссылок из настроек.
 // Скрытое окно без звука открывает ролик, ставит на паузу кадр в 1080p, затем тот же кадр в 4K (8K — уменьшенный до 4K,
 // почти без следов сжатия) и сохраняет кусочки яркости. Работает, только когда ни одна вкладка не играет звук.
-// Данные: %APPDATA%\Liquid\rtx-learn\data\<id>_hr.npy, _lr.npy, _cid.npy (их читает tools/rtx/gpu/train_gpu.py).
+// Данные: %APPDATA%\Liquid\rtx-learn\data\<id>_hr.npy, _lr.npy, _cid.npy (их читает tools/rtx/gpu/train_gpu.py),
+// с 1.35 ещё _lp.npy — те же кусочки ПРОШЛОГО кадра 1080p (для Liquid RTX 2 на два кадра; старые данные без него тоже годятся).
 const fs = require('fs');
 const path = require('path');
 
@@ -33,9 +34,14 @@ window.__lqLearn = {
     return { dur: p.getDuration(), hi, levels: L };
   },
   async setQ(x) { q = x; const p = P(); p.setPlaybackQualityRange(x, x); p.playVideo(); await sleep(1500); p.pauseVideo(); return p.getPlaybackQuality(); },
-  async seek(t, ms = 12000) { const p = P(), v = V(); await ads(); p.seekTo(t, true); p.pauseVideo();
+  // mt — время показанного кадра (requestVideoFrameCallback): по нему находим прошлый кадр точно, не зная частоты
+  async seek(t, ms = 12000) { const p = P(), v = V(); await ads(); this.mt = null;
+    try { v.requestVideoFrameCallback((_, md) => { this.mt = md.mediaTime; }); } catch {}
+    p.seekTo(t, true); p.pauseVideo();
     const ok = await until(() => !v.seeking && v.readyState >= 2 && Math.abs(v.currentTime - t) < 0.2 && P().getPlaybackQuality() === q, ms);
     await sleep(250); return ok ? v : null; },
+  // частота ролика — для запасного пути, если время кадра не пришло (у YouTube в «статистике для сисадминов»: 1920x1080@30)
+  fps() { try { const s = P().getStatsForNerds && P().getStatsForNerds(); const m = s && String(s.resolution || s.optimal_format || '').match(/@(\d+)/); if (m && +m[1] >= 10) return +m[1]; } catch {} return 30; },
   // 1080p: место t → случайные кусочки 256² (с деталями), держим их тут до прохода 4K
   async grabLo(i, t) {
     const v = await this.seek(t); if (!v) return { err: 'не дождался кадра 1080p' };
@@ -47,13 +53,22 @@ window.__lqLearn = {
       const f = luma(cx.getImageData(x, y, ${c}, ${c})); if (std(f) < 0.04) continue;
       out.push({ x, y, f }); k++;
     }
+    const mt = this.mt;
     // рисованное ли (как contentOf в webview-preload.js): доля «плоских» точек на уменьшенном кадре 160×90
     const sm = document.createElement('canvas'); sm.width = 160; sm.height = 90; const sx = sm.getContext('2d', { willReadFrequently: true });
     sx.drawImage(v, 0, 0, 160, 90); const d = sx.getImageData(0, 0, 160, 90).data; let flat = 0, n = 0;
     const Y = (x, y) => { const j = (y * 160 + x) * 4; return d[j] * 0.2126 + d[j + 1] * 0.7152 + d[j + 2] * 0.0722; };
     for (let y = 1; y < 89; y++) for (let x = 1; x < 159; x++) { const c = Y(x, y); if (c <= 24) continue; n++;
       if (Math.max(Math.abs(c - Y(x - 1, y)), Math.abs(c - Y(x + 1, y)), Math.abs(c - Y(x, y - 1)), Math.abs(c - Y(x, y + 1))) < 1.5) flat++; }
-    lo[i] = { t, w, h, crops: out }; return { n: out.length, w, h, flat: n ? flat / n : 0 };
+    // Прошлый кадр (на один кадр раньше) — те же кусочки, для сети на два кадра. Свой предел времени (6 с): не дождались —
+    // место остаётся без прошлого кадра, сбор идёт дальше
+    let prev = 0;
+    if (out.length) {
+      const tp = mt != null && Math.abs(mt - t) < 0.5 ? mt - 0.002 : t - 1 / this.fps();
+      const vp = tp > 0 ? await this.seek(tp, 6000) : null;
+      if (vp && vp.videoWidth === w && vp.videoHeight === h) { cx.drawImage(vp, 0, 0, w, h); for (const o of out) o.p = luma(cx.getImageData(o.x, o.y, ${c}, ${c})); prev = out.length; }
+    }
+    lo[i] = { t, w, h, crops: out }; return { n: out.length, w, h, flat: n ? flat / n : 0, prev };
   },
   // 4K/8K: тот же кадр (пробуем и соседние: потоки могут разойтись на кадр), 8K рисуем в 4K — среднее 2×2.
   async grabHi(i) {
@@ -72,7 +87,7 @@ window.__lqLearn = {
         const H = luma(cx.getImageData(2 * cr.x, 2 * cr.y, ${C}, ${C}));
         let e = 0; for (let y = 0; y < ${c}; y++) for (let x = 0; x < ${c}; x++) {
           const j = 2 * y * ${C} + 2 * x; const m = (H[j] + H[j + 1] + H[j + ${C}] + H[j + ${C} + 1]) / 4 - cr.f[y * ${c} + x]; e += m * m; }
-        const p = 10 * Math.log10(1 / Math.max(e / (${c} * ${c}), 1e-10)); ps += p; pairs.push({ p, hr: H, lr: cr.f });
+        const p = 10 * Math.log10(1 / Math.max(e / (${c} * ${c}), 1e-10)); ps += p; pairs.push({ p, hr: H, lr: cr.f, lp: cr.p });
       }
       ps /= pairs.length;
       if (!best || ps > best.ps) best = { ps, pairs, k, dt };
@@ -80,7 +95,7 @@ window.__lqLearn = {
     }
     if (!best) return { err: 'не дождался кадра 4K' };
     lo[i] = null;
-    return { ps: best.ps, k: best.k, pairs: best.pairs.filter((x) => x.p > 27).map((x) => ({ hr: b64(x.hr), lr: b64(x.lr) })) };
+    return { ps: best.ps, k: best.k, pairs: best.pairs.filter((x) => x.p > 27).map((x) => ({ hr: b64(x.hr), lr: b64(x.lr), lp: x.lp ? b64(x.lp) : null })) };
   },
 };
 return true; })()`;
@@ -251,7 +266,7 @@ class RtxLearn {
     flats.sort((a, b) => a - b);
     const anime = flats.length >= 3 && flats[flats.length >> 1] > 0.22;
     await ex(`__lqLearn.setQ('${info.hi}')`);
-    const HR = [], LR = [], CID = []; let k8 = 0, fails4k = 0;
+    const HR = [], LR = [], LP = [], CID = []; let k8 = 0, fails4k = 0, nLp = 0;
     for (let i = 0; i < ts.length; i++) {
       stop();
       const r = await ex(`__lqLearn.grabHi(${i})`, 90000);
@@ -264,7 +279,8 @@ class RtxLearn {
       }
       fails4k = 0;
       if (r.k === 4) k8 = 1;
-      for (const p of r.pairs) { HR.push(Buffer.from(p.hr, 'base64')); LR.push(Buffer.from(p.lr, 'base64')); CID.push(i); }
+      // прошлого кадра нет (не дождались) — на его месте сам кадр: так браузер и считает после перемотки
+      for (const p of r.pairs) { HR.push(Buffer.from(p.hr, 'base64')); LR.push(Buffer.from(p.lr, 'base64')); LP.push(Buffer.from(p.lp || p.lr, 'base64')); if (p.lp) nLp++; CID.push(i); }
     }
     if (!HR.length) { it.st = 'skip'; it.why = 'кадры не совпали'; return; }
     const dir = this.data; // одна сеть для всего — и аниме, и съёмка в одну папку
@@ -272,10 +288,12 @@ class RtxLearn {
     const base = path.join(dir, it.id);
     const cid = Buffer.alloc(4 * CID.length); CID.forEach((v, j) => cid.writeInt32LE(v, 4 * j));
     fs.writeFileSync(base + '_lr.npy', npy('<u2', [LR.length, c, c], Buffer.concat(LR)));
+    // прошлый кадр — только если он есть хотя бы у половины пар (иначе сеть на два кадра почти ничему не научится)
+    if (nLp * 2 >= LP.length) fs.writeFileSync(base + '_lp.npy', npy('<u2', [LP.length, c, c], Buffer.concat(LP)));
     fs.writeFileSync(base + '_cid.npy', npy('<i4', [CID.length], cid));
     fs.writeFileSync(base + '_hr.npy', npy('<u2', [HR.length, C, C], Buffer.concat(HR)));
-    Object.assign(it, { st: 'done', pairs: HR.length, src: k8 ? '8K' : '4K', kind: anime ? 'anime' : 'video', why: '' });
-    this.log('info', 'Liquid RTX обучение', `${it.title || it.id}: ${HR.length} пар (${it.src}${anime ? ', аниме' : ''})`);
+    Object.assign(it, { st: 'done', pairs: HR.length, prev: nLp * 2 >= LP.length ? nLp : 0, src: k8 ? '8K' : '4K', kind: anime ? 'anime' : 'video', why: '' });
+    this.log('info', 'Liquid RTX обучение', `${it.title || it.id}: ${HR.length} пар (${it.src}${anime ? ', аниме' : ''}, с прошлым кадром: ${nLp})`);
   }
 }
 
