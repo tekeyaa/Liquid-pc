@@ -121,6 +121,7 @@ class RtxLearn {
   constructor({ dir, partition, BrowserWindow, webContents, log, settings, urlFor }) {
     Object.assign(this, { dir, partition, BrowserWindow, webContents, log: log || (() => {}), settings });
     this.urlFor = urlFor || ((id) => `https://www.youtube.com/watch?v=${id}`);
+    this.loadFails = 0; this.hiddenMode = false; // окно «в память» не грузит страницу — запасной способ: скрытое окно
     this.data = path.join(dir, 'data'); this.qfile = path.join(dir, 'queue.json');
     try { this.q = JSON.parse(fs.readFileSync(this.qfile, 'utf8')); } catch { this.q = []; }
     if (!Array.isArray(this.q)) this.q = [];
@@ -186,7 +187,16 @@ class RtxLearn {
     if (this.busy || !this.on() || (this.pause && this.pause()) || this.blocked() || this.bytes() >= this.budget()) return;
     const it = this.q.find((x) => x.st === 'new'); if (!it) return;
     const t0 = Date.now();
-    this.busy = this.run(it).then(() => { this.lastDur = Date.now() - t0; }).catch((e) => { it.why = String(e && e.message || e).slice(0, 160); if (/^прервано/.test(it.why) || this.stopped) return; it.tries++; if (it.tries >= 3) it.st = 'fail'; else { const j = this.q.indexOf(it); if (j >= 0) { this.q.splice(j, 1); this.q.push(it); } } /* не вышло — в конец очереди: сначала другие ролики */ })
+    this.log('info', 'Liquid RTX обучение', `беру ролик: ${it.title || it.id}${this.hiddenMode ? ' (запасной способ: скрытое окно)' : ''}`);
+    // сторож: один ролик — не дольше 15 минут. Раньше зависшая загрузка страницы держала сбор «занятым» часами,
+    // и новые ролики не брались вовсе (а в журнале — ни слова)
+    let dog;
+    const guard = new Promise((_, no) => { dog = setTimeout(() => no(new Error('завис: ролик дольше 15 минут')), 15 * 60e3); });
+    this.busy = Promise.race([this.run(it), guard]).finally(() => clearTimeout(dog)).then(() => { this.lastDur = Date.now() - t0; }).catch((e) => { it.why = String(e && e.message || e).slice(0, 160); if (/^прервано/.test(it.why) || this.stopped) return;
+      this.log('warn', 'Liquid RTX обучение', `не вышло (${it.title || it.id}): ${it.why}`);
+      // окно в память у этого компьютера не грузит страницу — переходим на скрытое окно (как до 1.27.5) и говорим об этом
+      if (/^не загрузилось/.test(it.why) && ++this.loadFails >= 2 && !this.hiddenMode) { this.hiddenMode = true; this.log('warn', 'Liquid RTX обучение', 'страница сбора дважды не загрузилась в окне «в память» — дальше собираю через скрытое окно'); }
+      it.tries++; if (it.tries >= 3) it.st = 'fail'; else { const j = this.q.indexOf(it); if (j >= 0) { this.q.splice(j, 1); this.q.push(it); } } /* не вышло — в конец очереди: сначала другие ролики */ })
       .finally(() => { this.close(); this.busy = null; this.cur = ''; this.save(); });
   }
   close() { this.stopped = !!this.busy; try { if (this.win && !this.win.isDestroyed()) this.win.destroy(); } catch {} this.win = null; this.wc = null; }
@@ -196,20 +206,25 @@ class RtxLearn {
     // Окно рисуется в память (offscreen), а не просто скрыто: у скрытого окна страница «свёрнута», и Chromium для
     // экономии перестаёт декодировать видео (кадры приходят с опозданием или не приходят) — нарезка еле шла.
     // Отрисовка в память держит страницу «видимой»; частота кадров — минимальная, на экран всё равно не выводим
-    const w = this.win = new this.BrowserWindow({ show: false, width: 1920, height: 1080, webPreferences: { offscreen: true, partition: this.partition, contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false } });
-    try { w.webContents.setFrameRate(4); } catch {}
+    const off = !this.hiddenMode;
+    const w = this.win = new this.BrowserWindow({ show: false, width: 1920, height: 1080, webPreferences: { offscreen: off, partition: this.partition, contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false } });
+    if (off) try { w.webContents.setFrameRate(4); } catch {}
+    const tm = (pr, ms, what) => Promise.race([pr, new Promise((_, no) => setTimeout(() => no(new Error(what)), ms))]);
     // YouTube в «свёрнутой» вкладке экономит трафик и не отдаёт высокое качество (в журнале — «не дождался кадра 4K»
     // у многих роликов). Ещё до скриптов страницы говорим ей «вкладка открыта и в фокусе»
-    try {
+    if (off) try {
       const dbg = w.webContents.debugger; dbg.attach('1.3');
-      await dbg.sendCommand('Page.enable');
-      await dbg.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(Document.prototype,'hidden',{get:()=>false,configurable:true});Object.defineProperty(Document.prototype,'visibilityState',{get:()=>'visible',configurable:true});Document.prototype.hasFocus=()=>true;" });
-      await dbg.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+      // окно JS-диалога (alert/confirm) при подключённом отладчике ждёт ответа вечно — отвечаем сами
+      dbg.on('message', (_e, m, p) => { if (m === 'Page.javascriptDialogOpening') dbg.sendCommand('Page.handleJavaScriptDialog', { accept: true }).catch(() => {}); });
+      await tm(dbg.sendCommand('Page.enable'), 10000, 'отладчик не ответил');
+      await tm(dbg.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(Document.prototype,'hidden',{get:()=>false,configurable:true});Object.defineProperty(Document.prototype,'visibilityState',{get:()=>'visible',configurable:true});Document.prototype.hasFocus=()=>true;" }), 10000, 'отладчик не ответил');
+      await tm(dbg.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true }), 10000, 'отладчик не ответил').catch(() => {});
     } catch {}
     const wc = this.wc = w.webContents; wc.__lqLearn = true; wc.setAudioMuted(true);
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
     const ex = (js, ms = 90000) => Promise.race([wc.executeJavaScript(js, true), new Promise((_, no) => setTimeout(() => no(new Error('страница не ответила')), ms))]);
-    await w.loadURL(this.urlFor(it.id));
+    await tm(w.loadURL(this.urlFor(it.id)), 60000, 'не загрузилось: страница не открылась за минуту').catch((e) => { throw /^не загрузилось/.test(e.message) ? e : new Error('не загрузилось: ' + e.message); });
+    this.loadFails = 0;
     await ex(PAGE);
     const info = await ex('__lqLearn.info()');
     if (info.err) { it.st = 'skip'; it.why = info.err; return; }
