@@ -1487,10 +1487,14 @@ class FrameGen {
     // забирать каждый); кратность уточняем по числу декодированных кадров
     let f;
     if (this.raw.length >= 10) {
-      const d0 = Math.min(...this.raw.filter((d) => d > 0.004));
+      // не самый короткий промежуток, а нижняя четверть: метки времени кадров иногда «дрожат» на несколько мс
+      const ds = this.raw.filter((d) => d > 0.004).sort((a, b) => a - b), d0 = ds[ds.length >> 2] || ds[0];
       const k = this.qf ? Math.max(1, Math.round(d0 * this.qf)) : 1;
       f = k / d0;
     } else f = this.qf;
+    // к ближайшей стандартной частоте, если рядом (24/25/30/48/50/60/120)
+    const std = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 120], near = std.reduce((a, b) => (Math.abs(b - f) < Math.abs(a - f) ? b : a));
+    if (Math.abs(near - f) / near < 0.08) f = near;
     const n = this.dups.length, r = n ? this.dups.reduce((a, b) => a + b, 0) / n : 0;
     this.dbl = false;
     if (n >= 30 && r > 0.35 && r < 0.65) { let pairs = 0; for (let i = 1; i < n; i++) if (this.dups[i] && this.dups[i - 1]) pairs++; if (pairs < n * 0.1) { f /= 2; this.dbl = true; } }
