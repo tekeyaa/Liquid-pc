@@ -1006,8 +1006,8 @@ async function startDpi() {
     return false;
   }
 }
-// Подбор способа обхода под провайдера: каждый способ поднимается отдельным xray, через него грузится главная
-// Twitch (полностью — замедление обычно начинается после первых ~16 КБ). Берётся самый быстрый из сработавших;
+// Подбор способа обхода под провайдера: каждый способ поднимается отдельным xray, через него грузятся главные
+// Twitch и YouTube (полностью — замедление обычно начинается после первых ~16 КБ). Берётся самый быстрый из сработавших;
 // не сработал ни один — остаётся прежний. Раз в сутки и после включения обхода; во время замера обход работает как был
 let dpiCur = '', dpiProbing = false;
 async function probeDpi(force) {
@@ -1024,23 +1024,28 @@ async function probeDpi(force) {
         const port = await px.start(null, (p) => DPI_CONFIG(p, strat));
         await ses.setProxy({ proxyRules: `socks5://127.0.0.1:${port}` });
         await ses.closeAllConnections().catch(() => {});
-        let best = Infinity;
-        for (let k = 0; k < 2; k++) { // два раза: первый — с DNS и рукопожатием «с нуля»
-          const ctrl = new AbortController(), t0 = Date.now(), tm = setTimeout(() => ctrl.abort(), 10000);
-          try {
-            const r = await ses.fetch('https://www.twitch.tv/?lq=' + Date.now(), { signal: ctrl.signal, cache: 'no-store', headers: { 'user-agent': UA } });
-            const len = (await r.arrayBuffer()).byteLength;
-            if (r.ok && len > 20000) best = Math.min(best, Date.now() - t0);
-          } catch {} finally { clearTimeout(tm); }
+        // и Twitch, и YouTube (Discord идёт тем же способом): время — сумма лучших попыток по обоим
+        let sum = 0;
+        for (const url of ['https://www.twitch.tv/', 'https://www.youtube.com/']) {
+          let best = Infinity;
+          for (let k = 0; k < 2; k++) { // два раза: первый — с DNS и рукопожатием «с нуля»
+            const ctrl = new AbortController(), t0 = Date.now(), tm = setTimeout(() => ctrl.abort(), 10000);
+            try {
+              const r = await ses.fetch(url + '?lq=' + Date.now(), { signal: ctrl.signal, cache: 'no-store', headers: { 'user-agent': UA } });
+              const len = (await r.arrayBuffer()).byteLength;
+              if (r.ok && len > 20000) best = Math.min(best, Date.now() - t0);
+            } catch {} finally { clearTimeout(tm); }
+          }
+          sum += best;
         }
-        res[strat] = best;
+        res[strat] = sum;
       } catch { res[strat] = Infinity; }
     }
   } finally { px.stop(); dpiProbing = false; }
   const ok = Object.entries(res).filter(([, ms]) => isFinite(ms)).sort((a, b) => a[1] - b[1]);
   const s2 = loadSettings(); s2.dpiProbeAt = Date.now();
   const line = Object.entries(res).map(([k, ms]) => `${k} ${isFinite(ms) ? ms + ' мс' : 'не открылось'}`).join(', ');
-  if (!ok.length) { saveSettings(s2); diag.log('warn', 'обход', 'Замер способов: ни один не открыл Twitch — оставляю прежний (' + line + ')'); return; }
+  if (!ok.length) { saveSettings(s2); diag.log('warn', 'обход', 'Замер способов: ни один не открыл Twitch и YouTube — оставляю прежний (' + line + ')'); return; }
   const [win, ms] = ok[0];
   // меняем, только если заметно быстрее нынешнего (или нынешний не открывает)
   const cur = res[dpiCur];
