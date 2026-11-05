@@ -104,6 +104,20 @@ async function runCase(page, R, maxG, preG) {
   const V = leak.vram;
   console.log(`видеопамять движка, 1080p → 4K с Liquid RTX 2: всего ~${V.total} МБ (сеть ${V.rtx2}, яркость 2× и цвет ${V.common}, кадр экрана ${V.out}, исходный кадр и без полос — остальное)`);
   if (V.rtx2 > 160) { console.error(`::error::буферы RTX 2 на 1080p: ${V.rtx2} МБ — больше 160`); fail++; }
+  // очередь видеокарты (зависание 1.34–1.35): не больше двух недосчитанных кадров, отметки не копятся, после — свободно
+  const q = await page.evaluate(async () => {
+    const E = new RtxEngine(document.createElement('canvas')), gl = E.gl, r = {};
+    E.gpuMark(); r.one = E.gpuBusy();
+    for (let i = 0; i < 5; i++) { E.gpuMark(); E.gpuBusy(); }
+    r.many = E.gpuBusy(); r.len = E.gq.length;
+    gl.finish(); await new Promise((ok) => setTimeout(ok, 100));
+    r.after = E.gpuBusy(); r.lenAfter = E.gq.length;
+    E.gpuSkip(1); E.gpuSkip(1); E.gpuSkip(2); r.skip = E.skipN;
+    E.destroy(); return r;
+  });
+  const qOk = q.after === false && q.lenAfter === 0 && q.len <= 7 && q.skip === 2;
+  console.log(`${qOk ? 'ok ' : 'ПЛОХО'} очередь видеокарты: ${JSON.stringify(q)}`);
+  if (!qOk) fail++;
   await browser.close();
   fs.rmSync(tmp, { recursive: true, force: true });
   if (fail) { console.error(`::error::шейдеры Liquid RTX 2 расходятся с эталоном или течёт память: ${fail}`); process.exit(1); }
