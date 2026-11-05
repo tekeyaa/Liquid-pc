@@ -911,6 +911,8 @@ void main(){
 // сколько выходов (по 4 канала) считает один проход свёртки RTX 2: больше — меньше проходов, но тяжелее каждый.
 // Лучшее зависит от видеокарты — подбирается замером (Настройки → Видео → «Подобрать под видеокарту»)
 let SR_MAXG = 8;
+// то же для свёрток «#pre» перед перестановкой (у них вчетверо больше выходов): 0 — как у остальных. Тоже по замеру
+let SR_PREG = 0;
 function netShaders2(net, lim) {
   const head = '#version 300 es\nprecision highp float; precision highp int;\nconst vec3 W709 = vec3(0.2126, 0.7152, 0.0722);\n';
   const lv = { x: 0 }, passes = [];
@@ -919,9 +921,10 @@ function netShaders2(net, lim) {
   // точек разный) попадал в адрес веса — чтение весов распадалось на 4 отдельных, и на RTX 4070 два таких слоя шли
   // ~60 мс из 75 мс кадра. Теперь «up» = обычная свёртка на малом уровне с 4×каналов (как в PyTorch: conv → pixel_shuffle)
   // + лёгкий проход перестановки 2×2 с пропуском и ReLU в большом разрешении
-  const conv = (Ly, cin, cout, inName, outName, lin, lout, s, relu) => {
-    const nIn = Math.ceil(cin / 4), nOut = Math.ceil(cout / 4), first = inName === 'x';
-    let g = Math.min(lim.db, nOut, SR_MAXG); while (g > 1 && (9 * nIn * g * 64 + g * 16 > lim.ubo || nIn > lim.tex)) g--;
+  // Сеть на два кадра (rtx2.py, frames = 2): у первого слоя второй вход — яркость прошлого кадра (текстура srcP)
+  const conv = (Ly, cin, cout, inName, outName, lin, lout, s, relu, gMax) => {
+    const nIn = Math.ceil(cin / 4), nOut = Math.ceil(cout / 4), first = inName === 'x', two = first && cin === 2;
+    let g = Math.min(lim.db, nOut, gMax || SR_MAXG); while (g > 1 && (9 * nIn * g * 64 + g * 16 > lim.ubo || nIn > lim.tex)) g--;
     const groups = []; for (let o = 0, n = Math.ceil(nOut / g); o < nOut; o += Math.ceil(nOut / n)) groups.push([o, Math.min(nOut, o + Math.ceil(nOut / n))]);
     for (const [o0, o1] of groups) {
       const nO = o1 - o0, NW = 9 * nIn * nO;
@@ -936,19 +939,19 @@ function netShaders2(net, lim) {
       }
       for (let ob = 0; ob < nO; ob++) for (let r = 0; r < 4; r++) { const c = 4 * (o0 + ob) + r; data[NW * 16 + ob * 4 + r] = c < cout ? Ly.b[c] || 0 : 0; }
       let fs = head + `uniform ivec2 szIn;\nlayout(std140) uniform Wt { mat4 W[${NW}]; vec4 Bv[${nO}]; };\n`;
-      fs += first ? 'uniform sampler2D src;\n' : Array.from({ length: nIn }, (_, i) => `uniform sampler2D i${i};\n`).join('');
+      fs += first ? 'uniform sampler2D src;\n' + (two ? 'uniform sampler2D srcP;\n' : '') : Array.from({ length: nIn }, (_, i) => `uniform sampler2D i${i};\n`).join('');
       fs += Array.from({ length: nO }, (_, i) => `layout(location = ${i}) out vec4 o${i};\n`).join('');
       fs += `void main(){\n  ivec2 c = ivec2(gl_FragCoord.xy) * ${s};\n`;
       for (let ob = 0; ob < nO; ob++) fs += `  vec4 a${ob} = Bv[${ob}];\n`;
       fs += '  for (int t = 0; t < 9; t++) {\n    ivec2 p = clamp(c + ivec2(t % 3 - 1, t / 3 - 1), ivec2(0), szIn - 1);\n';
-      if (first) fs += '    vec4 v0 = vec4(dot(texelFetch(src, p, 0).rgb, W709), 0.0, 0.0, 0.0);\n';
+      if (first) fs += `    vec4 v0 = vec4(dot(texelFetch(src, p, 0).rgb, W709), ${two ? 'dot(texelFetch(srcP, p, 0).rgb, W709)' : '0.0'}, 0.0, 0.0);\n`;
       else for (let ib = 0; ib < nIn; ib++) fs += `    vec4 v${ib} = texelFetch(i${ib}, p, 0);\n`;
       fs += `    int w = t * ${nIn * nO};\n`;
       for (let ob = 0; ob < nO; ob++) fs += `    a${ob} += ` + Array.from({ length: nIn }, (_, ib) => `W[w + ${ib * nO + ob}] * v${ib}`).join(' + ') + ';\n';
       fs += '  }\n';
       for (let ob = 0; ob < nO; ob++) fs += `  o${ob} = ${relu ? `max(a${ob}, 0.0)` : `a${ob}`};\n`;
       fs += '}\n';
-      passes.push({ fs, data, up: false, first, in: inName, out: outName, skip: null, nIn, o0, o1, nOutAll: nOut, lin, lout, s });
+      passes.push({ fs, data, up: false, first, two, in: inName, out: outName, skip: null, nIn, o0, o1, nOutAll: nOut, lin, lout, s });
     }
   };
   for (const Ly of net.layers) {
@@ -956,7 +959,7 @@ function netShaders2(net, lim) {
     if (!up) { const lout = lin + (Ly.s === 2 ? 1 : 0); lv[Ly.out] = lout; conv(Ly, Ly.cin, Ly.cout, Ly.in, Ly.out, lin, lout, Ly.s, Ly.relu); continue; }
     // up: свёртка в 4×cout каналов на малом уровне (канал c*4+k — как pixel_shuffle): текстура c хранит 4 подпикселя канала c
     const pre = Ly.out + '#pre', lout = lin - 1; lv[Ly.out] = lout;
-    conv(Ly, Ly.cin, Ly.cout * 4, Ly.in, pre, lin, lin, 1, 0);
+    conv(Ly, Ly.cin, Ly.cout * 4, Ly.in, pre, lin, lin, 1, 0, SR_PREG);
     // перестановка: выход (4 канала на текстуру) = подпиксель k из 4 текстур малого уровня + пропуск, ReLU
     const nOut = Math.ceil(Ly.cout / 4), per = Math.max(1, Math.min(lim.db, Math.floor(lim.tex / 5)));
     for (let o0 = 0; o0 < nOut; o0 += per) {
