@@ -285,7 +285,7 @@ function publicSettings() {
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
-    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'net', 'anime', 'fsr'].includes(s.srNet) ? s.srNet : 'auto', srGan: Number.isFinite(s.srGan) ? s.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
+    superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'anime'].includes(s.srNet) ? s.srNet : 'auto', srGan: Number.isFinite(s.srGan) ? s.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
     srDeband: s.srDeband !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1, rtxLearnWatch: s.rtxLearnWatch !== false,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
     version: app.getVersion(), electron: process.versions.electron,
@@ -536,6 +536,13 @@ app.on('web-contents-created', (_e, contents) => {
       t.push({ label: 'Улучшить картинку (Liquid RTX)', click: () => (p.frame || contents).executeJavaScript(`document.dispatchEvent(new CustomEvent('liquid:imgsr', { detail: { src: ${JSON.stringify(String(p.srcURL))} } }))`).catch(() => {}) });
       t.push({ label: 'Открыть картинку в новой вкладке', click: () => host().send('tab:open', { url: p.srcURL, background: true }) });
       t.push({ label: 'Сохранить картинку как…', click: () => contents.downloadURL(p.srcURL) });
+      t.push({ type: 'separator' });
+    }
+    // Плейлист не развернулся в настройках — можно прямо со страницы YouTube: ролики, которые на ней видно
+    // (плейлист, канал, поиск, список справа от ролика). Сразу в сбор и ссылками — в буфер обмена
+    if (/(^|\.)youtube\.com$/.test((() => { try { return new URL(p.pageURL || contents.getURL()).hostname; } catch { return ''; } })())) {
+      t.push({ label: 'Liquid RTX: ролики этой страницы — в сбор данных', click: () => pageVideos(contents, true) });
+      t.push({ label: 'Скопировать ссылки роликов этой страницы', click: () => pageVideos(contents, false) });
       t.push({ type: 'separator' });
     }
     t.push(
@@ -1462,6 +1469,27 @@ async function guardCheck(info) {
 }
 
 
+// ролики, которые сейчас на странице YouTube: сначала из списка плейлиста (если он есть), иначе — все ссылки на ролики
+async function pageVideos(contents, toLearn) {
+  let ids = [];
+  try {
+    ids = await contents.executeJavaScript(`(() => {
+      const pick = (sel) => { const out = [], seen = new Set(); document.querySelectorAll(sel).forEach((a) => { const m = String(a.href || '').match(/[?&]v=([\\w-]{11})/); if (m && !seen.has(m[1])) { seen.add(m[1]); out.push(m[1]); } }); return out; };
+      const pl = pick('ytd-playlist-video-renderer a[href*="watch?v="], ytd-playlist-panel-video-renderer a[href*="watch?v="], yt-lockup-view-model a[href*="watch?v="]');
+      return pl.length ? pl : pick('a[href*="watch?v="]');
+    })()`);
+  } catch {}
+  if (!ids.length) { broadcast('toast', { text: 'На этой странице не нашлось роликов', error: true }); return; }
+  if (toLearn) {
+    if (!rtxLearn || !loadSettings().rtxLearn) { broadcast('toast', { text: 'Сначала включи «Сбор данных с YouTube» в настройках видео', error: true }); return; }
+    const n = await rtxLearn.addText(ids.join(' ')).catch(() => 0);
+    broadcast('toast', { text: `Liquid RTX: в очередь сбора ${n} из ${ids.length} роликов страницы${n < ids.length ? ' (остальные уже были)' : ''}. Прокрути плейлист ниже — и повтори, чтобы взять ещё` });
+  } else {
+    clipboard.writeText(ids.map((id) => 'https://www.youtube.com/watch?v=' + id).join('\n'));
+    broadcast('toast', { text: `Скопировано ссылок: ${ids.length}. Вставь их в «Добавить ролики или плейлист»` });
+  }
+}
+
 // ---------- IPC ----------
 function registerIpc() {
   const bw = (e) => BrowserWindow.fromWebContents(e.sender);
@@ -1494,7 +1522,7 @@ function registerIpc() {
     if ('vidBar' in patch) s.vidBar = !!patch.vidBar;
     if ('lpAuto' in patch) s.lpAuto = !!patch.lpAuto;
     if ('lpSmooth' in patch) s.lpSmooth = !!patch.lpSmooth;
-    if ('srNet' in patch) s.srNet = ['auto', 'rtx2', 'pro', 'net', 'anime', 'fsr'].includes(patch.srNet) ? patch.srNet : 'auto';
+    if ('srNet' in patch) s.srNet = ['auto', 'rtx2', 'pro', 'anime'].includes(patch.srNet) ? patch.srNet : 'auto';
     if ('srGan' in patch) { s.srGan = Math.max(0, Math.min(100, Math.round(Number(patch.srGan) || 0))); }
     if ('srDeband' in patch) s.srDeband = !!patch.srDeband;
     if ('uaMode' in patch) { s.uaMode = Identity.MODES.includes(patch.uaMode) ? patch.uaMode : 'chrome'; if (s.uaMode !== ID.mode) applyIdentity(s.uaMode); }
@@ -1582,7 +1610,7 @@ function registerIpc() {
     } catch { return null; }
   });
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
-  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, lpSmooth: st.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'net', 'anime', 'fsr'].includes(st.srNet) ? st.srNet : 'auto', gan: Number.isFinite(st.srGan) ? st.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false }; });
+  ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, lpSmooth: st.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'anime'].includes(st.srNet) ? st.srNet : 'auto', gan: Number.isFinite(st.srGan) ? st.srGan : 50, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false }; });
   // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
   ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));

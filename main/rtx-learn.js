@@ -90,6 +90,9 @@ const PLAYLIST = `(async () => {
 const ids = new Set(); let token = null;
 const walk = (o) => { if (!o || typeof o !== 'object') return;
   if (o.playlistVideoRenderer && o.playlistVideoRenderer.videoId) ids.add(o.playlistVideoRenderer.videoId);
+  if (o.playlistPanelVideoRenderer && o.playlistPanelVideoRenderer.videoId) ids.add(o.playlistPanelVideoRenderer.videoId); // список справа от ролика (в том числе «Микс»)
+  // новый вид страниц YouTube (с 2025): ролики — lockupViewModel, а не playlistVideoRenderer
+  if (o.lockupViewModel && o.lockupViewModel.contentId && /VIDEO/.test(o.lockupViewModel.contentType || '')) ids.add(o.lockupViewModel.contentId);
   if (o.continuationCommand && o.continuationCommand.token) token = o.continuationCommand.token;
   for (const k in o) walk(o[k]); };
 for (let i = 0; i < 50 && !window.ytInitialData; i++) await new Promise((r) => setTimeout(r, 200));
@@ -148,17 +151,26 @@ class RtxLearn {
     for (const s of String(text).split(/[\s,]+/)) {
       if (this.add(s, '', 'link')) n++;
       const m = s.match(/[?&]list=([\w-]{10,})/);
-      if (m && !/^(RD|UL|LL|WL)/.test(m[1])) for (const id of await this.playlist(m[1]).catch((e) => { this.log('warn', 'Liquid RTX обучение', `плейлист: ${e.message}`); return []; })) if (this.add(id, '', 'playlist')) n++;
+      if (m && !/^(UL|LL|WL)/.test(m[1])) {
+        // «Микс» (RD…) — не настоящий плейлист: его список есть только рядом с роликом, открываем ролик со списком
+        const v = /^RD/.test(m[1]) ? ytId(s) : null;
+        if (/^RD/.test(m[1]) && !v) continue;
+        const ids = await this.playlist(m[1], v).catch((e) => { this.log('warn', 'Liquid RTX обучение', `плейлист: ${e.message}`); return []; });
+        this.log('info', 'Liquid RTX обучение', `плейлист ${m[1]}: найдено роликов ${ids.length}`);
+        this.lastPlaylist = ids.length;
+        for (const id of ids) if (this.add(id, '', 'playlist')) n++;
+      }
     }
     return n;
   }
   // ролики плейлиста: страница плейлиста в скрытом окне (с твоим входом в YouTube), дальше — тем же запросом,
   // что делает сам YouTube при прокрутке (youtubei/v1/browse с продолжением), до 1000 роликов
-  async playlist(list) {
+  async playlist(list, v) {
     const w = new this.BrowserWindow({ show: false, width: 800, height: 600, webPreferences: { partition: this.partition, contextIsolation: true, sandbox: true, nodeIntegration: false } });
     w.webContents.__lqLearn = true; w.webContents.setAudioMuted(true); w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     try {
-      await w.loadURL(this.urlFor('').replace(/watch\?v=.*$/, '') + 'playlist?list=' + list);
+      const base = this.urlFor('').replace(/watch\?v=.*$/, '');
+      await Promise.race([w.loadURL(base + (v ? `watch?v=${v}&list=${list}` : 'playlist?list=' + list)), new Promise((_, no) => setTimeout(() => no(new Error('страница плейлиста не открылась за минуту')), 60000))]);
       return await Promise.race([w.webContents.executeJavaScript(PLAYLIST, true), new Promise((_, no) => setTimeout(() => no(new Error('YouTube не ответил')), 120000))]);
     } finally { try { w.destroy(); } catch {} }
   }

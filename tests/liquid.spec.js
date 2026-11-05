@@ -262,10 +262,10 @@ test('Liquid Player: свой плеер на весь экран рисует �
     expect(await inTab(`document.querySelector('lq-player').dataset.lqErr || ''`)).toBe('');
     expect(await inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`)).not.toBe('');
   }
-  // ручной выбор сети: «без нейросети» — рисует FSR, «авто» — снова нейросеть
+  // ручной выбор сети: «Аниме» — рисует аниме-сеть, «авто» — снова по видеокарте
   if (caps.fbf) {
-    await win.evaluate(() => window.saveSrPref({ srNet: 'fsr' }));
-    await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 20_000 }).toBe('fsr');
+    await win.evaluate(() => window.saveSrPref({ srNet: 'anime' }));
+    await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 60_000 }).toBe('anime');
     await win.evaluate(() => window.saveSrPref({ srNet: 'auto' }));
     await expect.poll(() => inTab(`document.querySelector('lq-player').dataset.lqUsed || ''`), { timeout: 40_000 }).toMatch(/^(rtx2|pro|net|anime)$/);
   }

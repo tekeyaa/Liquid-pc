@@ -265,7 +265,8 @@
   $('#rtxLearnWatch').onchange = async (e) => { settings = await L.settings.set({ rtxLearnWatch: e.target.checked }); renderSr(); };
   $('#rtxLearnGb').onchange = async (e) => { settings = await L.settings.set({ rtxLearnGb: Number(e.target.value) }); renderSr(); };
   $('#rtxLinksAdd').onclick = async () => { const txt = $('#rtxLinks').value; if (/[?&]list=/.test(txt) && window.toast) window.toast('Разворачиваю плейлист…');
-    const n = await L.rtxLearn.add(txt); $('#rtxLinks').value = ''; learnStat(); if (window.toast) window.toast(n ? `В очередь: ${n}` : 'Новых ссылок YouTube не нашлось'); };
+    const n = await L.rtxLearn.add(txt); $('#rtxLinks').value = ''; learnStat();
+    if (window.toast) window.toast(n ? `В очередь: ${n}` : /[?&]list=/.test(txt) ? 'Плейлист не развернулся. Открой его на YouTube, нажми правой кнопкой по странице → «Liquid RTX: ролики этой страницы — в сбор данных»' : 'Новых ссылок YouTube не нашлось'); };
   $('#rtxLearnOpen').onclick = () => L.rtxLearn.open();
   $('#rtxGanGo').onclick = async () => { await L.rtxLearn.train('gan', Number($('#rtxTrainHours').value)); learnStat(); };
   const ganV = () => { const v = settings.srGan ?? 50; $('#srGan').value = v; $('#srGanV').textContent = v + ' %'; };

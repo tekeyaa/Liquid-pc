@@ -978,7 +978,7 @@ const netData = (n) => SR_NET[n] || (SR_NET[n] = ipcRenderer.invoke('sr:net', n)
 // ступени качества (cap): 4 — нейросеть Pro, 3 — лёгкая (и аниме), 2 — RAVU-3, 1 — RAVU-2, 0 — FSR.
 // Видеокарта не успевает — ступенька вниз.
 const SR_TIER = { fsr: 0, r2: 1, r3: 2, net: 3, anime: 3, pro: 4, rtx2: 5 };
-const SR_NAMES = { rtx2: 'нейросеть Liquid RTX 2', pro: 'нейросеть Liquid RTX Pro', net: 'нейросеть Liquid RTX', anime: 'нейросеть Liquid RTX · аниме', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
+const SR_NAMES = { rtx2: 'нейросеть Liquid RTX 2', pro: 'нейросеть Liquid RTX', net: 'лёгкая нейросеть (запасная для слабых видеокарт)', anime: 'нейросеть Liquid RTX · аниме', r3: 'RAVU-3', r2: 'RAVU-2', fsr: 'FSR', down: 'уменьшение', off: 'выкл' };
 // резкость RCAS после увеличения: у нейросети своя резкость уже есть — «Чисто» почти без добавки, «Чётко» — заметнее
 const SR_SHARP_K = { net: { mid: 0.1, max: 0.4 }, anime: { mid: 0.15, max: 0.45 }, ravu: { mid: 0.4, max: 0.7 }, fsr: { mid: 0.4, max: 0.7 } };
 const SR_NET_FILE = { rtx2: 'rtx2', pro: 'pro', net: 'lite', anime: 'anime' }; // RTX 2 — своя обученная (или вшитая в обновление)
@@ -1853,6 +1853,9 @@ function srSync() {
   for (const v of videos()) {
     const big = v.offsetWidth >= 240;
     let r = vt.srMap.get(v);
+    // видео сейчас в Liquid Player — второй слой Liquid RTX под ним не нужен: раньше он создавался заново при каждой
+    // смене настроек (HDR, Чисто/Чётко), и видеокарта считала нейросеть дважды — отсюда «захлёбывается с HDR»
+    if (lp.open && lp.v === v) { if (r) r.destroy(); continue; }
     if (vt.sr === 'off' || !big) { if (r) r.destroy(); if (vt.lite.has(v)) applyFilter(v); continue; }
     // защищённое видео (DRM: кинотеатры, платные сервисы) видеокарте не отдаётся, а фильтры могут его зачернить
     if (v.mediaKeys) { if (r) r.destroy(); vt.skip.set(v, 'drm'); continue; }
@@ -2447,7 +2450,7 @@ async function lpMenu(kind) {
       const NAME = { hd2160: '2160p (4K)', hd1440: '1440p', hd1080: '1080p', hd720: '720p', large: '480p', medium: '360p', small: '240p', tiny: '144p', auto: 'Авто' };
       h += '<b>Качество YouTube</b>' + yq.list.map((x) => `<button data-q="${x}" class="${x === yq.cur ? 'on' : ''}">${NAME[x] || x}</button>`).join('');
     }
-    const NETS = [['auto', 'Авто — подбирает под видеокарту'], ['rtx2', 'Liquid RTX 2'], ['pro', 'Liquid RTX Pro'], ['net', 'Лёгкая'], ['anime', 'Аниме'], ['fsr', 'Без нейросети (FSR)']];
+    const NETS = [['auto', 'Авто — подбирает под видеокарту'], ['rtx2', 'Liquid RTX 2'], ['pro', 'Liquid RTX'], ['anime', 'Аниме']];
     h += '<b>Нейросеть</b>' + NETS.map(([k, t]) => `<button data-net="${k}" class="${vt.srNet === k ? 'on' : ''}">${t}</button>`).join('');
     h += `<b>Liquid Player</b><button data-a="auto" class="${vt.lpAuto ? 'on' : ''}">Открывать вместо полного экрана сайта</button>`;
     if (lp.eng) h += `<b>Видеопамять: ~${lp.eng.vram()} МБ</b>`;
