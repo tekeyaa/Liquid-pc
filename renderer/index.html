@@ -290,6 +290,10 @@
                 <button data-v="max">Чётко</button>
               </div>
             </div>
+            <div class="set-row col">
+              <div class="set-t"><b>Подобрать под видеокарту</b><small id="srBenchRes">Замер скорости Liquid RTX 2 на твоей видеокарте: браузер попробует несколько способов счёта и оставит самый быстрый. 1–3 минуты</small></div>
+              <button id="srBench" class="btn ghost sm">Замерить</button>
+            </div>
             <label class="set-row"><div class="set-t"><b>Без полос на градиентах</b><small>Небо и тёмные сцены — плавно, без «ступенек»</small></div><input type="checkbox" id="srDeband" class="switch" /></label>
             <label class="set-row"><div class="set-t"><b>HDR-цвет</b><small>Ярче краски, глубже тени</small></div><input type="checkbox" id="srHdr" class="switch" /></label>
           </div>
@@ -314,8 +318,8 @@
               <button id="rtxGanGo" class="btn ghost sm" title="Дообучить сеть дорисовывать мелкие детали (трава, кожа, ткань): сеть-судья учит её не замыливать">Обучить дорисовку</button>
             </div>
             <div class="set-row col" id="rtxGanBox" hidden>
-              <div class="set-t"><b>Дорисовка деталей: <span id="srGanV">50 %</span></b><small>0 % — только точность, как обычно. Больше — сеть смелее дорисовывает мелкие детали; если появились выдуманные узоры — убавь</small></div>
-              <input type="range" id="srGan" min="0" max="100" step="10" />
+              <div class="set-t"><b>Дорисовка деталей: <span id="srGanV">50 %</span></b><small>0 % — только точность, как обычно. 100 % — как обучена. Больше 100 % — сильнее, чем обучена (экспериментально): если появились выдуманные узоры — убавь</small></div>
+              <input type="range" id="srGan" min="0" max="200" step="10" />
             </div>
             <label class="set-row"><div class="set-t"><b>Учить автоматически</b><small>Когда место под данные заполнится и видео не играет</small></div><input type="checkbox" id="rtxAutoTrain" class="switch" /></label>
           </div>

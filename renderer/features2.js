@@ -174,6 +174,8 @@
     if (m.type === 'lpPref') { window.saveSrPref(m.net ? { srNet: m.net } : m.smooth != null ? { lpSmooth: !!m.smooth } : { lpAuto: !!m.auto }); return; }
     if (m.type === 'lpOpen') return;
     if (m.type === 'videoPrefs') { const h = hostOf(tab.url); if (vidPrefs[h]) { vidPrefs[h] = m.speed; lsSet('liquid.videoSpeed', vidPrefs); } return; }
+    if (m.type === 'benchRes') { const el = document.getElementById('srBenchRes'); if (el) el.textContent = m.text; const b = document.getElementById('srBench'); if (b) b.disabled = false;
+      if (m.maxG) window.saveSrPref({ srMaxG: m.maxG }); toast(m.maxG ? 'Замер готов — лучший способ уже включён' : m.text); return; }
     if (m.type === 'videoErr') { toast('Видео: ' + m.error, true); return; }
     if (m.type === 'rtxMsg') { toast(m.text, !!m.error); return; }
     if (m.type === 'frame') {
@@ -220,7 +222,7 @@
   };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, lpSmooth: settings.lpSmooth !== false, srNet: settings.srNet || 'auto', gan: settings.srGan ?? 50, learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, lpSmooth: settings.lpSmooth !== false, srNet: settings.srNet || 'auto', gan: settings.srGan ?? 50, maxG: settings.srMaxG || 8, learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
@@ -268,6 +270,11 @@
     const n = await L.rtxLearn.add(txt); $('#rtxLinks').value = ''; learnStat();
     if (window.toast) window.toast(n ? `В очередь: ${n}` : /[?&]list=/.test(txt) ? 'Плейлист не развернулся. Открой его на YouTube, нажми правой кнопкой по странице → «Liquid RTX: ролики этой страницы — в сбор данных»' : 'Новых ссылок YouTube не нашлось'); };
   $('#rtxLearnOpen').onclick = () => L.rtxLearn.open();
+  $('#srBench').onclick = () => {
+    if (!active || !active.wv) { toast('Открой любую вкладку с сайтом — замер идёт в ней', true); return; }
+    $('#srBench').disabled = true; $('#srBenchRes').textContent = 'Замеряю — 1–3 минуты, видеокарта будет загружена…';
+    try { active.wv.send('liquid', { type: 'video', op: 'bench' }); } catch { $('#srBench').disabled = false; }
+  };
   $('#rtxGanGo').onclick = async () => { await L.rtxLearn.train('gan', Number($('#rtxTrainHours').value)); learnStat(); };
   const ganV = () => { const v = settings.srGan ?? 50; $('#srGan').value = v; $('#srGanV').textContent = v + ' %'; };
   $('#srGan').oninput = (e) => { $('#srGanV').textContent = e.target.value + ' %'; };

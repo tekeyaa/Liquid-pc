@@ -619,6 +619,7 @@ function videoCmd(m) {
     if (m.bar != null) vt.barOn = m.bar;
     if (m.lpAuto != null) vt.lpAuto = !!m.lpAuto;
     if (m.srNet) { vt.srNet = m.srNet; if (lp.open) lpApplyNet(); }
+    if (m.maxG && m.maxG !== SR_MAXG) { SR_MAXG = m.maxG; for (const r of vt.srMap.values()) { try { r.eng.dropNet('rtx2'); r.dirty = true; } catch {} } if (lp.open && lp.eng) { lp.eng.dropNet('rtx2'); lp.dirty = true; } }
     if (m.gan != null && vt.gan != null && m.gan !== vt.gan) {
       delete SR_NET.rtx2;
       for (const r of vt.srMap.values()) { try { r.eng && r.eng.dropNet('rtx2'); r.dirty = true; } catch {} }
@@ -635,6 +636,7 @@ function videoCmd(m) {
   if (m.op === 'overlay') { const v0 = mainVideo(); if (v0) { barShow(v0, true); barOpen(!bar.open); } return; }
   if (m.op === 'pip') { pipToggle(); return; }
   if (m.op === 'player') { const v0 = mainVideo(); if (v0) lpOpen(v0); return; }
+  if (m.op === 'bench') { if (!IS_FRAME) rtxBench().then((r) => toHost({ type: 'benchRes', ...r })).catch((e) => toHost({ type: 'benchRes', text: 'Замер не вышел: ' + (e && e.message) })); return; }
   if (m.op === 'mini') { miniOut(); return; }
   if (m.op === 'seekPlay') { const v0 = mainVideo(); if (v0) { if (m.t > 0 && Math.abs(v0.currentTime - m.t) > 1) v0.currentTime = m.t; v0.play().catch(() => {}); } return; }
   if (!v) return;
@@ -906,6 +908,9 @@ void main(){
 // up — свёртка на низком уровне сразу в нужный подпиксель 2×2 точки высокого уровня (перестановка как pixel_shuffle)
 // плюс пропуск и ReLU — одним проходом. Слой с большим числом выходов делится на проходы (не больше MAX_DRAW_BUFFERS
 // выходов и размера uniform-блока за раз)
+// сколько выходов (по 4 канала) считает один проход свёртки RTX 2: больше — меньше проходов, но тяжелее каждый.
+// Лучшее зависит от видеокарты — подбирается замером (Настройки → Видео → «Подобрать под видеокарту»)
+let SR_MAXG = 8;
 function netShaders2(net, lim) {
   const head = '#version 300 es\nprecision highp float; precision highp int;\nconst vec3 W709 = vec3(0.2126, 0.7152, 0.0722);\n';
   const lv = { x: 0 }, passes = [];
@@ -916,7 +921,7 @@ function netShaders2(net, lim) {
   // + лёгкий проход перестановки 2×2 с пропуском и ReLU в большом разрешении
   const conv = (Ly, cin, cout, inName, outName, lin, lout, s, relu) => {
     const nIn = Math.ceil(cin / 4), nOut = Math.ceil(cout / 4), first = inName === 'x';
-    let g = Math.min(lim.db, nOut); while (g > 1 && (9 * nIn * g * 64 + g * 16 > lim.ubo || nIn > lim.tex)) g--;
+    let g = Math.min(lim.db, nOut, SR_MAXG); while (g > 1 && (9 * nIn * g * 64 + g * 16 > lim.ubo || nIn > lim.tex)) g--;
     const groups = []; for (let o = 0, n = Math.ceil(nOut / g); o < nOut; o += Math.ceil(nOut / n)) groups.push([o, Math.min(nOut, o + Math.ceil(nOut / n))]);
     for (const [o0, o1] of groups) {
       const nO = o1 - o0, NW = 9 * nIn * nO;
@@ -1361,6 +1366,42 @@ class RtxEngine {
   faster() { if (this.cap < this.capMax) { this.cap++; this.gpuMs = 0; return true; } return false; }
   destroy() { this.dead = true; try { this.gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {} }
 }
+// ---------- 7г. Замер: как быстрее считать RTX 2 на этой видеокарте ----------
+// Один и тот же кадр 1080p → 1440p, своя RTX 2 с разным числом выходов на проход. Каждый вариант — 60 кадров, время
+// с ожиданием видеокарты. Лучший вариант браузер запоминает (у твоей видеокарты и у видеокарт друзей он свой)
+async function rtxBench() {
+  const W = 1920, H = 1080, OW = 2560, OH = 1440, N = 60;
+  const src = document.createElement('canvas'); src.width = W; src.height = H;
+  const c = src.getContext('2d'); const id = c.createImageData(W, H);
+  for (let i = 0; i < W * H; i++) { const x = i % W, y = (i / W) | 0, v = 128 + 60 * Math.sin(x * 0.05) * Math.cos(y * 0.03) + (Math.random() - 0.5) * 40; id.data[4 * i] = v; id.data[4 * i + 1] = v * 0.9; id.data[4 * i + 2] = v * 0.8; id.data[4 * i + 3] = 255; }
+  c.putImageData(id, 0, 0);
+  const keep = SR_MAXG, res = [];
+  const one = async (force, g) => {
+    SR_MAXG = g;
+    const E = new RtxEngine(document.createElement('canvas')); E.size(OW, OH); E.force = force;
+    try {
+      const gl = E.gl, px = new Uint8Array(4), sync = () => { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); };
+      const t0 = performance.now();
+      while (E.draw(src, W, H, [0, 0, 1, 1], 'mid', false, 0, 'video') !== force) { if (E.forceMissing || performance.now() - t0 > 120000) return null; await new Promise((r) => setTimeout(r, 100)); }
+      for (let i = 0; i < 10; i++) E.draw(null, W, H, [0, 0, 1, 1], 'mid', false, 0, 'video'); sync();
+      const t = performance.now();
+      for (let i = 0; i < N; i++) { E.draw(null, W, H, [0, 0, 1, 1], 'mid', false, 0, 'video'); sync(); }
+      return { ms: (performance.now() - t) / N, gpu: E.gpuMs };
+    } finally { E.destroy(); }
+  };
+  try {
+    for (const g of [8, 6, 4, 3, 2]) { const r = await one('rtx2', g); if (!r) return { text: 'Своей Liquid RTX 2 нет — замерять нечего' }; res.push({ g, ...r }); }
+    const pro = await one('pro', 8);
+    res.sort((a, b) => a.ms - b.ms);
+    const best = res[0];
+    const lines = res.map((r) => `по ${r.g}: ${r.ms.toFixed(1)} мс` + (r.gpu ? ` (видеокарта ${r.gpu.toFixed(1)})` : '')).join(' · ');
+    const text = `RTX 2, 1080p → 1440p: ${lines}. Лучше всего — по ${best.g} (${best.ms.toFixed(1)} мс на кадр${best.ms <= 16.7 ? ', хватает на 60 кадров' : best.ms <= 33.3 ? ', хватает на 30 кадров, на 60 — нет' : ', не хватает даже на 30 кадров'}).` + (pro ? ` Для сравнения Liquid RTX: ${pro.ms.toFixed(1)} мс.` : '');
+    try { ipcRenderer.send('diag:log', { level: 'info', source: 'замер Liquid RTX', message: text }); } catch {}
+    SR_MAXG = best.g;
+    return { text, maxG: best.g };
+  } finally { if (!res.length) SR_MAXG = keep; }
+}
+
 // ---------- 7в. 60 кадров: промежуточные кадры между настоящими ----------
 // Только для видео 24/25/30 кадров (у 50/60 кадров и так плавно — ничего не дорисовываем). Как работает:
 // 1) яркость кадра уменьшается до ~960 точек по ширине и ещё трижды вдвое (пирамида);
