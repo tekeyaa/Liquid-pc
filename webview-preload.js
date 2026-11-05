@@ -908,47 +908,63 @@ void main(){
 function netShaders2(net, lim) {
   const head = '#version 300 es\nprecision highp float; precision highp int;\nconst vec3 W709 = vec3(0.2126, 0.7152, 0.0722);\n';
   const lv = { x: 0 }, passes = [];
-  for (const Ly of net.layers) {
-    const up = Ly.op === 'up', nIn = Math.ceil(Ly.cin / 4), nOut = Math.ceil(Ly.cout / 4), first = Ly.in === 'x';
-    const lin = lv[Ly.in], lout = up ? lin - 1 : lin + (Ly.s === 2 ? 1 : 0); lv[Ly.out] = lout;
-    const K = up ? 4 : 1;
-    // сколько выходов за проход: MRT и размер блока (K наборов весов по 9·nIn·nO матриц + K·nO смещений)
-    let g = Math.min(lim.db, nOut); while (g > 1 && (K * 9 * nIn * g * 64 + K * g * 16 > lim.ubo || (up ? nIn + g : nIn) > lim.tex)) g--;
+  // Свёртка 3×3 (шаг 1 или 2): веса в UBO, у всех точек прохода одни и те же адреса весов — видеокарта читает их
+  // разом для всей группы потоков. Слой «up» раньше считался прямо в большом разрешении, и номер подпикселя (у соседних
+  // точек разный) попадал в адрес веса — чтение весов распадалось на 4 отдельных, и на RTX 4070 два таких слоя шли
+  // ~60 мс из 75 мс кадра. Теперь «up» = обычная свёртка на малом уровне с 4×каналов (как в PyTorch: conv → pixel_shuffle)
+  // + лёгкий проход перестановки 2×2 с пропуском и ReLU в большом разрешении
+  const conv = (Ly, cin, cout, inName, outName, lin, lout, s, relu) => {
+    const nIn = Math.ceil(cin / 4), nOut = Math.ceil(cout / 4), first = inName === 'x';
+    let g = Math.min(lim.db, nOut); while (g > 1 && (9 * nIn * g * 64 + g * 16 > lim.ubo || nIn > lim.tex)) g--;
     const groups = []; for (let o = 0, n = Math.ceil(nOut / g); o < nOut; o += Math.ceil(nOut / n)) groups.push([o, Math.min(nOut, o + Math.ceil(nOut / n))]);
     for (const [o0, o1] of groups) {
       const nO = o1 - o0, NW = 9 * nIn * nO;
-      // веса: W[k][t][ib][ob] — mat4, столбец j = веса входного канала 4ib+j для выходов (у up — каналы c*4+k)
-      const data = new Float32Array(K * NW * 16 + K * nO * 4);
-      const ch = (c, k) => (up ? c * 4 + k : c); // номер выхода свёртки для канала c и подпикселя k
-      for (let k = 0; k < K; k++) for (let t = 0; t < 9; t++) for (let ib = 0; ib < nIn; ib++) for (let ob = 0; ob < nO; ob++) {
-        const m = (((k * 9 + t) * nIn + ib) * nO + ob) * 16;
+      const data = new Float32Array(NW * 16 + nO * 4);
+      for (let t = 0; t < 9; t++) for (let ib = 0; ib < nIn; ib++) for (let ob = 0; ob < nO; ob++) {
+        const m = ((t * nIn + ib) * nO + ob) * 16;
         for (let j = 0; j < 4; j++) for (let r = 0; r < 4; r++) {
-          const cin = 4 * ib + j, c = 4 * (o0 + ob) + r;
-          const row = Ly.w[cin * 9 + t];
-          data[m + j * 4 + r] = cin < Ly.cin && c < Ly.cout && row ? row[ch(c, k)] || 0 : 0;
+          const ci = 4 * ib + j, c = 4 * (o0 + ob) + r;
+          const row = Ly.w[ci * 9 + t];
+          data[m + j * 4 + r] = ci < cin && c < cout && row ? row[c] || 0 : 0;
         }
       }
-      for (let k = 0; k < K; k++) for (let ob = 0; ob < nO; ob++) for (let r = 0; r < 4; r++) { const c = 4 * (o0 + ob) + r; data[K * NW * 16 + (k * nO + ob) * 4 + r] = c < Ly.cout ? Ly.b[ch(c, k)] || 0 : 0; }
-      let fs = head + `uniform ivec2 szIn;\nlayout(std140) uniform Wt { mat4 W[${K * NW}]; vec4 Bv[${K * nO}]; };\n`;
+      for (let ob = 0; ob < nO; ob++) for (let r = 0; r < 4; r++) { const c = 4 * (o0 + ob) + r; data[NW * 16 + ob * 4 + r] = c < cout ? Ly.b[c] || 0 : 0; }
+      let fs = head + `uniform ivec2 szIn;\nlayout(std140) uniform Wt { mat4 W[${NW}]; vec4 Bv[${nO}]; };\n`;
       fs += first ? 'uniform sampler2D src;\n' : Array.from({ length: nIn }, (_, i) => `uniform sampler2D i${i};\n`).join('');
-      if (up) fs += Array.from({ length: nO }, (_, i) => `uniform sampler2D k${i};\n`).join('');
       fs += Array.from({ length: nO }, (_, i) => `layout(location = ${i}) out vec4 o${i};\n`).join('');
-      fs += 'void main(){\n';
-      fs += up ? '  ivec2 q = ivec2(gl_FragCoord.xy); ivec2 c = q >> 1; int k = (q.y & 1) * 2 + (q.x & 1); int kw = k * ' + NW + '; int kb = k * ' + nO + ';\n'
-        : `  ivec2 c = ivec2(gl_FragCoord.xy) * ${Ly.s}; const int kw = 0, kb = 0;\n`;
-      for (let ob = 0; ob < nO; ob++) fs += `  vec4 a${ob} = Bv[kb + ${ob}];\n`;
+      fs += `void main(){\n  ivec2 c = ivec2(gl_FragCoord.xy) * ${s};\n`;
+      for (let ob = 0; ob < nO; ob++) fs += `  vec4 a${ob} = Bv[${ob}];\n`;
       fs += '  for (int t = 0; t < 9; t++) {\n    ivec2 p = clamp(c + ivec2(t % 3 - 1, t / 3 - 1), ivec2(0), szIn - 1);\n';
       if (first) fs += '    vec4 v0 = vec4(dot(texelFetch(src, p, 0).rgb, W709), 0.0, 0.0, 0.0);\n';
       else for (let ib = 0; ib < nIn; ib++) fs += `    vec4 v${ib} = texelFetch(i${ib}, p, 0);\n`;
-      fs += `    int w = kw + t * ${nIn * nO};\n`;
+      fs += `    int w = t * ${nIn * nO};\n`;
       for (let ob = 0; ob < nO; ob++) fs += `    a${ob} += ` + Array.from({ length: nIn }, (_, ib) => `W[w + ${ib * nO + ob}] * v${ib}`).join(' + ') + ';\n';
       fs += '  }\n';
+      for (let ob = 0; ob < nO; ob++) fs += `  o${ob} = ${relu ? `max(a${ob}, 0.0)` : `a${ob}`};\n`;
+      fs += '}\n';
+      passes.push({ fs, data, up: false, first, in: inName, out: outName, skip: null, nIn, o0, o1, nOutAll: nOut, lin, lout, s });
+    }
+  };
+  for (const Ly of net.layers) {
+    const up = Ly.op === 'up', lin = lv[Ly.in];
+    if (!up) { const lout = lin + (Ly.s === 2 ? 1 : 0); lv[Ly.out] = lout; conv(Ly, Ly.cin, Ly.cout, Ly.in, Ly.out, lin, lout, Ly.s, Ly.relu); continue; }
+    // up: свёртка в 4×cout каналов на малом уровне (канал c*4+k — как pixel_shuffle): текстура c хранит 4 подпикселя канала c
+    const pre = Ly.out + '#pre', lout = lin - 1; lv[Ly.out] = lout;
+    conv(Ly, Ly.cin, Ly.cout * 4, Ly.in, pre, lin, lin, 1, 0);
+    // перестановка: выход (4 канала на текстуру) = подпиксель k из 4 текстур малого уровня + пропуск, ReLU
+    const nOut = Math.ceil(Ly.cout / 4), per = Math.max(1, Math.min(lim.db, Math.floor(lim.tex / 5)));
+    for (let o0 = 0; o0 < nOut; o0 += per) {
+      const o1 = Math.min(nOut, o0 + per), nO = o1 - o0;
+      let fs = head + Array.from({ length: nO * 4 }, (_, i) => `uniform sampler2D s${i};\n`).join('') + Array.from({ length: nO }, (_, i) => `uniform sampler2D k${i};\n`).join('');
+      fs += Array.from({ length: nO }, (_, i) => `layout(location = ${i}) out vec4 o${i};\n`).join('');
+      fs += 'void main(){\n  ivec2 q = ivec2(gl_FragCoord.xy), c = q >> 1; int k = (q.y & 1) * 2 + (q.x & 1);\n';
       for (let ob = 0; ob < nO; ob++) {
-        const v = up ? `a${ob} + texelFetch(k${ob}, q, 0)` : `a${ob}`;
-        fs += `  o${ob} = ${Ly.relu ? `max(${v}, 0.0)` : v};\n`;
+        const comp = [0, 1, 2, 3].map((r) => `texelFetch(s${ob * 4 + r}, c, 0)[k]`);
+        fs += `  o${ob} = vec4(${comp.join(', ')}) + texelFetch(k${ob}, q, 0);\n`;
+        if (Ly.relu) fs += `  o${ob} = max(o${ob}, 0.0);\n`;
       }
       fs += '}\n';
-      passes.push({ fs, data, up, first, in: Ly.in, out: Ly.out, skip: Ly.skip || null, nIn, o0, o1, nOutAll: nOut, lin, lout, s: Ly.s });
+      passes.push({ fs, data: null, shuf: true, up: false, first: false, in: pre, out: Ly.out, skip: Ly.skip, nIn: 0, o0, o1, nOutAll: nOut, lin, lout, s: 1 });
     }
   }
   return passes;
@@ -994,6 +1010,9 @@ class RtxEngine {
       const name = String(gl.getParameter(ri ? ri.UNMASKED_RENDERER_WEBGL : gl.RENDERER) || '');
       if (/swiftshader|llvmpipe|softpipe|basic render|microsoft basic/i.test(name)) { this.soft = true; this.cap = 3; }
     } catch {}
+    this.capMax = this.cap;
+    // сколько видеокарта реально тратит на кадр (мс) — раз в 30 кадров, без ожидания (ответ забираем позже)
+    this.tq = this.gl2 ? gl.getExtension('EXT_disjoint_timer_query_webgl2') : null; this.qn = 0; this.q = null; this.gpuMs = 0;
     this.mem = { out: 0, net: 0 }; this.netFrames = 0; this.cfEps = 0.0004;
   }
   tex(filter) {
@@ -1077,11 +1096,12 @@ class RtxEngine {
     const lim = { db: gl.getParameter(gl.MAX_DRAW_BUFFERS), ubo: gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE), tex: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) };
     const P2 = netShaders2(d, lim), S = netShaders({ layers: [], dims: [1] });
     const passes = P2.map((x) => {
-      const ubo = gl.createBuffer(); gl.bindBuffer(gl.UNIFORM_BUFFER, ubo); gl.bufferData(gl.UNIFORM_BUFFER, x.data, gl.STATIC_DRAW);
-      return { ...this.prog(x.fs, SR_VS3), ...x, data: null, ubo, bound: false };
+      let ubo = null;
+      if (x.data) { ubo = gl.createBuffer(); gl.bindBuffer(gl.UNIFORM_BUFFER, ubo); gl.bufferData(gl.UNIFORM_BUFFER, x.data, gl.STATIC_DRAW); }
+      return { ...this.prog(x.fs, SR_VS3), ...x, data: null, ubo, bound: !x.data };
     });
     gl.bindBuffer(gl.UNIFORM_BUFFER, null);
-    const bytes = P2.reduce((a, x) => a + x.data.byteLength, 0);
+    const bytes = P2.reduce((a, x) => a + (x.data ? x.data.byteLength : 0), 0);
     console.info(`[liquid] Liquid RTX 2: ${P2.length} проходов, весов ${Math.round(bytes / 1024)} КБ`);
     return { name, g2: true, layers: passes, L: 0, hr: this.prog(S.hr, SR_VS3), cfl: this.prog(S.cfl, SR_VS3), compose: this.prog(S.compose, SR_VS3), ok: false };
   }
@@ -1227,9 +1247,13 @@ class RtxEngine {
     const gl = this.gl, B = this.netAlloc2(N, vw, vh);
     for (const P of N.layers) {
       if (!P.bound) { const bi = gl.getUniformBlockIndex(P.p, 'Wt'); gl.uniformBlockBinding(P.p, bi, 0); P.bound = true; }
-      gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, P.ubo);
-      const ins = P.first ? [['src', this.tSrc]] : B.tens[P.in].list.map((t, j) => ['i' + j, t]);
-      if (P.up) for (let o = P.o0; o < P.o1; o++) ins.push(['k' + (o - P.o0), B.tens[P.skip].list[o]]);
+      if (P.ubo) gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, P.ubo);
+      let ins;
+      if (P.shuf) { // 4 текстуры малого уровня на каждую выходную + пропуск
+        const pre = B.tens[P.in].list; ins = [];
+        for (let o = P.o0; o < P.o1; o++) for (let r = 0; r < 4; r++) ins.push(['s' + ((o - P.o0) * 4 + r), pre[o * 4 + r]]);
+        for (let o = P.o0; o < P.o1; o++) ins.push(['k' + (o - P.o0), B.tens[P.skip].list[o]]);
+      } else ins = P.first ? [['src', this.tSrc]] : B.tens[P.in].list.map((t, j) => ['i' + j, t]);
       this.run(P, P.fbo, P.dst[0], P.dst[1], ins, (u) => { gl.uniform2i(u('szIn'), P.srcSz[0], P.srcSz[1]); }, P.o1 - P.o0);
     }
     gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, null);
@@ -1254,6 +1278,18 @@ class RtxEngine {
   }
   // src = null — кадр уже загружен через upload(). outFb — куда рисовать итог (null — прямо на холст)
   draw(src, vw, vh, crop, level, hdr, split, content) {
+    const gl = this.gl, tq = this.tq;
+    let timing = false;
+    if (tq) {
+      if (this.q && gl.getQueryParameter(this.q, gl.QUERY_RESULT_AVAILABLE)) {
+        if (!gl.getParameter(tq.GPU_DISJOINT_EXT)) { const ms = gl.getQueryParameter(this.q, gl.QUERY_RESULT) / 1e6; this.gpuMs = this.gpuMs ? this.gpuMs * 0.6 + ms * 0.4 : ms; }
+        gl.deleteQuery(this.q); this.q = null;
+      }
+      if (!this.q && ++this.qn % 30 === 0) { this.q = gl.createQuery(); gl.beginQuery(tq.TIME_ELAPSED_EXT, this.q); timing = true; }
+    }
+    try { return this.draw0(src, vw, vh, crop, level, hdr, split, content); } finally { if (timing) gl.endQuery(tq.TIME_ELAPSED_EXT); }
+  }
+  draw0(src, vw, vh, crop, level, hdr, split, content) {
     const gl = this.gl, k = crop;
     if (src) this.upload(src, vw, vh); else this.tSrc = this.tRaw;
     if (this.deband && vt.srDeband !== false && this.pDeb && level !== 'off' && this.ready(this.pDeb)) this.tSrc = this.debandPass(vw, vh);
@@ -1308,7 +1344,10 @@ class RtxEngine {
   }
   // ступенька вниз: нейросеть Pro → лёгкая → RAVU-3 → RAVU-2 → FSR
   // RTX 2 легче Pro — не успевает она, не успеет и Pro: сразу на лёгкую
-  slower() { const i = SR_TIER[this.used]; if (i > 0) { this.cap = Math.min(this.cap, this.used === 'rtx2' ? 3 : i - 1); return true; } return false; }
+  // по одной ступеньке: RTX 2 → Pro → лёгкая → RAVU-3 → RAVU-2 → FSR (замер на RTX 4070: RTX 2 ~28 мс, Pro ~14, лёгкая ~4)
+  slower() { const i = SR_TIER[this.used]; if (i > 0) { this.cap = Math.min(this.cap, i - 1); return true; } return false; }
+  // видеокарта освободилась — пробуем ступеньку выше
+  faster() { if (this.cap < this.capMax) { this.cap++; this.gpuMs = 0; return true; } return false; }
   destroy() { this.dead = true; try { this.gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {} }
 }
 // ---------- 7в. 60 кадров: промежуточные кадры между настоящими ----------
@@ -1492,14 +1531,29 @@ class FrameGen {
 }
 // Следит, успевает ли видеокарта: браузер пропускает кадры видео или наша отрисовка тормозит кадры экрана.
 class RtxPerf {
-  constructor() { this.q0 = null; this.dts = []; this.last = 0; }
+  constructor() { this.q0 = null; this.dts = []; this.last = 0; this.grace = 0; this.downAt = 0; this.upAt = 0; this.wait = 60000; }
+  // Раз в 2 с: 'down' — не успеваем, 'up' — давно всё ровно и есть куда расти, иначе null.
+  // Первые 5 с после открытия и после смены сети не судим: в это время собираются шейдеры и выделяется память,
+  // кадры пропускаются, но потом сеть идёт нормально (раньше из-за этого сеть понижалась навсегда за прогрев).
+  // Наверх — не раньше чем через минуту ровной работы; сорвалось сразу после подъёма — следующий раз ждём вдвое дольше
+  tick(v, used, eng) {
+    const now = performance.now();
+    if (this.check(v, used)) {
+      if (this.upAt && now - this.upAt < 30000) this.wait = Math.min(this.wait * 2, 600000);
+      this.downAt = now; this.upAt = 0; return 'down';
+    }
+    if (eng && eng.cap < eng.capMax && !v.paused && !document.hidden && now - (this.downAt || now) > this.wait && SR_TIER[used] >= eng.cap) { this.upAt = now; this.downAt = now; return 'up'; }
+    return null;
+  }
   frame(now) { if (this.last) { this.dts.push(now - this.last); if (this.dts.length > 120) this.dts.shift(); } this.last = now; }
   reset() { this.q0 = null; this.dts = []; this.last = 0; }
   // true — пора ступенька вниз
   check(v, used) {
     const q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
     if (!q || v.paused || document.hidden || !used || used === 'fsr' || used === 'off' || used === 'down') { this.reset(); return false; }
-    if (!this.q0 || this.q0.used !== used) { this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used }; this.dts = []; return false; }
+    const now = performance.now();
+    if (!this.q0 || this.q0.used !== used) { this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used }; this.dts = []; this.grace = now + 5000; return false; }
+    if (now < this.grace) { this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used }; this.dts = []; return false; }
     const n = q.totalVideoFrames - this.q0.n, d = q.droppedVideoFrames - this.q0.d;
     let slow = false;
     if (n >= 48) { slow = d / n > 0.12; this.q0 = { n: q.totalVideoFrames, d: q.droppedVideoFrames, used }; }
@@ -1572,10 +1626,11 @@ class SuperRes {
   }
   perf() {
     if (this.big) { this.perfMon.reset(); return; }
-    if (this.perfMon.check(this.v, this.used) && this.eng.slower()) {
-      console.warn(`[liquid] Liquid RTX: видеокарта не успевает (${this.used} ${this.ow}×${this.oh}) — ступенька вниз`);
+    const r = this.perfMon.tick(this.v, this.used, this.eng);
+    if (r === 'down' && this.eng.slower()) {
+      console.warn(`[liquid] Liquid RTX: видеокарта не успевает (${this.used} ${this.ow}×${this.oh}, ${this.eng.gpuMs.toFixed(1)} мс на кадр) — ступенька вниз`);
       this.slow = true; barRender();
-    }
+    } else if (r === 'up' && this.eng.faster()) { this.slow = this.eng.cap < this.eng.capMax; this.dirty = true; barRender(); }
   }
   place() {
     const v = this.v, c = this.c;
@@ -2002,7 +2057,7 @@ function barRender() {
   else if (vt.sr !== 'off' && r && r.big) { st.className = 'st ok'; st.textContent = `Не нужна: видео ${v.videoWidth}×${v.videoHeight} крупнее плеера на экране (${r.ow}×${r.oh}) — показываю как есть. В полном экране включится сама.`; }
   else if (vt.sr !== 'off' && r && r.frames > 0) {
     // каким способом сейчас увеличиваем: RAVU-3 / RAVU-2 (обученный фильтр) или FSR (запасной)
-    const how = SR_NAMES[r.used] ? ' · ' + SR_NAMES[r.used] + (r.slow ? ' (видеокарта не успевала за лучшим)' : '') : '';
+    const how = SR_NAMES[r.used] ? ' · ' + SR_NAMES[r.used] + (r.slow ? ' (понижено: видеокарта не успевала — попробую снова через минуту)' : '') : '';
     st.className = 'st ok'; st.textContent = `Работает: ${v.videoWidth}×${v.videoHeight} → ${r.ow}×${r.oh}${how}${vt.srHdr ? ' · HDR' : ''}`;
   }
   else if (vt.sr !== 'off' && v.offsetWidth < 240) { st.className = 'st'; st.textContent = 'Включится, когда видео станет больше.'; }
@@ -2474,8 +2529,8 @@ function lpRender() {
   const how = SR_NAMES[lp.used] || '';
   if (vt.sr === 'off') { bd.className = 'badge off'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · Liquid RTX выкл`; }
   else if (lp.used === 'down') { bd.className = 'badge off'; bd.textContent = `Видео ${v.videoWidth}×${v.videoHeight} — уже не меньше экрана, показываю как есть`; }
-  else if (lp.eng.clean) { bd.className = 'badge'; bd.textContent = `${v.videoWidth}×${v.videoHeight} · очистка (${how}): кадр ×2 и обратно до экрана${lp.slow ? ' (видеокарта не успевала за лучшим)' : ''}${vt.srHdr ? ' · HDR' : ''}`; }
-  else { bd.className = 'badge'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · ${how}${lp.slow ? ' (видеокарта не успевала за лучшим)' : ''}${vt.srHdr ? ' · HDR' : ''}`; }
+  else if (lp.eng.clean) { bd.className = 'badge'; bd.textContent = `${v.videoWidth}×${v.videoHeight} · очистка (${how}): кадр ×2 и обратно до экрана${lp.slow ? ' (понижено: видеокарта не успевала — попробую снова через минуту)' : ''}${vt.srHdr ? ' · HDR' : ''}`; }
+  else { bd.className = 'badge'; bd.textContent = `${v.videoWidth}×${v.videoHeight} → ${out} · ${how}${lp.slow ? ' (понижено: видеокарта не успевала — попробую снова через минуту)' : ''}${vt.srHdr ? ' · HDR' : ''}`; }
   // 60 кадров: что происходит — дорисовываем или не нужно
   const f = lp.fg, fps = lp.fps ? Math.round(lp.fps) : 0;
   let fgt = '';
@@ -2483,6 +2538,7 @@ function lpRender() {
   else if (vt.lpSmooth && lp.fgActive) fgt = `${fps}${f.dbl ? ' (в 60)' : ''} → ${Math.round(lp.hz)} к/с`;
   else if (vt.lpSmooth && fps && !lp.split) fgt = fps > 34 ? `${fps} к/с — дорисовка не нужна` : lp.hz && lp.hz < fps * 1.5 ? `${fps} к/с — экран ${Math.round(lp.hz)} Гц, дорисовка не нужна` : '';
   if (fgt) bd.textContent += ' · ' + fgt;
+  if (vt.sr !== 'off' && lp.eng.gpuMs) bd.textContent += ` · ${lp.eng.gpuMs.toFixed(1).replace('.', ',')} мс на кадр`;
   q('.spin').classList.toggle('on', v.readyState < 3 && !v.paused);
   lpRenderTime();
 }
@@ -2581,7 +2637,12 @@ function lpOpen(v, fromFs) {
   for (const ev of LP_EV) v.addEventListener(ev, lp.onEv);
   v.addEventListener('timeupdate', lp.onTime);
   window.addEventListener('keydown', lpKey, true);
-  lp.perfT = setInterval(() => { if (lp.perf.check(v, lp.used) && lp.eng.slower()) { lp.slow = true; console.warn('[liquid] Liquid Player: видеокарта не успевает — ступенька вниз'); lpRender(); } }, 2000);
+  lp.perfT = setInterval(() => {
+    const r = lp.perf.tick(v, lp.used, lp.eng);
+    if (r === 'down' && lp.eng.slower()) { lp.slow = true; console.warn(`[liquid] Liquid Player: видеокарта не успевает (${lp.used}, ${lp.eng.gpuMs.toFixed(1)} мс на кадр) — ступенька вниз`); lpRender(); }
+    else if (r === 'up' && lp.eng.faster()) { lp.slow = lp.eng.cap < lp.eng.capMax; lp.dirty = true; lpRender(); }
+    else if (lp.eng.gpuMs) lpRender(); // обновить «мс на кадр» в строке
+  }, 2000);
   lp.capT = setInterval(lpCaptions, 250);
   if (!fromFs) lpFullscreen(); // не вышло — остаёмся во всё окно, F или кнопка включат полный экран
   lpLayout(); lpRender(); lpUi(); lpLoop();
