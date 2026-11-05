@@ -321,6 +321,7 @@
               <div class="set-t"><b>Дорисовка деталей: <span id="srGanV">50 %</span></b><small>0 % — только точность, как обычно. 100 % — как обучена. Больше 100 % — сильнее, чем обучена (экспериментально): если появились выдуманные узоры — убавь</small></div>
               <input type="range" id="srGan" min="0" max="200" step="10" />
             </div>
+            <label class="set-row" id="srTwoBox" hidden><div class="set-t"><b>Сеть на два кадра</b><small>Liquid RTX 2 смотрит и на прошлый кадр: меньше мерцания и шума на неподвижном. Выключи, чтобы сравнить с сетью на один кадр</small></div><input type="checkbox" id="srTwo" class="switch" /></label>
             <label class="set-row"><div class="set-t"><b>Учить автоматически</b><small>Когда место под данные заполнится и видео не играет</small></div><input type="checkbox" id="rtxAutoTrain" class="switch" /></label>
           </div>
           <div class="set-card">

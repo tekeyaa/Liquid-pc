@@ -222,7 +222,7 @@
   };
 
   // ---- видео: Супер-чёткость и панель на видео ----
-  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, lpSmooth: settings.lpSmooth !== false, srNet: settings.srNet || 'auto', gan: settings.srGan ?? 50, maxG: settings.srMaxG || 8, preG: settings.srPreG || 0, learn: !!settings.rtxLearn, deband: settings.srDeband !== false }; }
+  function videoPrefsMsg() { return { type: 'video', op: 'prefs', sr: settings.superRes || 'off', srHdr: !!settings.srHdr, bar: settings.vidBar !== false, lpAuto: settings.lpAuto !== false, lpSmooth: settings.lpSmooth !== false, srNet: settings.srNet || 'auto', gan: settings.srGan ?? 50, maxG: settings.srMaxG || 8, preG: settings.srPreG || 0, learn: !!settings.rtxLearn, deband: settings.srDeband !== false, two: settings.srTwo !== false }; }
   function pushVideoPrefs() { for (const t of tabs) if (t.wv && /^https?:/.test(t.url)) { try { t.wv.send('liquid', videoPrefsMsg()); } catch {} } }
   function renderSr() {
     $('#srLevel').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.superRes || 'off')));
@@ -231,6 +231,7 @@
     $('#lpAuto').checked = settings.lpAuto !== false;
     $('#lpSmooth').checked = settings.lpSmooth !== false;
     $('#srDeband').checked = settings.srDeband !== false;
+    $('#srTwo').checked = settings.srTwo !== false;
     $('#rtxLearn').checked = !!settings.rtxLearn; $('#rtxLearnBox').hidden = !settings.rtxLearn;
     $('#rtxLearnGb').value = String(settings.rtxLearnGb || 1);
     $('#rtxLearnWatch').checked = settings.rtxLearnWatch !== false;
@@ -255,9 +256,9 @@
     }
     const t = await L.rtxLearn.trainState().catch(() => null); if (!t) return;
     $('#rtxTrainGo').hidden = t.running; $('#rtxTrainStop').hidden = !t.running; $('#rtxTrainHours').disabled = t.running; $('#rtxGanGo').hidden = t.running;
-    $('#rtxGanBox').hidden = !t.gan;
+    $('#rtxGanBox').hidden = !t.gan; $('#srTwoBox').hidden = !t.two;
     const day = (x) => new Date(x).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-    $('#rtxMine').textContent = t.mine ? `Твоя сеть обучена${t.mine.at ? ' ' + day(t.mine.at) : ''}${t.mine.vsPro > 0 ? ` · точнее Pro на ${t.mine.vsPro.toFixed(2).replace('.', ',')} дБ` : ''}` : 'Своя сеть ещё не обучена';
+    $('#rtxMine').textContent = t.mine ? `Твоя сеть обучена${t.mine.at ? ' ' + day(t.mine.at) : ''}${t.mine.vsPro > 0 ? ` · точнее Pro на ${t.mine.vsPro.toFixed(2).replace('.', ',')} дБ` : ''}${t.two ? (settings.srTwo !== false ? ' · работает на два кадра' : ' · на два кадра выключена') : ''}` : 'Своя сеть ещё не обучена';
     $('#rtxTrainStat').textContent = t.msg || (t.mine ? 'Можно доучить — станет ещё точнее.' : t.ready ? 'Пока работает встроенная. Учится на собранных роликах; лучше ставить на 6–12 часов.'
       : 'Пока работает встроенная. Нужна видеокарта NVIDIA; в первый раз браузер сам скачает Python и PyTorch (~3 ГБ).');
   }
@@ -287,6 +288,7 @@
   $('#srHdr').onchange = async (e) => { settings = await L.settings.set({ srHdr: e.target.checked }); pushVideoPrefs(); };
   $('#vidBar').onchange = async (e) => { settings = await L.settings.set({ vidBar: e.target.checked }); pushVideoPrefs(); };
   $('#srDeband').onchange = async (e) => { settings = await L.settings.set({ srDeband: e.target.checked }); pushVideoPrefs(); };
+  $('#srTwo').onchange = async (e) => { settings = await L.settings.set({ srTwo: e.target.checked }); pushVideoPrefs(); learnStat(); };
   $('#lpAuto').onchange = async (e) => { settings = await L.settings.set({ lpAuto: e.target.checked }); pushVideoPrefs(); };
   $('#lpSmooth').onchange = async (e) => { settings = await L.settings.set({ lpSmooth: e.target.checked }); pushVideoPrefs(); };
   window.saveSrPref = async (p) => { settings = await L.settings.set(p); renderSr(); pushVideoPrefs(); };

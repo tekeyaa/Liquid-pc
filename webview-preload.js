@@ -622,12 +622,14 @@ function videoCmd(m) {
     // способ счёта RTX 2 (замер «Подобрать под видеокарту»): другой — шейдеры собираются заново
     const g = m.maxG || SR_MAXG, pg = m.preG ?? SR_PREG;
     if (g !== SR_MAXG || pg !== SR_PREG) { SR_MAXG = g; SR_PREG = pg; for (const r of vt.srMap.values()) { try { r.eng.dropNet('rtx2'); r.dirty = true; } catch {} } if (lp.open && lp.eng) { lp.eng.dropNet('rtx2'); lp.dirty = true; } }
-    if (m.gan != null && vt.gan != null && m.gan !== vt.gan) {
+    // дорисовка или «сеть на два кадра» поменялись — веса RTX 2 другие: берём заново
+    if ((m.gan != null && vt.gan != null && m.gan !== vt.gan) || (m.two != null && vt.two != null && m.two !== vt.two)) {
       delete SR_NET.rtx2;
       for (const r of vt.srMap.values()) { try { r.eng && r.eng.dropNet('rtx2'); r.dirty = true; } catch {} }
       if (lp.open && lp.eng) { lp.eng.dropNet('rtx2'); lp.dirty = true; }
     }
     if (m.gan != null) vt.gan = m.gan;
+    if (m.two != null) vt.two = m.two;
     if (m.lpSmooth != null) { vt.lpSmooth = !!m.lpSmooth; if (lp.open) { lp.dirty = true; lpRender(); } }
     if (m.deband != null) { vt.srDeband = !!m.deband; for (const r of vt.srMap.values()) r.dirty = true; if (lp.open) lp.dirty = true; }
     if (m.srContent) vt.srContent = m.srContent;
