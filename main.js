@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, session, safeStorage, Menu, clipboard, shell, net, dialog, screen, webContents, Notification, nativeImage, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { parseKey, Xray, DPI_CONFIG } = require('./vpn');
+const { parseKey, Xray, DPI_CONFIG, DPI_STRATS } = require('./vpn');
 const { spawn } = require('child_process');
 const { AdBlock } = require('./main/adblock');
 const { SmartVpn, DPI_SITES, NEVER_VPN, parseBlockList } = require('./main/smartvpn');
@@ -993,16 +993,63 @@ let dpiRestarts = 0;
 async function startDpi() {
   if (loadSettings().antiDpi === false || !dpiXray) return false;
   try {
-    const port = await dpiXray.start(null, DPI_CONFIG);
+    const strat = DPI_STRATS[loadSettings().dpiStrat] ? loadSettings().dpiStrat : 'slow-doh';
+    const port = await dpiXray.start(null, (p) => DPI_CONFIG(p, strat));
+    dpiCur = strat;
     smart.dpi = `SOCKS5 127.0.0.1:${port}; SOCKS 127.0.0.1:${port}`;
     await applyProxy({ close: true });
-    diag.log('info', 'обход', 'Обход замедления включён (Twitch, YouTube, Discord без VPN)');
+    diag.log('info', 'обход', `Обход замедления включён (Twitch, YouTube, Discord без VPN), способ ${strat}`);
     return true;
   } catch (e) {
     smart.dpi = '';
     diag.log('warn', 'обход', 'Обход замедления не запустился: ' + e.message);
     return false;
   }
+}
+// Подбор способа обхода под провайдера: каждый способ поднимается отдельным xray, через него грузится главная
+// Twitch (полностью — замедление обычно начинается после первых ~16 КБ). Берётся самый быстрый из сработавших;
+// не сработал ни один — остаётся прежний. Раз в сутки и после включения обхода; во время замера обход работает как был
+let dpiCur = '', dpiProbing = false;
+async function probeDpi(force) {
+  if (dpiProbing || !dpiXray || !smart.dpi || loadSettings().antiDpi === false) return;
+  const st = loadSettings();
+  if (!force && st.dpiProbeAt && Date.now() - st.dpiProbeAt < 864e5) return;
+  dpiProbing = true;
+  const px = new Xray(dpiXray.binDir, app.getPath('userData'), 'xray-dpi-probe');
+  const ses = session.fromPartition('liquid-dpiprobe', { cache: false });
+  const res = {};
+  try {
+    for (const strat of Object.keys(DPI_STRATS)) {
+      try {
+        const port = await px.start(null, (p) => DPI_CONFIG(p, strat));
+        await ses.setProxy({ proxyRules: `socks5://127.0.0.1:${port}` });
+        await ses.closeAllConnections().catch(() => {});
+        let best = Infinity;
+        for (let k = 0; k < 2; k++) { // два раза: первый — с DNS и рукопожатием «с нуля»
+          const ctrl = new AbortController(), t0 = Date.now(), tm = setTimeout(() => ctrl.abort(), 10000);
+          try {
+            const r = await ses.fetch('https://www.twitch.tv/?lq=' + Date.now(), { signal: ctrl.signal, cache: 'no-store', headers: { 'user-agent': UA } });
+            const len = (await r.arrayBuffer()).byteLength;
+            if (r.ok && len > 20000) best = Math.min(best, Date.now() - t0);
+          } catch {} finally { clearTimeout(tm); }
+        }
+        res[strat] = best;
+      } catch { res[strat] = Infinity; }
+    }
+  } finally { px.stop(); dpiProbing = false; }
+  const ok = Object.entries(res).filter(([, ms]) => isFinite(ms)).sort((a, b) => a[1] - b[1]);
+  const s2 = loadSettings(); s2.dpiProbeAt = Date.now();
+  const line = Object.entries(res).map(([k, ms]) => `${k} ${isFinite(ms) ? ms + ' мс' : 'не открылось'}`).join(', ');
+  if (!ok.length) { saveSettings(s2); diag.log('warn', 'обход', 'Замер способов: ни один не открыл Twitch — оставляю прежний (' + line + ')'); return; }
+  const [win, ms] = ok[0];
+  // меняем, только если заметно быстрее нынешнего (или нынешний не открывает)
+  const cur = res[dpiCur];
+  if (win !== dpiCur && (!isFinite(cur) || ms < cur * 0.8)) {
+    s2.dpiStrat = win; saveSettings(s2);
+    diag.log('info', 'обход', `Замер способов: ${line}. Переключаю обход на ${win}`);
+    dpiRestarts = 0; await startDpi();
+    broadcast('toast', { text: `Обход замедления: подобрал способ быстрее для твоего провайдера (${win})` });
+  } else { saveSettings(s2); diag.log('info', 'обход', `Замер способов: ${line}. Оставляю ${dpiCur}`); }
 }
 async function stopDpi() {
   dpiXray?.stop();
@@ -1560,7 +1607,7 @@ function registerIpc() {
     if ('dns' in patch) s.dns = patch.dns in DNS || patch.dns === 'off' ? patch.dns : 'auto';
     saveSettings(s);
     if ('dns' in patch) { applyDns(); for (const x of allSessions()) x.closeAllConnections().catch(() => {}); }
-    if ('antiDpi' in patch) { dpiRestarts = 0; return (s.antiDpi ? startDpi() : stopDpi()).then(() => publicSettings()); }
+    if ('antiDpi' in patch) { dpiRestarts = 0; return (s.antiDpi ? startDpi().then((ok) => { if (ok) setTimeout(() => probeDpi(true), 3000); }) : stopDpi()).then(() => publicSettings()); }
     if ('blockList' in patch) updateBlockList(true).then(() => broadcast('vpn:state', vpnState));
     if ('vpnMode' in patch || 'vpnSites' in patch || 'vpnRuDirect' in patch || 'vpnExcludeRemove' in patch || patch.forgetLearned || patch.learnedRemove) {
       syncSmartLists();
@@ -2228,6 +2275,7 @@ app.whenReady().then(async () => {
   // Вкладки страницы ждут их через boot:ready (не дольше 3 секунд), поэтому порядок как раньше.
   const limit = (p, ms) => Promise.race([Promise.resolve(p).catch(() => {}), new Promise((r) => setTimeout(r, ms))]);
   bootReady = Promise.all([limit(startDpi(), 3000), limit(exts.loadAll([ses]), 2000)]);
+  setTimeout(() => probeDpi(false).catch(() => {}), 20000); // раз в сутки, не мешая запуску
   bootReady.then(() => diag.log('info', 'запуск', `готово за ${Date.now() - bootT0} мс`));
 
   app.getGPUInfo('basic').then((g) => {

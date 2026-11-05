@@ -181,16 +181,32 @@ function waitPort(port, ms = 6000) {
 // Обход замедления без VPN (как GoodbyeDPI / zapret): соединение идёт напрямую, но первое сообщение TLS
 // (ClientHello, где открытым текстом написано имя сайта) xray режет на мелкие куски с паузами —
 // фильтр провайдера не может прочитать имя и не трогает соединение. Имена сайтов xray узнаёт через DNS по HTTPS.
-const DPI_CONFIG = (port) => ({
-  log: { loglevel: 'warning' },
-  dns: { servers: ['https+local://1.1.1.1/dns-query', 'https+local://8.8.8.8/dns-query', 'localhost'], queryStrategy: 'UseIPv4' },
-  inbounds: [{ tag: 'socks-in', listen: '127.0.0.1', port, protocol: 'socks', settings: { udp: false } }],
-  outbounds: [{
-    tag: 'frag', protocol: 'freedom',
-    settings: { fragment: { packets: 'tlshello', length: '40-80', interval: '1-2' } },
-    streamSettings: { sockopt: { domainStrategy: 'UseIPv4' } }, // имя сайта xray сам резолвит через DNS по HTTPS
-  }],
-});
+// Способы резать ClientHello: на сколько кусков и с паузами ли. Прежний («slow») — мелкие куски с паузами 1–2 мс:
+// надёжно, но каждое новое соединение (а Twitch открывает их десятками на чанки видео) ждёт лишние миллисекунды.
+// «fast» — 2–3 крупных куска без пауз: у большинства провайдеров фильтр так же не узнаёт имя, а соединение не ждёт.
+// DNS: «sys» — системный (ближайший к тебе сервер видео Twitch выбирается по нему), «doh» — DNS по HTTPS (если
+// провайдер подменяет ответы). Какой способ работает и быстрее у твоего провайдера — проверяется замером (main.js)
+const DPI_STRATS = {
+  'fast-sys': { frag: { length: '100-200', interval: '0' }, dns: 'sys' },
+  'split-sys': { frag: { length: '20-60', interval: '0' }, dns: 'sys' },
+  'fast-doh': { frag: { length: '100-200', interval: '0' }, dns: 'doh' },
+  'slow-doh': { frag: { length: '40-80', interval: '1-2' }, dns: 'doh' }, // прежний, до 1.34
+};
+const DOH = ['https+local://1.1.1.1/dns-query', 'https+local://8.8.8.8/dns-query'];
+const DPI_CONFIG = (port, strat) => {
+  const S = DPI_STRATS[strat] || DPI_STRATS['slow-doh'];
+  return {
+    log: { loglevel: 'warning' },
+    dns: { servers: S.dns === 'sys' ? ['localhost', ...DOH] : [...DOH, 'localhost'], queryStrategy: 'UseIPv4' },
+    inbounds: [{ tag: 'socks-in', listen: '127.0.0.1', port, protocol: 'socks', settings: { udp: false } }],
+    outbounds: [{
+      tag: 'frag', protocol: 'freedom',
+      settings: { fragment: { packets: 'tlshello', ...S.frag } },
+      // tcpNoDelay — мелкие пакеты (куски ClientHello, запросы чанков) уходят сразу, без склейки
+      streamSettings: { sockopt: { domainStrategy: 'UseIPv4', tcpNoDelay: true } },
+    }],
+  };
+};
 
 class Xray {
   constructor(binDir, workDir, name = 'xray') { this.binDir = binDir; this.workDir = workDir; this.name = name; this.proc = null; this.port = 0; this.log = ''; }
@@ -234,4 +250,4 @@ class Xray {
   alive() { return !!this.proc && this.proc.exitCode === null; }
 }
 
-module.exports = { parseKey, Xray, DPI_CONFIG };
+module.exports = { parseKey, Xray, DPI_CONFIG, DPI_STRATS };
