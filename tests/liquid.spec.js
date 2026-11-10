@@ -703,6 +703,49 @@ test('VPN: подписка — серверы из ссылки', async () => {
   expect((await win.evaluate(() => L.vpn.servers())).list).toHaveLength(0);
 });
 
+// ---------------- сон вкладок ----------------
+const tabState = (i) => win.evaluate((k) => { const t = tabs[k]; return { sleeping: !!t.sleeping, cls: t.el.classList.contains('sleeping'), url: t.url, wv: !!t.wv, typed: !!t.typed }; }, i);
+
+test('сон вкладки: засыпает и просыпается на том же адресе и месте страницы', async () => {
+  const i = await win.evaluate((u) => { createTab(u); return tabs.indexOf(active); }, `${base}/long.html`);
+  await expect.poll(async () => (await activeUrl()).includes('/long.html') && (await inTab('document.readyState')) === 'complete', { timeout: 15_000 }).toBe(true);
+  await inTab('scrollTo(0, 1500)');
+  await win.evaluate((u) => createTab(u), `${base}/article.html`); // долгая статья уходит в фон
+  expect(await win.evaluate((k) => sleepTab(tabs[k]), i)).toBe(true);
+  const s = await tabState(i);
+  expect(s).toMatchObject({ sleeping: true, cls: true, wv: false });
+  expect(s.url).toContain('/long.html');
+  await win.evaluate((k) => activate(tabs[k]), i); // клик по вкладке — просыпается
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/long.html');
+  expect((await tabState(i)).cls).toBe(false);
+  await expect.poll(() => inTab('scrollY'), { timeout: 10_000 }).toBeGreaterThan(1000);
+  await win.evaluate(() => { for (const t of tabs.slice(-2)) closeTab(t); });
+});
+
+test('не хватает памяти: усыпляет давние фоновые вкладки, не трогая ту, где печатают, — и говорит об этом', async () => {
+  await win.evaluate((b) => { createTab(b + '/article.html?mem=1'); createTab(b + '/form.html'); }, base);
+  await expect.poll(async () => (await activeUrl()).includes('/form.html') && (await inTab('document.readyState')) === 'complete', { timeout: 15_000 }).toBe(true);
+  // печатаем в поле настоящими нажатиями (как человек) — вкладка помечается «тут вводят текст»
+  await inTab(`document.getElementById('q').focus()`);
+  const id = await win.evaluate(() => active.wv.getWebContentsId());
+  await app.evaluate(({ webContents }, wcId) => { const w = webContents.fromId(wcId); for (const type of ['keyDown', 'char', 'keyUp']) w.sendInputEvent({ type, keyCode: 'a' }); }, id);
+  await expect.poll(() => inTab(`document.getElementById('q').value`)).toMatch(/a/);
+  const fi = await win.evaluate(() => tabs.indexOf(active));
+  await expect.poll(() => tabState(fi).then((s) => s.typed)).toBe(true);
+  await win.evaluate((u) => createTab(u), `${base}/article.html?mem=2`); // обе вкладки — в фоне
+  const ai = fi - 1;
+  await win.evaluate(() => { settings.sleepMem = 1; }); // порог в 1 МБ — памяти «не хватает» сразу
+  const n = await win.evaluate(() => window.memPressureCheck());
+  await win.evaluate(() => { settings.sleepMem = 1536; });
+  expect(n).toBeGreaterThanOrEqual(1);
+  expect(await tabState(ai)).toMatchObject({ sleeping: true, cls: true }); // давняя фоновая — спит
+  expect(await tabState(fi)).toMatchObject({ sleeping: false, typed: true }); // с введённым текстом — нет
+  expect(await win.evaluate(() => document.querySelector('#toast').textContent)).toMatch(/Усыпил \d+ фонов.* — не хватало памяти/);
+  expect(await win.evaluate((k) => tabs[k].el.title, ai)).toContain('не хватало памяти');
+  await expect.poll(() => logText(), { timeout: 5000 }).toMatch(/\[память\] Усыпил фоновых вкладок/);
+  await win.evaluate(() => { for (const t of tabs.slice(-3)) closeTab(t); });
+});
+
 test('заминки основного процесса (для сведения)', async () => {
   const lines = logText().split('\n').filter((l) => /заминка|списки обновлены|блокировщик\]/.test(l));
   // итог одной строкой — для сравнения «до/после»: сколько заминок и сколько из них — своя работа основного процесса
@@ -710,7 +753,7 @@ test('заминки основного процесса (для сведени�
   const busy = ms(/Основной процесс был занят (\d+)/), wait = ms(/Основной процесс ждал процессор (\d+)/), ui = ms(/Окно браузера было занято (\d+)/);
   const sum = (a) => a.reduce((x, y) => x + y, 0);
   lines.push(`ИТОГ заминок > 300 мс: основной процесс занят ${busy.length} (${sum(busy)} мс), ждал процессор ${wait.length} (${sum(wait)} мс); окно ${ui.length} (${sum(ui)} мс)`);
-  fs.writeFileSync(path.join(ROOT, 'test-results', 'stalls.txt'), lines.join('\n'));
+  fs.writeFileSync(path.join(ROOT, 'test-results', 'stalls.txt'), lines.join('\n') + '\n'); // с концом строки — иначе последнюю не прочтёт шаг в GitHub
 });
 
 test('в журнале нет ошибок браузера', async () => {

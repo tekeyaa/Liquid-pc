@@ -28,7 +28,8 @@ class Diag {
     this.cur = '';           // файл сегодняшнего журнала и его размер — без проверки диска на каждую строку
     this.size = 0;
     this.cleanup();
-    process.on('exit', () => this.flush());
+    this.writing = null;     // идёт запись на диск (не останавливая основной процесс)
+    process.on('exit', () => this.flush(true));
   }
 
   file() {
@@ -72,23 +73,25 @@ class Diag {
     // Сайты сыплют предупреждениями в консоль; раньше каждая строка — это три обращения к диску из основного
     // процесса браузера. Теперь строки копятся и пишутся пачкой раз в секунду; ошибки и сбои — сразу.
     this.queue.push(line);
-    if (LEVELS[e.level] >= LEVELS.error) this.flush();
+    if (LEVELS[e.level] >= LEVELS.crash) this.flush(true); // сбой — сразу и надёжно: процесс может не дожить
+    else if (LEVELS[e.level] >= LEVELS.error) this.flush();
     else if (!this.flushT) this.flushT = setTimeout(() => this.flush(), 1000);
     for (const l of this.listeners) { try { l(e, this.unseen); } catch {} }
   }
 
-  flush() {
+  // Пачка строк — на диск. Обычно без ожидания: синхронная запись держала основной процесс (на Windows с антивирусом
+  // до сотен мс за раз). Записи идут по очереди, строки не перемешиваются; при выходе и сбое — сразу (sync)
+  flush(sync) {
     clearTimeout(this.flushT); this.flushT = 0;
     if (!this.queue.length) return;
     const data = this.queue.join(''); this.queue = [];
-    try {
-      const f = this.file();
-      if (f !== this.cur) { this.cur = f; try { this.size = fs.statSync(f).size; } catch { this.size = 0; } }
-      // не больше 5 МБ в день (значок новых ошибок при этом всё равно обновляется)
-      if (this.size > 5 * 1024 * 1024) return;
-      fs.appendFileSync(f, data);
-      this.size += Buffer.byteLength(data);
-    } catch {}
+    const f = this.file();
+    if (f !== this.cur) { this.cur = f; try { this.size = fs.statSync(f).size; } catch { this.size = 0; } }
+    // не больше 5 МБ в день (значок новых ошибок при этом всё равно обновляется)
+    if (this.size > 5 * 1024 * 1024) return;
+    this.size += Buffer.byteLength(data);
+    if (sync) { try { fs.appendFileSync(f, data); } catch {} return; }
+    this.writing = (this.writing || Promise.resolve()).then(() => fs.promises.appendFile(f, data)).catch(() => {});
   }
 
   list(minLevel = 'warn', limit = 300) {

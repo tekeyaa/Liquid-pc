@@ -29,7 +29,8 @@ const cache = new Map();
 // r: 'r2' (быстрее) или 'r3' (точнее)
 function load(r) {
   if (!['r2', 'r3'].includes(r)) return null;
-  if (!cache.has(r)) cache.set(r, parseHook(fs.readFileSync(path.join(__dirname, 'ravu', `ravu-zoom-ar-${r}-rgb.hook`), 'utf8')));
+  // файл в 3–5 МБ читаем без остановки основного процесса; несколько вкладок сразу ждут одно и то же чтение
+  if (!cache.has(r)) cache.set(r, fs.promises.readFile(path.join(__dirname, 'ravu', `ravu-zoom-ar-${r}-rgb.hook`), 'utf8').then(parseHook).catch((e) => { cache.delete(r); throw e; }));
   return cache.get(r);
 }
 
