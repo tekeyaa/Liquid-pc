@@ -1,0 +1,40 @@
+name: Замер блокировщика
+
+# Ghostery (нынешний блокировщик) против adblock-rust (Brave) на тех же списках: проверка запроса, память, загрузка движка.
+# Только вручную и в ветке adblock-rs — на выпуск не влияет.
+on:
+  workflow_dispatch:
+  push:
+    branches: [adblock-rs]
+
+jobs:
+  bench:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Ghostery
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm install --no-fund --no-audit --ignore-scripts
+
+      - name: adblock-rust (сборка из исходников)
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/brave/adblock-rust ../adblock-rust
+          cd ../adblock-rust
+          git log -1 --format='%h %cd' && grep -m1 '"version"' package.json
+          start=$(date +%s)
+          npm install --no-fund --no-audit
+          echo "::notice title=Сборка adblock-rs::$(( $(date +%s) - start )) с, $(ls -la js/index.node | awk '{print $5}') байт"
+
+      - name: Замер
+        shell: bash
+        run: |
+          node tests/adblock-bench.js --requests ../adblock-rust/data/requests.json --rust ../adblock-rust --resources ../adblock-rust/data/brave/brave-resources.json | tee bench.txt
+          while IFS= read -r l; do echo "::notice title=Блокировщик::${l:0:900}"; done < bench.txt
