@@ -44,7 +44,7 @@ if (process.argv[2] === '--child') {
       if (res.match) blocked++; if (res.redirect) redirects++;
     } else {
       const res = engine.check(r.url, r.frameUrl, r.cpt, '', true);
-      if (res.matched && !res.exception) blocked++; if (res.redirect) redirects++;
+      if (res.should_block) blocked++; if (res.redirect) redirects++;
     }
     times[i] = Number(process.hrtime.bigint() - a) / 1e6;
   }
