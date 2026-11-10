@@ -126,7 +126,7 @@ function makeSpare() {
   spareT = setTimeout(() => {
     if (spareWv || document.hidden) return;
     try { if (localStorage.getItem('liquid.noSpare')) return; } catch {} // для замеров «без заготовки»
-    const wv = document.createElement('webview');
+    const wv = document.createElement(window.TAB_TAG || 'webview'); // движок вкладок — renderer/tabview.js
     wv.setAttribute('partition', PARTITION);
     wv.setAttribute('allowpopups', '');
     wv.setAttribute('webpreferences', 'contextIsolation=yes');
@@ -154,7 +154,7 @@ function attachWebview(tab, url) {
   let wv = takeSpare();
   const reused = !!wv;
   if (!wv) {
-    wv = document.createElement('webview');
+    wv = document.createElement(window.TAB_TAG || 'webview');
     wv.setAttribute('partition', PARTITION);
     wv.setAttribute('allowpopups', '');
     wv.setAttribute('webpreferences', 'contextIsolation=yes');

@@ -9,7 +9,9 @@ if (location.protocol === 'file:' && /\/newtab\.html$/.test(location.pathname)) 
   try { contextBridge.exposeInMainWorld('liquidNewtab', { tiles: (t) => ipcRenderer.invoke('newtab:tiles', t), icons: (h) => ipcRenderer.invoke('newtab:icons', h), suggest: (q) => ipcRenderer.invoke('search:suggest', q) }); } catch {}
 }
 
-const toHost = (msg) => { try { ipcRenderer.sendToHost('liquid', msg); } catch {} };
+// в <webview> сообщения окну идут через sendToHost; во вкладке на WebContentsView (--lq-view) — через основной процесс
+const IN_VIEW = (process.argv || []).includes('--lq-view');
+const toHost = (msg) => { try { IN_VIEW ? ipcRenderer.send('tv:tohost', 'liquid', msg) : ipcRenderer.sendToHost('liquid', msg); } catch {} };
 // Этот код работает и во фреймах (встроенные плееры фильмов, видео соцсетей, YouTube на чужих сайтах).
 // Во фрейме нужны только видео и кнопки мыши; перевод, режим чтения и сведения о странице — только на самой странице
 // ошибки нашего кода на странице — в журнал отладки браузера (раньше функции не было, и сама запись об ошибке падала)

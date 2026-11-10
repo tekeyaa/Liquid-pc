@@ -11,7 +11,7 @@ on:
 jobs:
   test:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +31,13 @@ jobs:
         env:
           # в рабочих ветках — с профилировщиком: где основной процесс и окно тратят время
           LIQUID_PROFILE: ${{ github.ref != 'refs/heads/main' && 'test-results/prof' || '' }}
+
+      # те же проверки с новым движком вкладок (WebContentsView, настройка «Эксперименты»)
+      - name: Тесты — новый движок вкладок
+        if: always() && github.ref != 'refs/heads/main'
+        run: npx playwright test tests/liquid.spec.js --output test-results/view
+        env:
+          LIQUID_TAB_ENGINE: view
 
       - name: Профиль (для сведения)
         if: always() && github.ref != 'refs/heads/main'
@@ -63,9 +70,9 @@ jobs:
         run: |
           npx playwright install chromium >/dev/null 2>&1 || true
           : > all.json
-          for mode in liquid noadblock nohooks nopreload wcv wcvbare chromium liquid2; do
-            unset LIQUID_PERF_NOADBLOCK LIQUID_PERF_NOHOOKS LIQUID_PERF_NOPRELOAD LIQUID_PERF_CHROMIUM LIQUID_PERF_WCV
-            case $mode in noadblock) export LIQUID_PERF_NOADBLOCK=1;; nohooks) export LIQUID_PERF_NOHOOKS=1;; nopreload) export LIQUID_PERF_NOHOOKS=1 LIQUID_PERF_NOPRELOAD=1;; wcv) export LIQUID_PERF_WCV=1;; wcvbare) export LIQUID_PERF_WCV=bare LIQUID_PERF_NOHOOKS=1;; chromium) export LIQUID_PERF_CHROMIUM=1;; esac
+          for mode in liquid view noadblock nohooks nopreload wcv wcvbare chromium liquid2 view2; do
+            unset LIQUID_PERF_NOADBLOCK LIQUID_PERF_NOHOOKS LIQUID_PERF_NOPRELOAD LIQUID_PERF_CHROMIUM LIQUID_PERF_WCV LIQUID_TAB_ENGINE
+            case $mode in noadblock) export LIQUID_PERF_NOADBLOCK=1;; nohooks) export LIQUID_PERF_NOHOOKS=1;; nopreload) export LIQUID_PERF_NOHOOKS=1 LIQUID_PERF_NOPRELOAD=1;; view|view2) export LIQUID_TAB_ENGINE=view;; wcv) export LIQUID_PERF_WCV=1;; wcvbare) export LIQUID_PERF_WCV=bare LIQUID_PERF_NOHOOKS=1;; chromium) export LIQUID_PERF_CHROMIUM=1;; esac
             npx playwright test tests/perf.spec.js >/dev/null 2>&1 || true
             cat test-results/perf.json >> all.json 2>/dev/null || true
           done

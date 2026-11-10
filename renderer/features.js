@@ -660,6 +660,11 @@
   $('#sleepAfter').onchange = async (e) => { settings = await L.settings.set({ sleepAfter: +e.target.value }); };
   $('#memSaver').onchange = async (e) => { settings = await L.settings.set({ memSaver: e.target.checked }); toast('Применится после перезапуска браузера'); };
   $('#restore').onchange = async (e) => { settings = await L.settings.set({ restore: e.target.checked }); };
+  $('#tabEngine').onchange = async (e) => {
+    settings = await L.settings.set({ tabEngine: e.target.value });
+    L.diag.log('info', 'вкладки', `Движок вкладок после перезапуска: ${e.target.value === 'view' ? 'новый (WebContentsView)' : 'обычный (webview)'}`);
+    toast('Движок вкладок сменится после перезапуска', false, { label: 'Перезапустить', run: () => L.relaunch() });
+  };
   const renderUa = () => $('#uaMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.uaMode || 'chrome')));
   $('#uaMode').addEventListener('click', async (e) => { const b = e.target.closest('button'); if (!b) return; settings = await L.settings.set({ uaMode: b.dataset.v }); renderUa(); window.dropSpare?.(); });
   $('#adblockOn').onchange = async (e) => { settings = await L.settings.set({ adblock: e.target.checked }); active?.wv?.reload(); syncOmniExtras(active); };
@@ -692,6 +697,7 @@
     $('#sleepAfter').value = String(settings.sleepAfter ?? 20);
     $('#memSaver').checked = settings.memSaver !== false;
     $('#restore').checked = settings.restore !== false;
+    $('#tabEngine').value = settings.tabEngine === 'view' ? 'view' : 'webview';
     $('#adblockOn').checked = settings.adblock !== false;
     renderUa();
     $('#dlAsk').checked = !!settings.dlAsk;

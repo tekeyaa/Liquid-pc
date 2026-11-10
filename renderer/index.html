@@ -427,6 +427,15 @@
           </label>
           <label class="switch-row"><span>Экономия памяти (меньше фоновых процессов, нужен перезапуск)</span><input type="checkbox" id="memSaver" class="switch" /></label>
           <button id="sleepAll" class="btn ghost wide" style="margin-top:8px">Усыпить все фоновые вкладки</button>
+          <h4>Эксперименты</h4>
+          <label class="field">
+            <span>Движок вкладок (нужен перезапуск)</span>
+            <select id="tabEngine">
+              <option value="webview">Обычный</option>
+              <option value="view">Новый (WebContentsView) — эксперимент</option>
+            </select>
+          </label>
+          <div class="muted sm" style="line-height:1.5;margin:-4px 0 8px">Новый движок открывает страницы быстрее. Пока он в испытании: под меню и окнами браузера вместо страницы виден её снимок, а при поиске по странице и сообщениях внизу страница чуть уменьшается.</div>
         </section>
 
         <section class="set-sec debug" data-t="debug">
@@ -662,6 +671,7 @@
   </div>
 
   <script src="md.js"></script>
+  <script src="tabview.js"></script>
   <script src="app.js"></script>
   <script src="features.js"></script>
   <script src="features2.js"></script>

@@ -207,7 +207,7 @@ process.on('unhandledRejection', (e) => {
 });
 app.on('render-process-gone', (_e, wc, d) => {
   let url = ''; try { url = wc.getURL(); if (ses && wc.session && wc.session !== ses) url = '(инкогнито — адрес не записан)'; } catch {}
-  diag.log(d.reason === 'clean-exit' ? 'info' : 'crash', wc.getType() === 'webview' ? 'вкладка' : 'интерфейс', `Процесс упал: ${d.reason} (код ${d.exitCode})`, url);
+  diag.log(d.reason === 'clean-exit' ? 'info' : 'crash', isTab(wc) ? 'вкладка' : 'интерфейс', `Процесс упал: ${d.reason} (код ${d.exitCode})`, url);
 });
 app.on('child-process-gone', (_e, d) => {
   if (d.reason !== 'clean-exit' && d.reason !== 'killed') diag.log('crash', d.type, `Процесс ${d.type}${d.name ? ' ' + d.name : ''} упал: ${d.reason} (код ${d.exitCode})`);
@@ -291,7 +291,7 @@ function publicSettings() {
     hasClaudeKey: !!s.claudeKey, model: s.model || 'claude-sonnet-5-5',
     search: s.search || 'google', vpnAuto: !!s.vpnAuto, guard: s.guard !== false, fps: s.fps === '60' ? '60' : 'auto', claudeMode: s.claudeMode || (s.claudeKey ? 'api' : 'web'),
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
-    memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, restore: s.restore !== false, adblock: s.adblock !== false,
+    memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, tabEngine: s.tabEngine === 'view' ? 'view' : 'webview', tabEngineNow: tabEngine(), restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'anime'].includes(s.srNet) ? s.srNet : 'auto', srGan: Number.isFinite(s.srGan) ? s.srGan : 50, srMaxG: s.srMaxG || 8, srPreG: [0, 2, 4].includes(s.srPreG) ? s.srPreG : 0, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
     srDeband: s.srDeband !== false, srTwo: s.srTwo !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1, rtxLearnWatch: s.rtxLearnWatch !== false,
@@ -325,7 +325,16 @@ function applyDns() {
 // ---------- окно ----------
 function allSessions() { return [ses, ...incognito.values()].filter(Boolean); }
 function broadcast(ch, data) { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.__liquid) w.webContents.send(ch, data); }
-function hostOf(wc) { return wc?.hostWebContents || wc; }
+// движок вкладок: 'webview' (как раньше) или 'view' (WebContentsView, «Эксперименты»). Меняется после перезапуска
+function tabEngine() {
+  const e = TEST && process.env.LIQUID_TAB_ENGINE;
+  if (e === 'view' || e === 'webview') return e;
+  return loadSettings().tabEngine === 'view' ? 'view' : 'webview';
+}
+function hostOf(wc) { return wc?.hostWebContents || tabViews?.hostOf(wc) || wc; }
+// вкладка сайта: тег <webview> или WebContentsView (движок «view», main/tabviews.js)
+let tabViews = null;
+function isTab(wc) { try { return !!wc && (wc.getType() === 'webview' || !!tabViews?.isTab(wc)); } catch { return false; } }
 
 // extra — дополнительное окно (вытянутая вкладка, «Новое окно»): та же сессия, но свои вкладки, сессию не сохраняет.
 // open — адрес первой вкладки; x/y — где появиться (под курсором, когда вкладку вытянули мышью)
@@ -358,7 +367,7 @@ function createWindow({ priv = false, extra = false, open = '', x, y, from = nul
     setupSession(s, true);
     w.on('closed', () => { const s2 = incognito.get(w); incognito.delete(w); try { s2.clearStorageData(); s2.clearCache(); } catch {} });
   }
-  w.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { part, ...(priv ? { incognito: '1' } : {}), ...(w.__extra ? { extra: '1' } : {}), ...(open ? { open } : {}) } });
+  w.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { part, ...(priv ? { incognito: '1' } : {}), ...(w.__extra ? { extra: '1' } : {}), ...(open ? { open } : {}), engine: tabEngine() } });
   w.on('maximize', () => w.webContents.send('win:state', { max: true }));
   // боковые кнопки мыши в Windows приходят ещё и командой окна — так они работают и над видео в фреймах
   w.on('app-command', (_e, cmd) => { if (cmd === 'browser-backward' || cmd === 'browser-forward') w.webContents.send('shortcut', { key: cmd === 'browser-backward' ? 'navBack' : 'navForward' }); });
@@ -367,6 +376,7 @@ function createWindow({ priv = false, extra = false, open = '', x, y, from = nul
   w.on('leave-full-screen', () => w.webContents.send('win:state', { full: false }));
   w.webContents.on('before-input-event', (e, input) => handleShortcut(e, input, w.webContents));
   if (!priv && !w.__extra) win = w;
+  if (!priv && !w.__extra && tabEngine() === 'view') diag.log('info', 'вкладки', 'Движок вкладок: новый (WebContentsView, «Эксперименты»)');
   w.on('closed', () => {
     if (win !== w) return;
     // главное окно закрыли, а дополнительные открыты — главным становится одно из них (оно и сохранит вкладки)
@@ -418,7 +428,7 @@ function handleShortcut(e, input, target) {
 // ---------- webview: новые окна, контекстное меню, хоткеи ----------
 // Каждый webview получает только наш безопасный preload, без доступа к Node
 app.on('web-contents-created', (_e, contents) => {
-  const kind = () => (contents.getType() === 'webview' ? 'вкладка' : 'интерфейс');
+  const kind = () => (isTab(contents) ? 'вкладка' : 'интерфейс');
   const cid = contents.id;
   // адрес меняем уже в начале перехода: запросы новой страницы идут после этого
   const setTop = (d) => { if (d && d.isMainFrame && !d.isSameDocument && d.url) topUrls.set(cid, d.url); };
@@ -432,7 +442,7 @@ app.on('web-contents-created', (_e, contents) => {
     if (contents.__lqLearn) return; // фоновое окно режима обучения — это YouTube, его сообщения не наши
     const level = String(ev.level || ''), message = ev.message, source = String(ev.sourceId || ''), ln = ev.lineNumber;
     if (level !== 'error' && level !== 'warning') return;
-    const ours = contents.getType() !== 'webview' || /webview-preload/i.test(source) || String(message).startsWith('[liquid]');
+    const ours = !isTab(contents) || /webview-preload/i.test(source) || String(message).startsWith('[liquid]');
     if (!ours) return; // предупреждения самих сайтов (их сотни) журналу не нужны — раньше на каждое тратился основной процесс
     // ошибки самих сайтов — шум, их пишем только как отладочные
     diag.log(ours ? (level === 'error' ? 'error' : 'warn') : 'debug', kind(), `${message}`, `${source.split(/[\\/]/).pop()}:${ln}`);
@@ -442,25 +452,30 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('unresponsive', () => { let u = ''; try { u = contents.getURL(); } catch {} diag.log('warn', kind(), 'Страница зависла и не отвечает', logUrl(u)); });
   contents.on('responsive', () => diag.log('info', kind(), 'Страница снова отвечает'));
   contents.on('did-fail-load', (_ev, code, desc, url, isMain) => { if (isMain && code !== -3) diag.log('warn', 'загрузка', `${desc} (${code})`, logUrl(url)); });
-  contents.on('will-attach-webview', (_ev, wp) => {
-    wp.preload = TEST && process.env.LIQUID_PERF_NOPRELOAD ? undefined : WEBVIEW_PRELOAD; // замер: сколько стоит наш preload
-    wp.nodeIntegration = false;
-    // preload запускается и во фреймах (встроенные плееры), Node.js там по-прежнему выключен
-    wp.nodeIntegrationInSubFrames = true;
-    wp.contextIsolation = true;
-    wp.sandbox = true;
-    // кем представляться в скриптах страницы (navigator.userAgentData) — preload читает из своей командной строки
-    wp.additionalArguments = [...(wp.additionalArguments || []).filter((a) => !String(a).startsWith('--lq-id=')), '--lq-id=' + Identity.forPreload(ID)];
-  });
+  contents.on('will-attach-webview', (_ev, wp) => tabPrefs(wp));
 });
+// настройки страницы вкладки — одни и те же у <webview> и у WebContentsView
+function tabPrefs(wp, view = false) {
+  wp.preload = TEST && process.env.LIQUID_PERF_NOPRELOAD ? undefined : WEBVIEW_PRELOAD; // замер: сколько стоит наш preload
+  wp.nodeIntegration = false;
+  // preload запускается и во фреймах (встроенные плееры), Node.js там по-прежнему выключен
+  wp.nodeIntegrationInSubFrames = true;
+  wp.contextIsolation = true;
+  wp.sandbox = true;
+  // кем представляться в скриптах страницы (navigator.userAgentData) — preload читает из своей командной строки;
+  // --lq-view: страница не в <webview>, сообщения окну — через основной процесс
+  wp.additionalArguments = [...(wp.additionalArguments || []).filter((a) => !/^--lq-(id=|view$)/.test(String(a))), '--lq-id=' + Identity.forPreload(ID), ...(view ? ['--lq-view'] : [])];
+  return wp;
+}
 // замер (tests/perf.spec.js): настройки страницы, как у вкладки-webview, — для сравнения с WebContentsView
 if (TEST) globalThis.__lqTabPrefs = (bare) => ({
   partition: PARTITION, preload: bare ? undefined : WEBVIEW_PRELOAD, nodeIntegration: false, nodeIntegrationInSubFrames: true,
   contextIsolation: true, sandbox: true, additionalArguments: ['--lq-id=' + Identity.forPreload(ID)],
 });
 
-app.on('web-contents-created', (_e, contents) => {
-  if (contents.getType() !== 'webview') return;
+app.on('web-contents-created', (_e, contents) => { if (contents.getType() === 'webview') setupTab(contents); });
+// всё, что нужно вкладке сайта: «назад/вперёд», попапы, меню, хоткеи. Для WebContentsView вызывает main/tabviews.js
+function setupTab(contents) {
   const host = () => hostOf(contents);
   // Можно ли назад/вперёд — присылаем окну сами после каждого перехода. Раньше окно спрашивало это у вкладки
   // синхронно (canGoBack/canGoForward) при каждом обновлении панели и ждало ответа основного процесса.
@@ -570,7 +585,14 @@ app.on('web-contents-created', (_e, contents) => {
     );
     Menu.buildFromTemplate(t).popup({ window: BrowserWindow.fromWebContents(host()) || win });
   });
+}
+// движок вкладок «view»: страницы — WebContentsView в окне, инкогнито — в сессии своего окна
+tabViews = require('./main/tabviews').setup({
+  prefs: (w) => { const s = incognito.get(w); return tabPrefs({ ...(s ? { session: s } : { partition: PARTITION }), backgroundThrottling: true }, true); },
+  onCreated: (wc) => setupTab(wc),
+  log: (lv, src, msg) => diag.log(lv, src, msg),
 });
+if (TEST) globalThis.__lqTabViews = tabViews;
 
 // Авторизация для http-прокси из ключа
 app.on('login', (e, _wc, _details, authInfo, cb) => {
@@ -1580,6 +1602,7 @@ function registerIpc() {
     if (patch.learnedRemove) s.learned = (s.learned || []).filter((x) => x !== patch.learnedRemove);
     if ('memSaver' in patch) s.memSaver = !!patch.memSaver;
     if ('sleepAfter' in patch) s.sleepAfter = Number(patch.sleepAfter) || 0;
+    if ('tabEngine' in patch) s.tabEngine = patch.tabEngine === 'view' ? 'view' : 'webview';
     if ('restore' in patch) s.restore = !!patch.restore;
     if ('dlAsk' in patch) s.dlAsk = !!patch.dlAsk;
     if ('superRes' in patch) s.superRes = ['off', 'mid', 'max'].includes(patch.superRes) ? patch.superRes : 'off';
@@ -1662,14 +1685,14 @@ function registerIpc() {
   // Liquid Player просит полный экран, а «жест пользователя» уже израсходовал сайт — повторяем запрос от имени
   // пользователя в том же фрейме (только для страниц во вкладках)
   ipcMain.handle('lp:gesture', async (e) => {
-    if (e.sender.getType() !== 'webview' || !e.senderFrame) return false;
+    if (!isTab(e.sender) || !e.senderFrame) return false;
     try { await e.senderFrame.executeJavaScript(`document.dispatchEvent(new CustomEvent('liquid:lpfs'))`, true); return true; } catch { return false; }
   });
   ipcMain.handle('sr:net', (_e, n) => rtxNet(String(n || 'lite')));
   // Liquid RTX для картинок: картинки сайтов почти всегда лежат на другом домене, и странице читать их нельзя —
   // скачиваем сами (с входом и куками вкладки) и отдаём байты. Только вкладкам, только картинки до 20 МБ
   ipcMain.handle('img:fetch', async (e, url) => {
-    if (e.sender.getType() !== 'webview' || !/^https?:\/\//.test(String(url))) return null;
+    if (!isTab(e.sender) || !/^https?:\/\//.test(String(url))) return null;
     try {
       const r = await e.sender.session.fetch(String(url), { headers: { Accept: 'image/avif,image/webp,image/*,*/*;q=0.8' } });
       if (!r.ok || !/^image\//.test(r.headers.get('content-type') || '')) return null;
@@ -1680,7 +1703,7 @@ function registerIpc() {
   ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
   ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, lpSmooth: st.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'anime'].includes(st.srNet) ? st.srNet : 'auto', gan: Number.isFinite(st.srGan) ? st.srGan : 50, maxG: st.srMaxG || 8, preG: [0, 2, 4].includes(st.srPreG) ? st.srPreG : 0, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false, two: st.srTwo !== false }; });
   // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
-  ipcMain.on('rtx:seen', (e, m) => { if (e.sender.getType() === 'webview' && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
+  ipcMain.on('rtx:seen', (e, m) => { if (isTab(e.sender) && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
   ipcMain.handle('rtxlearn:status', () => (rtxLearn ? rtxLearn.status() : null));
   ipcMain.handle('rtxlearn:add', async (_e, text) => (rtxLearn ? rtxLearn.addText(String(text || '')) : 0));
   ipcMain.handle('rtxtrain:start', (_e, net, hours) => (rtxTrain ? rtxTrain.start(net === 'gan' ? 'gan' : 'auto', [], [3, 6, 12].includes(Number(hours)) ? Number(hours) : 0) : false));
@@ -1881,7 +1904,7 @@ function registerIpc() {
     pre.set(o.origin, now);
     if (pre.size > 300) pre.clear();
     // вкладки и окно браузера ходят в сеть через основную сессию, а инкогнито — через свою
-    const s = e.sender.getType() === 'webview' ? e.sender.session : (incognito.get(BrowserWindow.fromWebContents(e.sender)) || ses);
+    const s = isTab(e.sender) ? e.sender.session : (incognito.get(BrowserWindow.fromWebContents(e.sender)) || ses);
     try { s.preconnect({ url: o.origin, numSockets: 1 }); } catch {}
   });
   // данные одного сайта: куки, хранилище, фоновые скрипты, кэш скриптов — как будто открываешь его впервые
@@ -1903,7 +1926,7 @@ function registerIpc() {
 
   // перевод страниц (вызывается из preload сайтов)
   ipcMain.handle('translate:batch', (e, texts) => {
-    if (!Array.isArray(texts) || e.sender.getType() !== 'webview') return null;
+    if (!Array.isArray(texts) || !isTab(e.sender)) return null;
     const sess = e.sender.session || ses;
     return translateBatch((u, o) => sess.fetch(u, o), texts.slice(0, 200).map((t) => String(t).slice(0, 2000)), 'ru', (lvl, m) => diag.log(lvl, 'перевод', m));
   });
@@ -1959,7 +1982,7 @@ function registerIpc() {
   // снимок вкладки для превью при наведении: маленький JPEG, только своих вкладок
   ipcMain.handle('tab:thumb', async (e, wcId) => {
     const wc = webContents.fromId(Number(wcId));
-    if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== e.sender) return '';
+    if (!wc || wc.isDestroyed() || !isTab(wc) || hostOf(wc) !== e.sender) return '';
     try {
       const img = await wc.capturePage();
       if (img.isEmpty()) return '';
@@ -2012,7 +2035,7 @@ function registerIpc() {
     'Аппаратное ускорение': Object.entries(app.getGPUFeatureStatus()).filter(([, v]) => !String(v).startsWith('enabled')).map(([k, v]) => `${k}=${v}`).join(', ') || 'всё включено',
     'Мониторы': screen.getAllDisplays().map((d) => `${d.size.width}×${d.size.height}@${Math.round(d.displayFrequency || 60)}Гц ×${d.scaleFactor}`).join(', '),
     'VPN': vpnState.on ? `включён (${loadSettings().vpnMode || 'smart'})` : 'выключен',
-    'Вкладок (webview)': webContents.getAllWebContents().filter((w) => w.getType() === 'webview').length,
+    'Вкладок': webContents.getAllWebContents().filter((w) => isTab(w)).length,
     'Расширения': (exts?.list || []).filter((x) => x.enabled !== false).map((x) => x.name).join(', ') || 'нет',
   });
   ipcMain.on('diag:log', (_e, { level, source, message, extra }) => diag.log(level || 'error', source || 'интерфейс', message, extra));
@@ -2042,7 +2065,7 @@ function registerIpc() {
     const byPid = new Map(app.getAppMetrics().map((m) => [m.pid, m.memory?.workingSetSize || 0]));
     let total = 0;
     for (const v of byPid.values()) total += v;
-    const tabs = webContents.getAllWebContents().filter((w) => w.getType() === 'webview').map((w) => {
+    const tabs = webContents.getAllWebContents().filter((w) => isTab(w)).map((w) => {
       let pid = 0; try { pid = w.getOSProcessId(); } catch {}
       return { wcId: w.id, mb: Math.round((byPid.get(pid) || 0) / 1024) };
     });

@@ -173,6 +173,47 @@ test('вкладки: кнопка «+», закрытие крестиком', 
   await expect.poll(tabCount).toBe(n);
 });
 
+// Меню и плашки интерфейса не прячутся под страницей. У <webview> страница — часть html окна (z-index ниже меню);
+// у движка «view» страница рисуется поверх окна, поэтому под меню она прячется (на её месте снимок),
+// а под плашками (поиск, сообщение внизу) — уменьшается так, чтобы плашку было видно
+test('меню и плашки интерфейса видны поверх страницы', async () => {
+  await win.evaluate((u) => navigate(u), `${base}/article.html`);
+  await expect.poll(activeUrl, { timeout: 15_000 }).toContain('/article.html');
+  const engine = await win.evaluate(() => window.TAB_ENGINE);
+  const rectOf = (sel) => win.evaluate((s) => { const r = document.querySelector(s).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; }, sel);
+  if (engine !== 'view') {
+    // одна картина наложения: меню выше страницы
+    await win.evaluate(() => openPop('#menuPop'));
+    const z = await win.evaluate(() => ({ pop: +getComputedStyle(document.getElementById('menuPop')).zIndex, page: +getComputedStyle(active.wv).zIndex || 0 }));
+    expect(z.pop).toBeGreaterThan(z.page);
+    await win.evaluate(() => closePops());
+    return;
+  }
+  const id = await win.evaluate(() => active.wv.getWebContentsId());
+  const view = () => app.evaluate((_e, i) => globalThis.__lqTabViews.state().find((v) => v.id === i), id);
+  const page = () => rectOf('#views liquid-view.active');
+  await expect.poll(async () => (await view())?.shown, { timeout: 10_000 }).toBe(true);
+  const p = await page();
+  expect(Math.abs((await view()).bounds.height - (p.bottom - p.top))).toBeLessThanOrEqual(2); // страница — ровно на своём месте
+  // меню: страница спрятана, вместо неё — снимок
+  for (const open of [() => openPop('#menuPop'), () => window.openSettings()]) {
+    await win.evaluate(open);
+    await expect.poll(async () => (await view()).shown, { timeout: 5_000 }).toBe(false);
+    await expect.poll(() => win.evaluate(() => getComputedStyle(active.wv).backgroundImage), { timeout: 5_000 }).toContain('data:image/jpeg');
+    await win.evaluate(() => closePops());
+    await expect.poll(async () => (await view()).shown, { timeout: 5_000 }).toBe(true);
+  }
+  // сообщение внизу: страница кончается выше него
+  await win.evaluate(() => toast('Проверка: сообщение поверх страницы'));
+  await expect.poll(async () => { const v = await view(), t = await rectOf('#toast'); return v.shown && v.bounds.y + v.bounds.height <= t.top + 1; }, { timeout: 5_000 }).toBe(true);
+  // поиск по странице: страница начинается ниже панели поиска
+  await win.evaluate(() => openFind());
+  await expect.poll(async () => { const v = await view(), f = await rectOf('#find'); return v.shown && v.bounds.y >= f.bottom - 1; }, { timeout: 5_000 }).toBe(true);
+  await win.evaluate(() => closeFind());
+  // всё закрыто — страница снова во всю область
+  await expect.poll(async () => { const v = await view(), r = await page(); return v.shown && Math.abs(v.bounds.y - r.top) <= 1; }, { timeout: 8_000 }).toBe(true);
+});
+
 test('горячие клавиши работают и с русской раскладкой (Ctrl+Т/Е, Ctrl+W/Ц)', async () => {
   const n = await tabCount();
   await press('KeyT', 'е', 84, CTRL); // русская раскладка: на месте T буква Е

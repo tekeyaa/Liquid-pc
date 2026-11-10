@@ -59,7 +59,7 @@ test('новые вкладки', async () => {
     res[mode] = { median: s[Math.floor(s.length / 2)], all: ms };
   }
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
-  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'новая вкладка', ...res }) + '\n');
+  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: (process.env.LIQUID_TAB_ENGINE === 'view' ? 'новый движок (view): ' : '') + 'новая вкладка', ...res }) + '\n');
 });
 
 // память процесса страницы (КБ): рабочий набор и личная память — из app.getAppMetrics()
@@ -124,7 +124,7 @@ test('замеры', async () => {
   }
   await new Promise((r) => setTimeout(r, 1500));
   const memKB = await memOf(await win.evaluate(() => active.wv.getWebContentsId()));
-  const r = { memKB, mode: process.env.LIQUID_PERF_NOPRELOAD ? 'голый webview (без перехватов и preload)' : process.env.LIQUID_PERF_NOHOOKS ? 'без перехватов запросов' : process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный', why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
+  const r = { memKB, mode: (process.env.LIQUID_TAB_ENGINE === 'view' ? 'новый движок (view): ' : '') + (process.env.LIQUID_PERF_NOPRELOAD ? 'голый webview (без перехватов и preload)' : process.env.LIQUID_PERF_NOHOOKS ? 'без перехватов запросов' : process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный'), why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true }); fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r) + '\n');
   console.log('PERF', JSON.stringify(r));
 });
@@ -158,6 +158,6 @@ test('плавность', async () => {
   const out = [];
   for (const n of ['меню', 'новая вкладка', 'переключение вкладок', 'панель Claude', 'настройки']) out.push(await run(n));
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
-  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'плавность (кадры, мс)', out }) + '\n');
+  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: (process.env.LIQUID_TAB_ENGINE === 'view' ? 'новый движок (view): ' : '') + 'плавность (кадры, мс)', out }) + '\n');
 });
 

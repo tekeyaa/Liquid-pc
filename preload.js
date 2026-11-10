@@ -60,6 +60,15 @@ contextBridge.exposeInMainWorld('liquid', {
   },
   tabs: { onNav: on('tab:nav'), onOpen: on('tab:open'), onSearch: on('tab:search'), thumb: (wcId) => ipcRenderer.invoke('tab:thumb', wcId) },
   devtools: (wcId) => ipcRenderer.send('webview:devtools', wcId),
+  // вкладки на WebContentsView (движок «view»): renderer/tabview.js
+  tv: {
+    create: (opts) => ipcRenderer.invoke('tv:create', opts),
+    call: (id, method, args) => ipcRenderer.invoke('tv:call', id, method, args),
+    send: (id, channel, args) => ipcRenderer.send('tv:send', id, channel, ...args),
+    bounds: (id, b, show) => ipcRenderer.send('tv:bounds', id, b, show),
+    destroy: (id) => ipcRenderer.send('tv:destroy', id),
+    onEvent: on('tv:event'),
+  },
   onShortcut: on('shortcut'),
   onToast: on('toast'),
   onPopupBlocked: on('popup:blocked'),
