@@ -225,7 +225,7 @@ if (firstInstance) diag.log('info', 'main', `Запуск Liquid ${app.getVersio
     const now = Date.now(), lag = now - last - 100, c = process.cpuUsage(cpu); last = now; cpu = process.cpuUsage();
     if (lag <= 300) return;
     const own = Math.round((c.user + c.system) / 1000);
-    diag.log('warn', 'заминка', own * 2 < lag + 100 ? `Основной процесс ждал процессор ${lag} мс (своя работа ${own} мс — компьютер был загружен)` : `Основной процесс был занят ${lag} мс (своя работа ${own} мс)`);
+    diag.log('warn', 'заминка', own * 2 < lag + 100 ? `Основной процесс ждал ${lag} мс (своя работа ${own} мс — процессор был занят другими процессами или ждал видеокарту)` : `Основной процесс был занят ${lag} мс (своя работа ${own} мс)`);
   }, 100).unref?.();
 }
 // Приоритет интерфейса (Windows): основной процесс и окна браузера — «выше обычного». Страницы, видео и видеокарта
@@ -237,7 +237,7 @@ if (firstInstance) diag.log('info', 'main', `Запуск Liquid ${app.getVersio
     try { os.setPriority(pid, os.constants.priority.PRIORITY_ABOVE_NORMAL); return true; } catch (e) { diag.log('warn', 'скорость', `Приоритет ${what} не поднят: ${e.message}`); return false; }
   };
   if (on && boost(process.pid, 'основного процесса')) diag.log('info', 'скорость', 'Основному процессу и окнам Liquid — приоритет «выше обычного»: интерфейс отвечает, даже когда страницы и видео загружают процессор');
-  if (on) app.on('web-contents-created', (_e, wc) => {
+  if (on && process.env.LIQUID_UI_PRIO_WIN) app.on('web-contents-created', (_e, wc) => {
     if (wc.getType() !== 'window') return;
     // окна самого браузера (не сайты в окне «видео поверх»); после перезагрузки окна процесс бывает новый — поднимаем снова
     wc.on('did-finish-load', () => { try { if (wc.getURL().startsWith('file:')) boost(wc.getOSProcessId(), 'окна'); } catch {} });
