@@ -705,6 +705,11 @@ test('VPN: подписка — серверы из ссылки', async () => {
 
 test('заминки основного процесса (для сведения)', async () => {
   const lines = logText().split('\n').filter((l) => /заминка|списки обновлены|блокировщик\]/.test(l));
+  // итог одной строкой — для сравнения «до/после»: сколько заминок и сколько из них — своя работа основного процесса
+  const ms = (re) => lines.map((l) => re.exec(l)).filter(Boolean).map((m) => +m[1]);
+  const busy = ms(/Основной процесс был занят (\d+)/), wait = ms(/Основной процесс ждал процессор (\d+)/), ui = ms(/Окно браузера было занято (\d+)/);
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  lines.push(`ИТОГ заминок > 300 мс: основной процесс занят ${busy.length} (${sum(busy)} мс), ждал процессор ${wait.length} (${sum(wait)} мс); окно ${ui.length} (${sum(ui)} мс)`);
   fs.writeFileSync(path.join(ROOT, 'test-results', 'stalls.txt'), lines.join('\n'));
 });
 
