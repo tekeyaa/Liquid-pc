@@ -63,9 +63,9 @@ jobs:
         run: |
           npx playwright install chromium >/dev/null 2>&1 || true
           : > all.json
-          for mode in liquid noadblock nohooks nopreload chromium liquid2; do
-            unset LIQUID_PERF_NOADBLOCK LIQUID_PERF_NOHOOKS LIQUID_PERF_NOPRELOAD LIQUID_PERF_CHROMIUM
-            case $mode in noadblock) export LIQUID_PERF_NOADBLOCK=1;; nohooks) export LIQUID_PERF_NOHOOKS=1;; nopreload) export LIQUID_PERF_NOHOOKS=1 LIQUID_PERF_NOPRELOAD=1;; chromium) export LIQUID_PERF_CHROMIUM=1;; esac
+          for mode in liquid noadblock nohooks nopreload wcv wcvbare chromium liquid2; do
+            unset LIQUID_PERF_NOADBLOCK LIQUID_PERF_NOHOOKS LIQUID_PERF_NOPRELOAD LIQUID_PERF_CHROMIUM LIQUID_PERF_WCV
+            case $mode in noadblock) export LIQUID_PERF_NOADBLOCK=1;; nohooks) export LIQUID_PERF_NOHOOKS=1;; nopreload) export LIQUID_PERF_NOHOOKS=1 LIQUID_PERF_NOPRELOAD=1;; wcv) export LIQUID_PERF_WCV=1;; wcvbare) export LIQUID_PERF_WCV=bare LIQUID_PERF_NOHOOKS=1;; chromium) export LIQUID_PERF_CHROMIUM=1;; esac
             npx playwright test tests/perf.spec.js >/dev/null 2>&1 || true
             cat test-results/perf.json >> all.json 2>/dev/null || true
           done

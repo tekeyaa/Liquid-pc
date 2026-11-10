@@ -453,6 +453,11 @@ app.on('web-contents-created', (_e, contents) => {
     wp.additionalArguments = [...(wp.additionalArguments || []).filter((a) => !String(a).startsWith('--lq-id=')), '--lq-id=' + Identity.forPreload(ID)];
   });
 });
+// замер (tests/perf.spec.js): настройки страницы, как у вкладки-webview, — для сравнения с WebContentsView
+if (TEST) globalThis.__lqTabPrefs = (bare) => ({
+  partition: PARTITION, preload: bare ? undefined : WEBVIEW_PRELOAD, nodeIntegration: false, nodeIntegrationInSubFrames: true,
+  contextIsolation: true, sandbox: true, additionalArguments: ['--lq-id=' + Identity.forPreload(ID)],
+});
 
 app.on('web-contents-created', (_e, contents) => {
   if (contents.getType() !== 'webview') return;

@@ -40,7 +40,7 @@ test('эталон: Chromium', async () => {
 
 // новая вкладка с сайтом: от нажатия до загрузки — с заготовленной вкладкой и без неё
 test('новые вкладки', async () => {
-  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS, 'один раз');
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS || !!process.env.LIQUID_PERF_WCV, 'один раз');
   test.setTimeout(240_000);
   const open = (u) => win.evaluate((x) => new Promise((done) => {
     const t0 = performance.now(), t = createTab(x);
@@ -62,8 +62,52 @@ test('новые вкладки', async () => {
   fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'новая вкладка', ...res }) + '\n');
 });
 
+// память процесса страницы (КБ): рабочий набор и личная память — из app.getAppMetrics()
+const memOf = (wcId) => app.evaluate(({ app: a, webContents }, i) => {
+  const pid = webContents.fromId(i).getOSProcessId();
+  const m = a.getAppMetrics().find((x) => x.pid === pid);
+  return m ? { ws: m.memory.workingSetSize, priv: m.memory.privateBytes || 0, type: m.type } : null;
+}, wcId);
+const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+
+// Та же страница в WebContentsView из основного процесса (кандидат на замену <webview>): с нашим preload и без него
+test('WebContentsView', async () => {
+  test.skip(!process.env.LIQUID_PERF_WCV, 'только по запросу');
+  test.setTimeout(240_000);
+  const bare = process.env.LIQUID_PERF_WCV === 'bare';
+  const id = await app.evaluate(({ BrowserWindow, WebContentsView }, bare) => {
+    const w = BrowserWindow.getAllWindows().find((x) => x.__liquid) || BrowserWindow.getAllWindows()[0];
+    const v = new WebContentsView({ webPreferences: globalThis.__lqTabPrefs(bare) });
+    w.contentView.addChildView(v);
+    const [cw, ch] = w.getContentSize();
+    v.setBounds({ x: 0, y: 90, width: cw, height: ch - 90 });
+    globalThis.__pv = v;
+    return v.webContents.id;
+  }, bare);
+  const inV = (js) => app.evaluate(({ webContents }, [i, c]) => webContents.fromId(i).executeJavaScript(c), [id, js]);
+  const vUrl = () => app.evaluate(({ webContents }, i) => webContents.fromId(i).getURL(), id);
+  const go = (u) => app.evaluate(({ webContents }, [i, x]) => { webContents.fromId(i).loadURL(x).catch(() => {}); }, [id, u]);
+  const out = { loads: [], backs: [] };
+  for (let k = 0; k < 6; k++) {
+    await go(`${base}/heavy.html?k=${k}`);
+    await expect.poll(async () => (await vUrl()).includes(`k=${k}`) && (await inV('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
+    out.loads.push(await inV(`(() => { const n = performance.getEntriesByType('navigation')[0]; return Math.round(n.loadEventEnd - n.startTime); })()`));
+    await go(`${base}/article.html`);
+    await expect.poll(async () => (await vUrl()).includes('article') && (await inV('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
+    const t0 = Date.now();
+    await app.evaluate(({ webContents }, i) => webContents.fromId(i).navigationHistory.goBack(), id);
+    await expect.poll(async () => (await vUrl()).includes(`k=${k}`) && (await inV('document.readyState')) === 'complete', { timeout: 30_000, intervals: [20] }).toBe(true);
+    out.backs.push({ ms: Date.now() - t0, bf: await inV('!!window.__bf') });
+  }
+  await new Promise((r) => setTimeout(r, 1500));
+  const mem = await memOf(id);
+  const r = { mode: bare ? 'WebContentsView без preload (и без перехватов)' : 'WebContentsView (с preload, как вкладка)', loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, memKB: mem, loads: out.loads, backs: out.backs.map((b) => b.ms) };
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true }); fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r) + '\n');
+  console.log('PERF', JSON.stringify(r));
+});
+
 test('замеры', async () => {
-  test.skip(!!process.env.LIQUID_PERF_CHROMIUM, 'только эталон');
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_WCV, 'только эталон');
   test.setTimeout(240_000);
   const out = { loads: [], backs: [] };
   for (let k = 0; k < 6; k++) {
@@ -78,8 +122,9 @@ test('замеры', async () => {
     await expect.poll(async () => (await url()).includes(`k=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000, intervals: [20] }).toBe(true);
     out.backs.push({ ms: Date.now() - t0, bf: await inTab('!!window.__bf'), why: await inTab(`(() => { try { const r = performance.getEntriesByType('navigation')[0].notRestoredReasons; return r ? JSON.stringify((r.reasons || []).map((x) => x.reason)).slice(0, 200) : ''; } catch { return ''; } })()`) });
   }
-  const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-  const r = { mode: process.env.LIQUID_PERF_NOPRELOAD ? 'голый webview (без перехватов и preload)' : process.env.LIQUID_PERF_NOHOOKS ? 'без перехватов запросов' : process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный', why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
+  await new Promise((r) => setTimeout(r, 1500));
+  const memKB = await memOf(await win.evaluate(() => active.wv.getWebContentsId()));
+  const r = { memKB, mode: process.env.LIQUID_PERF_NOPRELOAD ? 'голый webview (без перехватов и preload)' : process.env.LIQUID_PERF_NOHOOKS ? 'без перехватов запросов' : process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный', why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true }); fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r) + '\n');
   console.log('PERF', JSON.stringify(r));
 });
@@ -87,7 +132,7 @@ test('замеры', async () => {
 // Плавность интерфейса: длительность кадров, пока идут анимации (меню, вкладки, панель Claude, настройки).
 // У серверов GitHub нет видеокарты — всё рисует процессор, поэтому цифры хуже, чем дома, но «до/после» сравнимы
 test('плавность', async () => {
-  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS, 'один раз');
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS || !!process.env.LIQUID_PERF_WCV, 'один раз');
   test.setTimeout(240_000);
   await win.evaluate((u) => navigate(u), `${base}/article.html`);
   await win.waitForTimeout(1500);
