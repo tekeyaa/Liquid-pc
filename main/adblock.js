@@ -4,9 +4,11 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-// Собрать движок в служебном процессе (см. adblock-build.js): { same, hash } если списки не изменились, { buf, hash } — новый движок.
-// Не получилось — null, тогда соберём здесь, как раньше
-function buildAside(parts, oldHash) {
+// Собрать движок в служебном процессе (см. adblock-build.js): { same, hash } если списки не изменились, { file, hash } — новый движок в файле.
+// Не получилось — null, тогда соберём здесь, как раньше.
+// Списки и готовый движок ходят через диск, а не через postMessage: передача 6,5 МБ текста в процесс сборки
+// занимала основной процесс на 2,6 с (замер профиля в автотестах) — на каждом суточном обновлении, даже без изменений
+function buildAside(parts, oldHash, out) {
   return new Promise((done) => {
     let child;
     try { child = require('electron').utilityProcess.fork(path.join(__dirname, 'adblock-build.js'), [], { serviceName: 'Liquid — сборка блокировщика' }); }
@@ -14,9 +16,9 @@ function buildAside(parts, oldHash) {
     // не успел или упал — НЕ собираем в основном процессе (это минута подвисаний всего браузера на слабом ПК):
     // остаёмся на прежнем движке и пробуем позже. В основном процессе — только если отдельный процесс не запустить
     const t = setTimeout(() => { try { child.kill(); } catch {} done({ fail: 'сборка не успела за 3 минуты' }); }, 180e3);
-    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(m.same ? { same: true, hash: m.hash } : { buf: new Uint8Array(m.buf), hash: m.hash }); else { console.warn('adblock build', m && m.error); done({ fail: 'сборка: ' + (m && m.error) }); } });
+    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(m.same ? { same: true, hash: m.hash } : m.file ? { file: m.file, hash: m.hash } : { buf: new Uint8Array(m.buf), hash: m.hash }); else { console.warn('adblock build', m && m.error); done({ fail: 'сборка: ' + (m && m.error) }); } });
     child.once('exit', () => { clearTimeout(t); done({ fail: 'процесс сборки завершился' }); });
-    child.postMessage({ parts, exceptions: EXCEPTIONS, oldHash });
+    child.postMessage({ parts, exceptions: EXCEPTIONS, oldHash, out });
   });
 }
 
@@ -91,11 +93,12 @@ class AdBlock {
           const hashFile = this.cacheFile + '.sha256';
           let old = ''; try { old = await fs.promises.readFile(hashFile, 'utf8'); } catch {}
           const t0 = Date.now();
-          const r = await buildAside(got.map((g) => g.text), this.blocker ? old : '');
+          // процессу сборки — пути к сохранённым спискам (текстом — только если сохранить на диск не вышло)
+          const r = await buildAside(got.map((g) => (g.file ? { file: g.file } : { text: g.text })), this.blocker ? old : '', this.cacheFile + '.new');
           if (r && r.fail) throw new Error(r.fail); // попробуем через полчаса (finally), прежний движок работает
           if (r && r.same) { console.info(`[adblock] списки не изменились (${net} из ${got.length} из сети) — пересборка не нужна`); return; }
           let hash = r && r.hash;
-          const buf = r && r.buf;
+          const buf = r && (r.file ? new Uint8Array(await fs.promises.readFile(r.file)) : r.buf);
           built = buf;
           if (buf) { const t1 = Date.now(); fresh = ElectronBlocker.deserialize(buf); const dt = Date.now() - t1; if (dt > 150) console.info(`[adblock] новый движок загружен за ${dt} мс`); }
           else {
@@ -108,7 +111,9 @@ class AdBlock {
           console.info(`[adblock] сборка за ${Date.now() - t0} мс ${buf ? 'в отдельном процессе' : 'в основном процессе'}`);
           console.info(`[adblock] списки обновлены: ${net} из ${got.length} из сети${got.some((g) => g.from === 'зеркало') ? ' (часть через зеркало)' : ''}${net < got.length - missing.length ? ', остальные из сохранённой копии' : ''}${missing.length ? `, ${missing.length} не скачались — попробую через полчаса` : ''}`);
         } else { fresh = await ElectronBlocker.fromPrebuiltAdsAndTracking(fetchFn); withExceptions(lib, fresh); }
-        fs.promises.writeFile(this.cacheFile, Buffer.from(built || fresh.serialize())).catch(() => {}); // готовый двоичный движок — без повторной упаковки
+        // готовый двоичный движок — без повторной упаковки; собранный в отдельном процессе уже лежит рядом, его просто переименовываем
+        if (built && fs.existsSync(this.cacheFile + '.new')) fs.promises.rename(this.cacheFile + '.new', this.cacheFile).catch(() => {});
+        else fs.promises.writeFile(this.cacheFile, Buffer.from(built || fresh.serialize())).catch(() => {});
         const was = this.blocker;
         this.blocker = fresh;
         if (was) for (const s of this.sessions) { try { was.disableBlockingInSession(s); } catch {} this.attach(s); }
@@ -137,11 +142,12 @@ class AdBlock {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const text = await r.text();
         if (text.length < 200 || /^\s*</.test(text)) throw new Error('пустой ответ'); // страница-заглушка провайдера вместо списка
-        try { fs.mkdirSync(dir, { recursive: true }); fs.promises.writeFile(file, text).catch(() => {}); } catch {}
-        return { url, text, from };
+        // сохраняем до сборки: процесс сборки читает списки с диска
+        let saved = null; try { await fs.promises.mkdir(dir, { recursive: true }); await fs.promises.writeFile(file, text); saved = file; } catch {}
+        return { url, text, from, file: saved };
       } catch (e) { console.info(`[adblock] ${from}: ${url} — ${e.message}`); } finally { clearTimeout(t); }
     }
-    try { return { url, text: await fs.promises.readFile(file, 'utf8'), from: 'кэш' }; } catch { return { url, text: '', from: '' }; }
+    try { return { url, text: await fs.promises.readFile(file, 'utf8'), from: 'кэш', file }; } catch { return { url, text: '', from: '' }; }
   }
 
   hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
