@@ -5,7 +5,7 @@
 // WebContentsView рисуется ПОВЕРХ html окна. Поэтому:
 //  • элемент <liquid-view> — «место» страницы: его прямоугольник и видимость уходят в основной процесс;
 //  • большие окна интерфейса над страницей (меню, настройки, подсказки адресной строки, меню вкладки, превью вкладки,
-//    выделение области для скриншота, перетаскивание вкладок) — страница на это время прячется, а на её месте — её снимок;
+//    выделение области для скриншота) — страница на это время прячется, а на её месте — её снимок;
 //  • маленькие плашки (поиск по странице, сообщения внизу, предупреждение об опасном сайте, обновление) — страница
 //    на это время чуть уменьшается, чтобы плашку было видно, а видео и сайт продолжали идти.
 (() => {
@@ -110,7 +110,8 @@
   // ---------- где страница и что над ней ----------
   // окна интерфейса над страницей: на это время страница прячется, вместо неё — снимок
   const FREEZE = ['.pop.open', '#suggest.open', '.ctx.open', '#tabPreview.on'];
-  const FREEZE_BODY = ['tab-dragging', 'tab-tearing', 'resizing'];
+  // Перетаскивание вкладки или края панели страницу НЕ прячет: смена видимости вида в Chromium обрывает захват мыши
+  // окном (lostpointercapture), и вкладку было не вытянуть в окно (CI, тест перетаскивания)
   // плашки: страница уменьшается, чтобы их было видно
   const CARVE = ['#find.open', '#toast.show', '#danger.open', '#update.open', '#updCard.show'];
   const hit = (a, b) => a.width > 0 && a.height > 0 && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
@@ -122,7 +123,6 @@
     const ro = new ResizeObserver(() => schedule());
     const schedule = () => { if (!raf) raf = requestAnimationFrame(run); };
     function covered(r) {
-      for (const c of FREEZE_BODY) if (document.body.classList.contains(c)) return 'drag';
       for (const sel of FREEZE) for (const o of document.querySelectorAll(sel)) if (shown(o) && hit(o.getBoundingClientRect(), r)) return 'freeze';
       const area = document.getElementById('areaShot');
       if (area && shown(area)) return 'freeze';
@@ -154,9 +154,8 @@
         if (!cov && el.__frozen) unfreeze(el);
         const key = show ? `${b.x},${b.y},${b.width},${b.height},${b.r}` : 'hidden';
         if (el._sent === key) continue;
-        // окно со снимком: сначала снимок на месте, потом прячем страницу (иначе мелькнёт пустое место).
-        // Перетаскивание — сразу: мышь уже едет над страницей, и страница не должна её перехватить
-        if (cov === 'freeze' && el.__frozen === 'wait') continue;
+        // окно со снимком: сначала снимок на месте, потом прячем страницу (иначе мелькнёт пустое место)
+        if (cov && el.__frozen === 'wait') continue;
         el._sent = key;
         L.tv.bounds(el._id, show ? b : null, show);
       }
@@ -177,11 +176,7 @@
       setTimeout(() => { if (!el.__frozen) el.style.backgroundImage = ''; }, 120);
     }
     // перемены в интерфейсе: классы окон и панелей, размеры, анимации
-    // начало перетаскивания (вкладки, край панели) — без ожидания кадра, до следующего движения мыши
-    const dragNow = () => FREEZE_BODY.some((c) => document.body.classList.contains(c));
-    let dragWas = false;
-    new MutationObserver(() => { const d = dragNow(); if (d !== dragWas) { dragWas = d; if (raf) { cancelAnimationFrame(raf); raf = 0; } run(); } else schedule(); })
-      .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+    new MutationObserver(schedule).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
     for (const ev of ['transitionend', 'animationend', 'resize', 'visibilitychange']) (ev === 'resize' ? window : document).addEventListener(ev, schedule, true);
     ro.observe(document.body);
     setInterval(schedule, 700); // страховка: сдвиг без смены размера (редко)
