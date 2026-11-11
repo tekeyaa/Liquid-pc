@@ -63,13 +63,17 @@ jobs:
         run: |
           npx playwright install chromium >/dev/null 2>&1 || true
           : > all.json
-          for mode in liquid noadblock nohooks nopreload chromium liquid2; do
-            unset LIQUID_PERF_NOADBLOCK LIQUID_PERF_NOHOOKS LIQUID_PERF_NOPRELOAD LIQUID_PERF_CHROMIUM
-            case $mode in noadblock) export LIQUID_PERF_NOADBLOCK=1;; nohooks) export LIQUID_PERF_NOHOOKS=1;; nopreload) export LIQUID_PERF_NOHOOKS=1 LIQUID_PERF_NOPRELOAD=1;; chromium) export LIQUID_PERF_CHROMIUM=1;; esac
+          for mode in liquid chromium noadblock nosend noui nobar nohooks nopreload chromium2 liquid2; do
+            unset LIQUID_PERF_NOADBLOCK LIQUID_PERF_NOHOOKS LIQUID_PERF_NOPRELOAD LIQUID_PERF_CHROMIUM LIQUID_PERF_NOSEND LIQUID_PERF_NOUI LIQUID_PERF_NOBAR LIQUID_PROFILE
+            # опыты (только замеры): nosend — без подмены заголовков, noui — окно не обновляет вкладку, nobar — без анимации загрузки
+            case $mode in liquid) export LIQUID_PROFILE=perfprof;; noadblock) export LIQUID_PERF_NOADBLOCK=1;; nohooks) export LIQUID_PERF_NOHOOKS=1;; nopreload) export LIQUID_PERF_NOHOOKS=1 LIQUID_PERF_NOPRELOAD=1;; chromium|chromium2) export LIQUID_PERF_CHROMIUM=1;; nosend) export LIQUID_PERF_NOSEND=1;; noui) export LIQUID_PERF_NOUI=1;; nobar) export LIQUID_PERF_NOBAR=1;; esac
             npx playwright test tests/perf.spec.js >/dev/null 2>&1 || true
             cat test-results/perf.json >> all.json 2>/dev/null || true
           done
           cat all.json | while IFS= read -r l; do echo "::notice title=Скорость Liquid::$l"; done
+          # где окно (perfui) и основной процесс (perfmain) тратят время, пока грузятся страницы замера
+          # (папка профиля — вне test-results: Playwright чистит её перед каждым запуском)
+          ls perfprof/*.cpuprofile >/dev/null 2>&1 && node tests/prof.js perfprof/*.cpuprofile | while IFS= read -r l; do echo "::notice title=Профиль загрузок::${l:0:1500}"; done || true
 
       - name: Отчёт при падении
         if: failure()

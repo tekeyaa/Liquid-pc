@@ -75,10 +75,12 @@ if (TEST && process.env.LIQUID_PROFILE) {
   const ins = new (require('inspector').Session)(); ins.connect();
   ins.post('Profiler.enable'); ins.post('Profiler.setSamplingInterval', { interval: 1000 }); ins.post('Profiler.start');
   let saved = false;
-  global.__lqSaveProfile = () => {
+  global.__lqSaveProfile = (dir, name) => {
     if (saved) return; saved = true;
-    ins.post('Profiler.stop', (err, r) => { if (err) return; try { fs.mkdirSync(process.env.LIQUID_PROFILE, { recursive: true }); fs.writeFileSync(path.join(process.env.LIQUID_PROFILE, `main-${Date.now()}.cpuprofile`), JSON.stringify(r.profile)); } catch {} });
+    ins.post('Profiler.stop', (err, r) => { if (err) return; try { const d = dir || process.env.LIQUID_PROFILE; fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, `${name || 'main'}-${Date.now()}.cpuprofile`), JSON.stringify(r.profile)); } catch {} });
   };
+  // замеры скорости (perf.spec.js): профиль только на время загрузок, без запуска браузера
+  global.__lqStartProfile = () => { ins.post('Profiler.stop', () => { saved = false; ins.post('Profiler.setSamplingInterval', { interval: 500 }); ins.post('Profiler.start'); }); };
   app.on('will-quit', () => global.__lqSaveProfile());
 }
 
@@ -141,7 +143,7 @@ function topUrlOf(d, exact) {
 const AUTH_FILTER = { urls: ['*://*.google.com/*', '*://*.gstatic.com/*', '*://*.googleapis.com/*', '*://accounts.youtube.com/*', '*://*.googleusercontent.com/*'] };
 function hardenSession(sess) {
   sess.setUserAgent(UA);
-  if (TEST && process.env.LIQUID_PERF_NOHOOKS) return; // замер: сколько стоит сам перехват запросов
+  if (TEST && (process.env.LIQUID_PERF_NOHOOKS || process.env.LIQUID_PERF_NOSEND)) return; // замер: сколько стоит сам перехват запросов
   // Режим «как есть» — перехват только для Google, как раньше. Под другой браузер — на всех запросах: заголовки
   // Sec-CH-UA сам Electron пишет «Chromium» без названия браузера, и их нужно подставить на каждом запросе.
   // Обработчик короткий: адрес страницы спрашиваем у фрейма только для запросов к Google
