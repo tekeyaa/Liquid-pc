@@ -167,7 +167,9 @@ test('опыты: окно во время загрузки', async () => {
   // если окно больше не мешает — «обычный» ≈ «без updateTab»
   // CI 42942841332 (после правки): обычный 818/790, без syncChrome 751/682, без updateTab 709/638 — разрыв остался.
   // v5: по одному источнику перерисовки окна: выделение вкладки, полоса загрузки, кружок, заголовок вкладки
-  const MODES = ['обычный', 'без updateTab', 'без выделения', 'без полосы', 'без кружка', 'без заголовка'];
+  // CI 42943853120 (v5): по отдельности ничего (выделение −7, полоса +30, кружок 0, заголовок +6), без updateTab −50…−63:
+  // всё делается в одном кадре, дорог сам кадр окна. v6: адрес и заголовок не чаще раза в 100 мс (queueTab) против «как раньше»
+  const MODES = ['обычный', 'как раньше', 'без updateTab'];
   await win.evaluate(() => {
     window.__orig = {}; for (const f of ['updateTab', 'saveSession', 'guardScan', 'historyAdd', 'historyTitle', 'syncChrome', 'syncOmniExtras']) window.__orig[f] = window[f];
     const st = document.createElement('style'); st.id = 'abIso'; st.textContent = ''; st.disabled = true; document.head.appendChild(st);
@@ -185,6 +187,7 @@ test('опыты: окно во время загрузки', async () => {
       window.syncOmniExtras && window.syncOmniExtras(active);
     };
     // что именно меняется в окне за одну загрузку (по первому кругу «обычного»)
+    window.__q0 = window.queueTab;
     window.__muts = []; window.__gl = []; window.__t0 = 0;
     // где активная вкладка и полоса вкладок на каждом кадре загрузки — двигается ли выделение по делу
     window.__geo = new Set();
@@ -199,6 +202,7 @@ test('опыты: окно во время загрузки', async () => {
     const css = { 'без выделения': '.tab-glider{display:none!important}', 'без полосы': '#progress{display:none!important}', 'без кружка': '.tab .spin{display:none!important}' };
     const st = document.getElementById('abIso'); st.textContent = css[m] || ''; st.disabled = !css[m];
     if (m === 'без updateTab') window.updateTab = () => {};
+    window.queueTab = m === 'как раньше' ? (tab) => { tabDirty.add(tab); if (window.__qr) return; window.__qr = requestAnimationFrame(() => { window.__qr = 0; flushTabs(); }); } : window.__q0;
     // заголовок вкладки не меняется во время загрузки (остальное — как обычно)
     if (m === 'без заголовка') window.updateTab = (t) => { const ti = t.title; t.title = t.el.querySelector('.title').textContent; try { window.__orig.updateTab(t); } finally { t.title = ti; } };
   }, m);
