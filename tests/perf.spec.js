@@ -120,9 +120,14 @@ test('замеры', async () => {
   // профиль окна и основного процесса во время загрузок (LIQUID_PROFILE): кто из них занят, пока грузится вкладка
   let cdp = null;
   const prof = process.env.LIQUID_PROFILE && !EXP ? path.join(ROOT, process.env.LIQUID_PROFILE) : '';
+  let profPage = 0;
   if (prof) {
     try { cdp = await win.context().newCDPSession(win); await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 500 }); await cdp.send('Profiler.start'); } catch { cdp = null; }
     await app.evaluate(() => global.__lqStartProfile && global.__lqStartProfile());
+    // и сама вкладка: сколько в ней занимает наш preload, пока грузится страница
+    const id = await win.evaluate(() => active.wv.getWebContentsId());
+    await app.evaluate(async ({ webContents }, i) => { const d = webContents.fromId(i).debugger; if (!d.isAttached()) d.attach('1.3'); await d.sendCommand('Profiler.enable'); await d.sendCommand('Profiler.setSamplingInterval', { interval: 250 }); await d.sendCommand('Profiler.start'); }, id).catch(() => {});
+    profPage = id;
   }
   for (let k = 0; k < 6; k++) {
     await win.evaluate((u) => navigate(u), `${base}/heavy.html?k=${k}`);
@@ -139,6 +144,10 @@ test('замеры', async () => {
   if (prof) {
     try { if (cdp) { const { profile } = await cdp.send('Profiler.stop'); fs.mkdirSync(prof, { recursive: true }); fs.writeFileSync(path.join(prof, `perfui-${Date.now()}.cpuprofile`), JSON.stringify(profile)); } } catch {}
     try { await app.evaluate((_e, d) => global.__lqSaveProfile && global.__lqSaveProfile(d, 'perfmain'), prof); } catch {}
+    try {
+      const p = await app.evaluate(async ({ webContents }, i) => { const d = webContents.fromId(i).debugger; const { profile } = await d.sendCommand('Profiler.stop'); d.detach(); return JSON.stringify(profile); }, profPage);
+      fs.writeFileSync(path.join(prof, `perfpage-${Date.now()}.cpuprofile`), p);
+    } catch (e) { console.log('профиль вкладки: ' + e.message); }
     await win.waitForTimeout(1500);
   }
   const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
