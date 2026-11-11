@@ -623,13 +623,15 @@ function syncChrome() {
   if (document.activeElement !== urlInput) setProp(urlInput, 'value', isInternal(url) ? '' : decodeSafe(url));
   $('#omni').classList.toggle('https', url.startsWith('https://'));
   renderGuard(active);
+  // признак загрузки — на панели, а не на body: смена класса body заставляла браузер перепроверять стили всего окна
   const showLoad = loading && !isInternal(url);
-  const wasLoading = document.body.classList.contains('loading');
-  document.body.classList.toggle('loading', showLoad);
+  const bar = $('#bar');
+  const wasLoading = bar.classList.contains('loading');
+  if (wasLoading !== showLoad) bar.classList.toggle('loading', showLoad);
   if (wasLoading && !showLoad) {
-    document.body.classList.add('loaded');
+    bar.classList.add('loaded');
     clearTimeout(syncChrome.t);
-    syncChrome.t = setTimeout(() => document.body.classList.remove('loaded'), 600);
+    syncChrome.t = setTimeout(() => bar.classList.remove('loaded'), 600);
   }
   setProp($('#back'), 'disabled', !active.canBack);
   setProp($('#fwd'), 'disabled', !active.canFwd);
@@ -952,10 +954,12 @@ function renderGuard(tab) {
   if (tab !== active) return;
   const omni = $('#omni');
   const g = tab.guard;
-  if (!g) { if ('guard' in omni.dataset) delete omni.dataset.guard; $('#danger').classList.remove('open'); return; }
+  // remove() пишет атрибут class даже без изменений — на каждом обновлении панели во время загрузки; трогаем, только если открыто
+  const shut = () => { const d = $('#danger'); if (d.classList.contains('open')) d.classList.remove('open'); };
+  if (!g) { if ('guard' in omni.dataset) delete omni.dataset.guard; shut(); return; }
   if (omni.dataset.guard !== g.verdict) omni.dataset.guard = g.verdict;
   setProp($('#shield'), 'title', GUARD_TITLE[g.verdict] + (g.reason ? '\n' + g.reason : ''));
-  if (g.verdict !== 'danger') $('#danger').classList.remove('open');
+  if (g.verdict !== 'danger') shut();
 }
 // окна входа и оплаты: страницу разбирает основной процесс, вердикт считаем здесь теми же правилами, что для вкладок
 L.claude.onPopupCheck(async ({ id, url, info }) => {

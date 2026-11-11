@@ -163,7 +163,9 @@ test('опыты: окно во время загрузки', async () => {
   test.setTimeout(400_000);
   // CI 42940172896: без updateTab −80…−100, без syncChrome −60…−85, без syncOmniExtras −40, без классов загрузки −25.
   // Делим syncChrome: адрес / классы body / только вкладка; и пробуем изоляцию панелей (contain + свой слой)
-  const MODES = ['обычный', 'без syncChrome', 'без адреса', 'без body.loading', 'изоляция панелей'];
+  // v4 (после правки: признак загрузки на #bar, кружок и «стоп» без смены раскладки, выделение без пустых записей):
+  // если окно больше не мешает — «обычный» ≈ «без updateTab»
+  const MODES = ['обычный', 'без syncChrome', 'без updateTab'];
   await win.evaluate(() => {
     window.__orig = {}; for (const f of ['updateTab', 'saveSession', 'guardScan', 'historyAdd', 'historyTitle', 'syncChrome', 'syncOmniExtras']) window.__orig[f] = window[f];
     const st = document.createElement('style'); st.id = 'abIso'; st.textContent = '#tabsrow,#bar{contain:layout paint style;will-change:transform}'; st.disabled = true; document.head.appendChild(st);
@@ -189,6 +191,7 @@ test('опыты: окно во время загрузки', async () => {
     for (const f of Object.keys(window.__orig)) window[f] = window.__orig[f];
     document.getElementById('abIso').disabled = m !== 'изоляция панелей';
     if (m === 'без syncChrome') window.syncChrome = () => {};
+    if (m === 'без updateTab') window.updateTab = () => {};
     if (m === 'без адреса') window.syncChrome = window.__sc(true, false);
     if (m === 'без body.loading') window.syncChrome = window.__sc(false, true);
   }, m);

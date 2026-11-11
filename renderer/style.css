@@ -87,9 +87,12 @@ body.fs #tabsrow, body.fs #bar { visibility: hidden; }
 /* закрытая вкладка уже вне ряда (position: absolute в closeTab) — только гаснет, без пересчёта раскладки */
 .tab.closing { opacity: 0; transform: scale(.82); pointer-events: none; transition: opacity .18s var(--ease), transform .26s var(--ease); animation: none; }
 .tab .fav { width: 16px; height: 16px; border-radius: 4px; flex: none; object-fit: contain; }
-.tab .spin { width: 14px; height: 14px; border-radius: 50%; flex: none; border: 2px solid rgba(255,255,255,.18); border-top-color: var(--accent-2); animation: spin .8s linear infinite; display: none; }
-.tab.loading .spin { display: block; }
-.tab.loading .fav { display: none; }
+/* кружок загрузки лежит поверх иконки и только показывается/прячется: смена display на каждой загрузке
+   пересчитывала раскладку полосы вкладок, пока грузится страница */
+.tab .spin { position: absolute; left: 10px; top: calc(50% - 9px); width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,.18); border-top-color: var(--accent-2); visibility: hidden; pointer-events: none; }
+.tab.narrow .spin { left: calc(50% - 9px); }
+.tab.loading .spin { visibility: visible; animation: spin .8s linear infinite; }
+.tab.loading .fav { visibility: hidden; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .tab .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); }
 .tab .x { width: 22px; height: 22px; border-radius: 8px; display: grid; place-items: center; opacity: 0; transition: opacity .2s, background .2s; flex: none; }
@@ -114,9 +117,11 @@ body.mac #tabsrow { padding-left: 74px; }
 #bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .seg { display: flex; padding: 3px; border-radius: 16px; gap: 1px; }
 .seg .icon-btn { width: 36px; height: 36px; }
-#reload .i-stop { display: none; }
-body.loading #reload .i-stop { display: block; }
-body.loading #reload .i-reload { display: none; }
+/* «обновить» и «стоп» в одной клетке — меняется только видимость, без пересчёта раскладки панели */
+#reload > svg { grid-area: 1 / 1; }
+#reload .i-stop { visibility: hidden; }
+#bar.loading #reload .i-stop { visibility: visible; }
+#bar.loading #reload .i-reload { visibility: hidden; }
 
 #omni { flex: 1; min-width: 120px; height: 42px; border-radius: 16px; display: flex; align-items: center; gap: 8px; padding: 0 14px; transition: box-shadow .35s var(--ease), background .3s; overflow: hidden; }
 #omni:focus-within { background: linear-gradient(180deg, rgba(255,255,255,.17), rgba(255,255,255,.07)); box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent), 0 14px 34px -14px rgba(0,0,0,.7); }
@@ -128,8 +133,8 @@ body.loading #reload .i-reload { display: none; }
 #url { flex: 1; min-width: 0; background: none; border: 0; outline: none; font-size: 14px; user-select: text; letter-spacing: .1px; }
 #url::placeholder { color: var(--faint); }
 #progress { position: absolute; left: 14px; right: 14px; bottom: 0; height: 2px; border-radius: 2px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent-2) 0%, transparent), var(--accent-2)); opacity: 0; transform: scaleX(0); transform-origin: left; transition: transform 1.6s var(--ease), opacity .3s; pointer-events: none; }
-body.loading #progress { transform: scaleX(.85); opacity: 1; }
-body.loaded #progress { transform: scaleX(1); opacity: 0; transition: transform .25s var(--ease), opacity .4s .15s; }
+#bar.loading #progress { transform: scaleX(.85); opacity: 1; }
+#bar.loaded #progress { transform: scaleX(1); opacity: 0; transition: transform .25s var(--ease), opacity .4s .15s; }
 
 .pill { height: 42px; padding: 0 15px; border-radius: 16px; display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; transition: transform .45s var(--spring), background .3s, box-shadow .3s; }
 .pill:active { transform: scale(.93); }
@@ -697,7 +702,7 @@ body.popped:has(#setPop.open) #scrim::before { opacity: 1; }
 #progress { overflow: hidden; box-shadow: 0 0 10px color-mix(in srgb, var(--accent-2) 60%, transparent); }
 #progress::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 30%;
   background: linear-gradient(90deg, transparent, rgba(255,255,255,.85), transparent); transform: translateX(-120%); }
-body.loading #progress::after { animation: shimmer 1.15s var(--ease) infinite; }
+#bar.loading #progress::after { animation: shimmer 1.15s var(--ease) infinite; }
 @keyframes shimmer { to { transform: translateX(380%); } }
 
 /* ---------- запуск: панель браузера мягко выезжает ---------- */

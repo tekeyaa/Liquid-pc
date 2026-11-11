@@ -26,11 +26,15 @@
       if (!el || !el.offsetWidth || !el.offsetHeight || !box.offsetWidth) return null;
       return { l: el.offsetLeft, r: el.offsetLeft + el.offsetWidth, t: el.offsetTop, b: el.offsetTop + el.offsetHeight };
     }
+    // пишем стиль, только если он другой: выделение будят и без движения (загрузка страницы меняет вкладку),
+    // а каждая запись — пересчёт и перерисовка полосы вкладок
+    const put = {};
+    const set = (k, v) => { if (put[k] !== v) { put[k] = v; g.style.setProperty(k, v); } };
     function paint(speed) {
-      g.style.transform = `translate3d(${cur.l.toFixed(2)}px, ${cur.t.toFixed(2)}px, 0)`;
-      g.style.width = Math.max(0, cur.r - cur.l).toFixed(2) + 'px';
-      g.style.height = Math.max(0, cur.b - cur.t).toFixed(2) + 'px';
-      g.style.setProperty('--speed', Math.min(1, speed / 2200).toFixed(3));
+      set('transform', `translate3d(${cur.l.toFixed(2)}px, ${cur.t.toFixed(2)}px, 0)`);
+      set('width', Math.max(0, cur.r - cur.l).toFixed(2) + 'px');
+      set('height', Math.max(0, cur.b - cur.t).toFixed(2) + 'px');
+      set('--speed', Math.min(1, speed / 2200).toFixed(3));
     }
     function snap(tg) { Object.assign(cur, tg); vel.l = vel.r = vel.t = vel.b = 0; paint(0); }
 

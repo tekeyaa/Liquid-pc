@@ -63,7 +63,7 @@ jobs:
         run: |
           npx playwright install chromium >/dev/null 2>&1 || true
           : > all.json
-          for mode in ab ab2; do
+          for mode in liquid chromium ab ab2; do
             unset LIQUID_PERF_AB LIQUID_PERF_NOADBLOCK LIQUID_PERF_NOHOOKS LIQUID_PERF_NOPRELOAD LIQUID_PERF_CHROMIUM LIQUID_PERF_NOSEND LIQUID_PERF_NOUI LIQUID_PERF_NOBAR LIQUID_PROFILE
             # опыты (только замеры): nosend — без подмены заголовков, ab — что в окне мешает загрузке (режимы чередуются в одном запуске)
             case $mode in liquid) export LIQUID_PROFILE=perfprof;; noadblock) export LIQUID_PERF_NOADBLOCK=1;; nohooks) export LIQUID_PERF_NOHOOKS=1;; nopreload) export LIQUID_PERF_NOHOOKS=1 LIQUID_PERF_NOPRELOAD=1;; chromium|chromium2) export LIQUID_PERF_CHROMIUM=1;; nosend) export LIQUID_PERF_NOSEND=1;; noui) export LIQUID_PERF_NOUI=1;; noui-*) export LIQUID_PERF_NOUI=${mode#noui-};; nobar) export LIQUID_PERF_NOBAR=1;; ab|ab2) export LIQUID_PERF_AB=1;; esac
