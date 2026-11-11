@@ -592,6 +592,8 @@ test('вкладки перетаскиваются: меняются места
   await win.waitForTimeout(600); // вкладки доехали на новые места
   const t = await win.locator('#tabs .tab:not(.closing)').filter({ has: win.locator('.title', { hasText: 'Магазин' }) }).first().boundingBox()
     || await box(n - 2);
+  // для разбора при неудаче: какие события мыши дошли до окна
+  await win.evaluate(() => { window.__pe = []; for (const k of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'lostpointercapture', 'gotpointercapture']) document.addEventListener(k, (e) => { if (window.__pe.length < 80) window.__pe.push(k[7] + Math.round(e.clientY) + (e.target.className ? ':' + String(e.target.className).slice(0, 12) : '')); }, true); });
   await win.mouse.move(t.x + 14, t.y + t.height / 2);
   await win.mouse.down();
   await win.mouse.move(t.x + 54, t.y + 320, { steps: 15 });
@@ -601,7 +603,7 @@ test('вкладки перетаскиваются: меняются места
   await expect.poll(() => { w2 = app.windows().find((p) => /[?&]extra=1/.test(p.url())) || null; return !!w2; }, { timeout: 15_000 }).toBe(true).catch(async (e) => {
     // для разбора: какие окна видит браузер и Playwright, сколько вкладок осталось
     console.log('TEAR', JSON.stringify({ main: await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL().slice(-60))).catch(String),
-      pw: app.windows().map((p) => p.url().slice(-60)), tabs: await win.evaluate(() => tabs.length).catch(String), before }));
+      pw: app.windows().map((p) => p.url().slice(-60)), tabs: await win.evaluate(() => tabs.length).catch(String), before, pe: await win.evaluate(() => window.__pe.join(' ')).catch(String) }));
     throw e;
   });
   await w2.waitForLoadState('domcontentloaded');
