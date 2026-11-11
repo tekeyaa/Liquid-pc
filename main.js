@@ -311,7 +311,7 @@ function publicSettings() {
     search: s.search || 'google', vpnAuto: !!s.vpnAuto, guard: s.guard !== false, fps: s.fps === '60' ? '60' : 'auto', claudeMode: s.claudeMode || (s.claudeKey ? 'api' : 'web'),
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
     memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, sleepMem: s.sleepMem ?? 1536, restore: s.restore !== false, adblock: s.adblock !== false,
-    adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
+    adAllow: s.adAllow || [], dlAsk: !!s.dlAsk, adScripts: s.adScripts !== false, adScriptsInfo: adblock ? adblock.scriptsInfo() : '',
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'anime'].includes(s.srNet) ? s.srNet : 'auto', srGan: Number.isFinite(s.srGan) ? s.srGan : 50, srMaxG: s.srMaxG || 8, srPreG: [0, 2, 4].includes(s.srPreG) ? s.srPreG : 0, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
     srDeband: s.srDeband !== false, srTwo: s.srTwo !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1, rtxLearnWatch: s.rtxLearnWatch !== false,
     antiDpi: s.antiDpi !== false, antiDpiOn: !!smart.dpi, dns: dnsMode(s),
@@ -1616,6 +1616,7 @@ function registerIpc() {
     if ('rtxLearnGb' in patch) s.rtxLearnGb = Math.min(50, Math.max(0.2, Number(patch.rtxLearnGb) || 1));
     if ('srContent' in patch) s.srContent = ['auto', 'video', 'anime'].includes(patch.srContent) ? patch.srContent : 'auto';
     if ('adblock' in patch) { s.adblock = !!patch.adblock; if (adblock) adblock.enabled = s.adblock; }
+    if ('adScripts' in patch) { s.adScripts = !!patch.adScripts; if (adblock) adblock.scripts = s.adScripts; diag.log('info', 'блокировщик', `скриптлеты ${s.adScripts ? 'включены' : 'выключены'} в настройках`); }
     if ('adAllowToggle' in patch) {
       const h = String(patch.adAllowToggle);
       const set = new Set(s.adAllow || []);
@@ -2258,6 +2259,8 @@ app.whenReady().then(async () => {
   const st0 = loadSettings();
   adblock.enabled = st0.adblock !== false;
   adblock.allow = new Set(st0.adAllow || []);
+  adblock.scripts = st0.adScripts !== false;
+  if (TEST) global.__lqAdblock = adblock; // автотест: сколько скриптлетов и что получают сайты
   adblock.topUrlOf = (d) => topUrlOf(d);
   // запасной путь для списков рекламы: через VPN Liquid, если он включён
   let listsSes = null, listsProxy = '';

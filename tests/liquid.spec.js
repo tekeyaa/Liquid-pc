@@ -13,6 +13,12 @@ const SITE = path.join(__dirname, 'site');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.webm': 'video/webm' };
 
 let app, win, server, base, dataDir, cdp = null;
+// свои правила блокировщика для тестового сайта (127.0.0.1): скриптлеты, как у YouTube в списках uBlock, и скрытие баннера
+const AD_RULES = [
+  '127.0.0.1##+js(json-prune, playerAds adPlacements)',
+  '127.0.0.1##+js(set-constant, ytInitialPlayerResponse.adPlacements, undefined)',
+  '127.0.0.1###lq-test-banner',
+].join('\n');
 
 const hits = { hang: 0 };
 
@@ -132,7 +138,7 @@ test.beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(ROOT, 'test-results', 'userdata-'));
   app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_BLOCKLIST_URL: `${base}/blocklist` },
+    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_BLOCKLIST_URL: `${base}/blocklist`, LIQUID_ADBLOCK_RULES: AD_RULES },
   });
   win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
@@ -378,6 +384,80 @@ test('списки блокировщика рекламы скачиваютс�
   expect(logText(), 'списки рекламы не собрались').toMatch(/списки обновлены/);
   // собирает служебный процесс (списки и движок — через диск), а не основной процесс браузера
   expect(logText(), 'движок собирался в основном процессе').toMatch(/сборка за \d+ мс в отдельном процессе/);
+});
+
+// Скриптлеты uBlock (json-prune, set-constant) — то, чем вырезается реклама внутри YouTube. Своё тестовое правило
+// для тестового сайта: скриптлет встаёт раньше скриптов страницы, страница и видео работают, Liquid Player открывается,
+// «реклама разрешена на сайте» и выключатель в настройках отключают скриптлеты, в инкогнито всё то же самое
+test('скриптлеты блокировщика: вырезают рекламу из данных плеера и не ломают видео', async () => {
+  test.setTimeout(180_000);
+  // ресурсы uBlock скачались и вошли в движок
+  await expect.poll(() => app.evaluate(() => global.__lqAdblock.scriptletCount()), { timeout: 100_000, intervals: [2000] }).toBeGreaterThan(50);
+  await expect.poll(() => logText(), { timeout: 5000 }).toMatch(/скриптлетов доступно: \d+/);
+  // для сведения: сколько скриптов получают настоящие сайты и сколько стоит синхронный вопрос страницы
+  const sites = await app.evaluate(() => {
+    const a = global.__lqAdblock, out = {};
+    for (const u of ['https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'https://www.youtube.com/shorts/x', 'https://www.twitch.tv/directory', 'https://dzen.ru/', 'https://example.com/']) {
+      a.scriptsFor(u); // первый вызов — с прогревом
+      const t = process.hrtime.bigint(); const sc = a.scriptsFor(u); const ms = Number(process.hrtime.bigint() - t) / 1e6;
+      out[new URL(u).hostname + new URL(u).pathname.split('/')[1]] = { scripts: sc.length, kb: Math.round(sc.join('').length / 1024), ms: +ms.toFixed(2) };
+    }
+    return { scriptlets: a.scriptletCount(), loadMs: a.loadMs, sites: out };
+  });
+  console.log('скриптлеты: ' + JSON.stringify(sites));
+  expect(sites.sites['www.youtube.comwatch'].scripts, 'YouTube не получает скриптлетов').toBeGreaterThan(0);
+  const page = `${base}/adyt.html`;
+  const check = () => inTab(`({ ...window.lqAdCheck, later: window.lqLater(), banner: getComputedStyle(document.getElementById('lq-test-banner')).display, title: document.title })`);
+  await openUrl(page);
+  await expect.poll(() => inTab(`document.readyState`), { timeout: 15_000 }).toBe('complete');
+  // скриптлеты успели до скрипта страницы (данные плеера в HTML) и работают после загрузки (запросы /player)
+  expect(await check()).toMatchObject({ early: true, constant: true, later: true, title: 'Fake YouTube ads' });
+  // CSS-скрытие (косметика через скрипт-предзагрузку Ghostery) тоже работает
+  await expect.poll(async () => (await check()).banner, { timeout: 10_000 }).toBe('none');
+  // видео играет
+  await expect.poll(() => inTab(`document.getElementById('v').currentTime`), { timeout: 15_000 }).toBeGreaterThan(0.5);
+  const t0 = await inTab(`document.getElementById('v').currentTime`);
+  await win.waitForTimeout(1000);
+  expect(await inTab(`document.getElementById('v').currentTime`), 'видео встало').not.toBe(t0);
+  // Liquid Player открывается поверх и закрывается
+  await inTabGesture(`document.dispatchEvent(new CustomEvent('liquid:player'))`);
+  await expect.poll(() => inTab(`!!document.querySelector('lq-player')`), { timeout: 15_000 }).toBe(true);
+  await inTab(`document.fullscreenElement && document.exitFullscreen()`);
+  await expect.poll(() => inTab(`!!document.fullscreenElement`)).toBe(false);
+  await inTab(`window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true }))`);
+  await expect.poll(() => inTab(`!!document.querySelector('lq-player')`)).toBe(false);
+
+  // «реклама разрешена на этом сайте» — ни скриптлетов, ни скрытия
+  await win.evaluate(() => L.settings.set({ adAllowToggle: '127.0.0.1' }));
+  await openUrl(page + '?allow');
+  await expect.poll(() => inTab(`document.readyState`), { timeout: 15_000 }).toBe('complete');
+  expect(await check()).toMatchObject({ early: false, constant: false, later: false, banner: 'block' });
+  await win.evaluate(() => L.settings.set({ adAllowToggle: '127.0.0.1' }));
+  // выключатель «Вырезать рекламу внутри страниц» — без скриптлетов, скрытие остаётся
+  await win.evaluate(() => L.settings.set({ adScripts: false }));
+  expect((await win.evaluate(() => L.settings.get())).adScripts).toBe(false);
+  await openUrl(page + '?noscripts');
+  await expect.poll(() => inTab(`document.readyState`), { timeout: 15_000 }).toBe('complete');
+  expect(await check()).toMatchObject({ early: false, later: false });
+  await expect.poll(async () => (await check()).banner, { timeout: 10_000 }).toBe('none');
+  await win.evaluate(() => L.settings.set({ adScripts: true }));
+  const st = await win.evaluate(() => L.settings.get());
+  expect(st.adScripts).toBe(true);
+  expect(st.adScriptsInfo).toMatch(/Доступно скриптлетов: \d+/);
+
+  // окно инкогнито (своя сессия): блокировщик и скриптлеты работают и там
+  const [w2] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => L.newIncognito())]);
+  try {
+    await w2.waitForLoadState('domcontentloaded');
+    await expect.poll(() => w2.evaluate(() => typeof active !== 'undefined' && !!(active && active.wv)), { timeout: 15_000 }).toBe(true);
+    await w2.evaluate((u) => navigate(u), page + '?incognito');
+    const inPriv = async (js) => { const id = await w2.evaluate(() => active.wv.getWebContentsId()); return app.evaluate(({ webContents }, [wcId, code]) => webContents.fromId(wcId).executeJavaScript(code), [id, js]); };
+    await expect.poll(() => w2.evaluate(() => active.wv.getURL()), { timeout: 15_000 }).toContain('adyt.html?incognito');
+    await expect.poll(() => inPriv(`document.readyState`), { timeout: 15_000 }).toBe('complete');
+    expect(await inPriv(`({ ...window.lqAdCheck, later: window.lqLater() })`)).toMatchObject({ early: true, constant: true, later: true });
+    await expect.poll(() => inPriv(`getComputedStyle(document.getElementById('lq-test-banner')).display`), { timeout: 10_000 }).toBe('none');
+  } finally { await w2.close().catch(() => {}); }
+  await inTab(`document.getElementById('v').pause()`);
 });
 
 // ---------------- 1.12.1: заготовленная вкладка ----------------

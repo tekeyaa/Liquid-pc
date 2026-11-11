@@ -114,10 +114,9 @@ if (process.argv[2] === '--child') {
   fs.writeFileSync(path.join(work, 'ghostery.bin'), gBuf);
   console.log(JSON.stringify({ step: 'сборка', kind: 'ghostery', ms: Date.now() - t, mb: Math.round(gBuf.length / 1048576 * 10) / 10 }));
 
-  // то же, но с ресурсами uBlock (скриптлеты и $redirect) — Liquid их сейчас не загружает
+  // то же, но с ресурсами uBlock (скриптлеты и $redirect) — так собирает движок Liquid (main/adblock.js, RESOURCES)
   try {
-    const PREFIX = 'https://raw.githubusercontent.com/ghostery/adblocker/master/packages/adblocker/assets';
-    const res = get(PREFIX + '/ublock-origin/resources.json', path.join(listsDir, 'ghostery-resources.json'));
+    const res = get(require('../main/adblock').RESOURCES, path.join(listsDir, 'ghostery-resources.json'));
     t = Date.now();
     g.updateResources(res, 'bench');
     const b2 = g.serialize(); fs.writeFileSync(path.join(work, 'ghostery-res.bin'), b2);
