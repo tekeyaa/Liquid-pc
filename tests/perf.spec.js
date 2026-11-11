@@ -27,9 +27,11 @@ const EXP = !!(process.env.LIQUID_PERF_NOADBLOCK || process.env.LIQUID_PERF_NOHO
 // что делает окно во время загрузки вкладки: NOUI — окно не обновляет вкладку, историю, сессию, проверку сайта и полоску;
 // NOBAR — только без анимаций загрузки (полоска и кружок на вкладке)
 const expUi = () => win.evaluate(([noUi, noBar]) => {
-  if (noBar || noUi) document.head.insertAdjacentHTML('beforeend', '<style>#progress,.tab .spin{display:none!important;animation:none!important}</style>');
-  if (noUi) for (const f of ['updateTab', 'saveSession', 'guardScan', 'historyAdd', 'historyTitle', 'syncChrome', 'syncOmniExtras']) window[f] = () => {};
-}, [!!process.env.LIQUID_PERF_NOUI, !!process.env.LIQUID_PERF_NOBAR]);
+  if (noBar || noUi === '1') document.head.insertAdjacentHTML('beforeend', '<style>#progress,.tab .spin{display:none!important;animation:none!important}</style>');
+  // NOUI=dom — только вид вкладки и панели, guard — только проверка сайта, store — только история и сессия
+  const groups = { dom: ['updateTab', 'syncChrome', 'syncOmniExtras'], guard: ['guardScan'], store: ['saveSession', 'historyAdd', 'historyTitle'] };
+  if (noUi) for (const f of groups[noUi] || [].concat(...Object.values(groups))) window[f] = () => {};
+}, [process.env.LIQUID_PERF_NOUI || '', !!process.env.LIQUID_PERF_NOBAR]);
 // эталон: та же страница в обычном Chromium на той же машине
 test('эталон: Chromium', async () => {
   test.skip(!process.env.LIQUID_PERF_CHROMIUM, 'эталон только по запросу');
@@ -140,7 +142,7 @@ test('замеры', async () => {
     await win.waitForTimeout(1500);
   }
   const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-  const r = { mode: process.env.LIQUID_PERF_NOUI ? 'окно не обновляет вкладку (опыт)' : process.env.LIQUID_PERF_NOBAR ? 'без анимации загрузки (опыт)' : process.env.LIQUID_PERF_NOSEND ? 'без подмены заголовков (опыт)' : process.env.LIQUID_PERF_NOPRELOAD ? 'голый webview (без перехватов и preload)' : process.env.LIQUID_PERF_NOHOOKS ? 'без перехватов запросов' : process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный', why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
+  const r = { mode: process.env.LIQUID_PERF_NOUI ? `окно не обновляет вкладку: ${process.env.LIQUID_PERF_NOUI} (опыт)` : process.env.LIQUID_PERF_NOBAR ? 'без анимации загрузки (опыт)' : process.env.LIQUID_PERF_NOSEND ? 'без подмены заголовков (опыт)' : process.env.LIQUID_PERF_NOPRELOAD ? 'голый webview (без перехватов и preload)' : process.env.LIQUID_PERF_NOHOOKS ? 'без перехватов запросов' : process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный', why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true }); fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r) + '\n');
   console.log('PERF', JSON.stringify(r));
 });
