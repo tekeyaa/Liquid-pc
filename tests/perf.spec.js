@@ -224,12 +224,11 @@ test('опыты: окно во время загрузки', async () => {
   }
   // v7: трасса Chromium (все процессы) на 4 загрузках heavy в каждом режиме — кто занят: окно, вкладка, основной, GPU
   const pids = await app.evaluate(({ webContents }) => webContents.getAllWebContents().map((w) => ({ t: w.getType(), u: w.getURL().slice(0, 40), pid: w.getOSProcessId() })));
-  const trace = {};
   for (const m of ['обычный', 'без updateTab', 'без updateTab', 'обычный']) {
     await setMode(m);
-    await app.evaluate(({ contentTracing }) => contentTracing.startRecording({ included_categories: ['toplevel', 'viz', 'gpu', 'cc', 'disabled-by-default-devtools.timeline'] }));
+    await app.evaluate(({ contentTracing }) => contentTracing.startRecording({ included_categories: ['toplevel', 'viz', 'gpu', 'cc', 'blink', 'ipc', 'mojom', 'disabled-by-default-devtools.timeline'], trace_buffer_size_in_kb: 300000 }));
     for (let r = 0; r < 4; r++) {
-      const k = `tr${m.length}-${r}-${Object.keys(trace).length}`;
+      const k = `tr${m.length}-${r}-${Date.now()}`;
       await win.evaluate((u) => navigate(u), `${base}/article.html?ab=${k}`);
       await expect.poll(async () => (await url()).includes(`ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
       await win.waitForTimeout(300);
@@ -237,25 +236,12 @@ test('опыты: окно во время загрузки', async () => {
       await expect.poll(async () => (await url()).includes(`heavy.html?ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
       await win.waitForTimeout(300);
     }
-    const file = await app.evaluate(({ contentTracing }, f) => contentTracing.stopRecording(f), path.join(ROOT, 'test-results', `trace-${Date.now()}.json`));
-    try {
-      const j = JSON.parse(fs.readFileSync(file, 'utf8')); const ev = j.traceEvents || j;
-      const pn = {}, tn = {};
-      for (const e of ev) if (e.ph === 'M') { if (e.name === 'process_name') pn[e.pid] = e.args.name; if (e.name === 'thread_name') tn[e.pid + ':' + e.tid] = e.args.name; }
-      const who = (pid) => { const w = pids.filter((x) => x.pid === pid).map((x) => x.t + (x.t === 'webview' ? '' : '')).join('+'); return (pn[pid] || pid) + (w ? `[${w}]` : ''); };
-      const t = trace[m] = trace[m] || { busy: {}, ev: {} };
-      for (const e of ev) {
-        if (e.ph !== 'X' || !e.dur) continue;
-        const key = who(e.pid) + '/' + (tn[e.pid + ':' + e.tid] || e.tid);
-        if (e.cat === 'toplevel') t.busy[key] = (t.busy[key] || 0) + e.dur / 1000;
-        else { const k2 = key + ' ' + e.name; t.ev[k2] = (t.ev[k2] || 0) + e.dur / 1000; }
-      }
-      fs.unlinkSync(file);
-    } catch (e) { trace[m] = { err: e.message }; }
+    // трасса в формате perfetto (proto) — разбирает tests/trace_sum.py в шаге workflow
+    const dir = path.join(ROOT, 'perftrace'); fs.mkdirSync(dir, { recursive: true });
+    const n = fs.readdirSync(dir).length;
+    await app.evaluate(({ contentTracing }, f) => contentTracing.stopRecording(f), path.join(dir, `${n}-${m === 'обычный' ? 'normal' : 'noupd'}.pftrace`));
+    fs.writeFileSync(path.join(dir, `${n}-pids.json`), JSON.stringify(pids));
   }
-  for (const m in trace) for (const f of ['busy', 'ev']) if (trace[m][f]) trace[m][f] = Object.entries(trace[m][f]).sort((a, b) => b[1] - a[1]).slice(0, f === 'busy' ? 12 : 25).map(([k, v]) => `${k}: ${Math.round(v)}`);
-  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'трасса (мс за 8 загрузок, обычный)', pids, ...trace['обычный'] }) + '\n');
-  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'трасса (мс за 8 загрузок, без updateTab)', ...trace['без updateTab'] }) + '\n');
   await setMode('обычный');
   const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
   const out = { mode: 'опыт: окно во время загрузки (один запуск, чередование)', ...out0 };

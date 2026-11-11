@@ -71,6 +71,8 @@ jobs:
             cat test-results/perf.json >> all.json 2>/dev/null || true
           done
           cat all.json | while IFS= read -r l; do echo "::notice title=Скорость Liquid::$l"; done
+          # временно (опыт ab v7): разбор трасс по процессам
+          ls perftrace/*.pftrace && { python -m pip install -q perfetto 2>&1 | tail -2; python tests/trace_sum.py perftrace 2>&1 | while IFS= read -r l; do echo "::notice title=Трасса::${l:0:4000}"; done; } || true
           # где окно (perfui) и основной процесс (perfmain) тратят время, пока грузятся страницы замера
           # (папка профиля — вне test-results: Playwright чистит её перед каждым запуском)
           ls perfprof/*.cpuprofile >/dev/null 2>&1 && node tests/prof.js perfprof/*.cpuprofile | while IFS= read -r l; do echo "::notice title=Профиль загрузок::${l:0:1500}"; done || true
