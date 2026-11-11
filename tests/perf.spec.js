@@ -40,7 +40,7 @@ test('эталон: Chromium', async () => {
 
 // новая вкладка с сайтом: от нажатия до загрузки — с заготовленной вкладкой и без неё
 test('новые вкладки', async () => {
-  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS || !!process.env.LIQUID_PERF_WCV, 'один раз');
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS || !!process.env.LIQUID_PERF_WCV || !!process.env.LIQUID_PERF_LOADONLY, 'один раз');
   test.setTimeout(240_000);
   const open = (u) => win.evaluate((x) => new Promise((done) => {
     const t0 = performance.now(), t = createTab(x);
@@ -132,7 +132,7 @@ test('замеры', async () => {
 // Плавность интерфейса: длительность кадров, пока идут анимации (меню, вкладки, панель Claude, настройки).
 // У серверов GitHub нет видеокарты — всё рисует процессор, поэтому цифры хуже, чем дома, но «до/после» сравнимы
 test('плавность', async () => {
-  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS || !!process.env.LIQUID_PERF_WCV, 'один раз');
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS || !!process.env.LIQUID_PERF_WCV || !!process.env.LIQUID_PERF_LOADONLY, 'один раз');
   test.setTimeout(240_000);
   await win.evaluate((u) => navigate(u), `${base}/article.html`);
   await win.waitForTimeout(1500);
