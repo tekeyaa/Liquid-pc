@@ -161,16 +161,17 @@ test('замеры', async () => {
 test('опыты: окно во время загрузки', async () => {
   test.skip(!process.env.LIQUID_PERF_AB, 'только по запросу');
   test.setTimeout(400_000);
-  const MODES = ['обычный', 'всё выкл', 'без полоски', 'без обновлений вкладки'];
+  // прошлый опыт (CI 42938985359): «всё выкл» и «без updateTab/syncChrome/syncOmniExtras» −70…−80 мс, «без полоски» 0 — делим дальше
+  const MODES = ['обычный', 'без updateTab', 'без классов загрузки', 'без syncOmniExtras', 'без syncChrome'];
   await win.evaluate(() => {
     window.__orig = {}; for (const f of ['updateTab', 'saveSession', 'guardScan', 'historyAdd', 'historyTitle', 'syncChrome', 'syncOmniExtras']) window.__orig[f] = window[f];
     const st = document.createElement('style'); st.id = 'abBar'; st.textContent = '#progress,.tab .spin{display:none!important;animation:none!important}'; st.disabled = true; document.head.appendChild(st);
   });
   const setMode = (m) => win.evaluate((m) => {
     const off = (fs) => { for (const f of Object.keys(window.__orig)) window[f] = fs.includes(f) ? () => {} : window.__orig[f]; };
-    const all = Object.keys(window.__orig);
-    document.getElementById('abBar').disabled = !(m === 'всё выкл' || m === 'без полоски');
-    off(m === 'всё выкл' ? all : m === 'без обновлений вкладки' ? ['updateTab', 'syncChrome', 'syncOmniExtras'] : []);
+    off(m === 'без updateTab' ? ['updateTab'] : m === 'без syncOmniExtras' ? ['syncOmniExtras'] : m === 'без syncChrome' ? ['syncChrome'] : []);
+    // всё как обычно, но вкладка и панель не узнают, что идёт загрузка: нет кружка, полоски, смены кнопки «обновить»
+    if (m === 'без классов загрузки') window.updateTab = (t) => { const l = t.loading; t.loading = false; window.__orig.updateTab(t); t.loading = l; };
   }, m);
   const res = Object.fromEntries(MODES.map((m) => [m, []]));
   for (let r = 0; r < 9; r++) {
