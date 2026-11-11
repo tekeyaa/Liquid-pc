@@ -13,6 +13,12 @@ const SITE = path.join(__dirname, 'site');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.webm': 'video/webm' };
 
 let app, win, server, base, dataDir, cdp = null;
+// свои правила блокировщика для тестового сайта (127.0.0.1): скриптлеты, как у YouTube в списках uBlock, и скрытие баннера
+const AD_RULES = [
+  '127.0.0.1##+js(json-prune, playerAds adPlacements)',
+  '127.0.0.1##+js(set-constant, ytInitialPlayerResponse.adPlacements, undefined)',
+  '127.0.0.1###lq-test-banner',
+].join('\n');
 
 const hits = { hang: 0 };
 
@@ -132,7 +138,7 @@ test.beforeAll(async () => {
   dataDir = fs.mkdtempSync(path.join(ROOT, 'test-results', 'userdata-'));
   app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_BLOCKLIST_URL: `${base}/blocklist` },
+    env: { ...process.env, LIQUID_TEST: '1', LIQUID_USER_DATA: dataDir, LIQUID_CLAUDE_API: base, LIQUID_BLOCKLIST_URL: `${base}/blocklist`, LIQUID_ADBLOCK_RULES: AD_RULES },
   });
   win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
@@ -388,12 +394,18 @@ test('скриптлеты блокировщика: вырезают рекла
   // ресурсы uBlock скачались и вошли в движок
   await expect.poll(() => app.evaluate(() => global.__lqAdblock.scriptletCount()), { timeout: 100_000, intervals: [2000] }).toBeGreaterThan(50);
   await expect.poll(() => logText(), { timeout: 5000 }).toMatch(/скриптлетов доступно: \d+/);
-  const n = await app.evaluate(() => global.__lqAdblock.addTestRules([
-    '127.0.0.1##+js(json-prune, playerAds adPlacements)',
-    '127.0.0.1##+js(set-constant, ytInitialPlayerResponse.adPlacements, undefined)',
-    '127.0.0.1###lq-test-banner',
-  ]));
-  expect(n).toBe(3);
+  // для сведения: сколько скриптов получают настоящие сайты и сколько стоит синхронный вопрос страницы
+  const sites = await app.evaluate(() => {
+    const a = global.__lqAdblock, out = {};
+    for (const u of ['https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'https://www.youtube.com/shorts/x', 'https://www.twitch.tv/directory', 'https://dzen.ru/', 'https://example.com/']) {
+      a.scriptsFor(u); // первый вызов — с прогревом
+      const t = process.hrtime.bigint(); const sc = a.scriptsFor(u); const ms = Number(process.hrtime.bigint() - t) / 1e6;
+      out[new URL(u).hostname + new URL(u).pathname.split('/')[1]] = { scripts: sc.length, kb: Math.round(sc.join('').length / 1024), ms: +ms.toFixed(2) };
+    }
+    return { scriptlets: a.scriptletCount(), loadMs: a.loadMs, sites: out };
+  });
+  console.log('скриптлеты: ' + JSON.stringify(sites));
+  expect(sites.sites['www.youtube.comwatch'].scripts, 'YouTube не получает скриптлетов').toBeGreaterThan(0);
   const page = `${base}/adyt.html`;
   const check = () => inTab(`({ ...window.lqAdCheck, later: window.lqLater(), banner: getComputedStyle(document.getElementById('lq-test-banner')).display, title: document.title })`);
   await openUrl(page);

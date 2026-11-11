@@ -109,7 +109,9 @@ class AdBlock {
           const t0 = Date.now();
           // процессу сборки — пути к сохранённым спискам (текстом — только если сохранить на диск не вышло)
           // отпечаток считается и по ресурсам: после обновления Liquid движок пересоберётся один раз (с ними), дальше — только при изменениях
-          const r = await buildAside(got.map((g) => (g.file ? { file: g.file } : { text: g.text })), this.blocker ? old : '', this.cacheFile + '.new', resPart);
+          // автотест: свои правила для тестового сайта — в сборку, как ещё один список (без пересборки движка в основном процессе)
+          const testRules = process.env.LIQUID_TEST && process.env.LIQUID_ADBLOCK_RULES ? [{ text: process.env.LIQUID_ADBLOCK_RULES }] : [];
+          const r = await buildAside([...got.map((g) => (g.file ? { file: g.file } : { text: g.text })), ...testRules], this.blocker ? old : '', this.cacheFile + '.new', resPart);
           if (r && r.fail) throw new Error(r.fail); // попробуем через полчаса (finally), прежний движок работает
           if (r && r.same) { console.info(`[adblock] списки не изменились (${net} из ${got.length} из сети) — пересборка не нужна`); return; }
           if (r && r.resErr) console.warn('adblock resources', r.resErr); // формат ресурсов не подошёл — движок без скриптлетов
@@ -134,7 +136,6 @@ class AdBlock {
         if (built && fs.existsSync(this.cacheFile + '.new')) fs.promises.rename(this.cacheFile + '.new', this.cacheFile).catch(() => {});
         else fs.promises.writeFile(this.cacheFile, Buffer.from(built || fresh.serialize())).catch(() => {});
         this.blocker = fresh;
-        if (this.testRules) this.addTestRules([]); // правила автотеста — и в новый движок
         // косметика и скриптлеты берут движок из this.blocker при каждом запросе; сетевой обработчик — переставляем
         for (const s of this.sessions) this.attach(s);
         this.logScripts('после обновления');
@@ -290,19 +291,6 @@ class AdBlock {
     if (!this.blocker) return 'Блокировщик ещё загружается';
     const n = this.scriptletCount();
     return n ? `Доступно скриптлетов: ${n}` : 'Пока недоступно: не скачались ресурсы uBlock — повторю через полчаса';
-  }
-
-  // автотест: свои правила (например, 127.0.0.1##+js(json-prune, …)) поверх списков
-  // без новых строк — все прежние (в только что собранный движок)
-  addTestRules(lines) {
-    if (lines.length) this.testRules = [...(this.testRules || []), ...lines];
-    const b = this.blocker;
-    if (!b) return 0;
-    const { CosmeticFilter, NetworkFilter } = require('@ghostery/adblocker-electron');
-    const cos = [], netf = [];
-    for (const l of lines.length ? lines : this.testRules || []) { const isCos = l.includes('#'); const f = isCos ? CosmeticFilter.parse(l) : NetworkFilter.parse(l); if (f) (isCos ? cos : netf).push(f); }
-    b.update({ newCosmeticFilters: cos, newNetworkFilters: netf });
-    return cos.length + netf.length;
   }
 
   resetCount(id) { this.counts.set(id, 0); this.onCount(id, 0); }

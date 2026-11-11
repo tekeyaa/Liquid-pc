@@ -2258,7 +2258,7 @@ app.whenReady().then(async () => {
   adblock.enabled = st0.adblock !== false;
   adblock.allow = new Set(st0.adAllow || []);
   adblock.scripts = st0.adScripts !== false;
-  if (TEST) global.__lqAdblock = adblock; // автотест: свои правила-скриптлеты для тестовой страницы
+  if (TEST) global.__lqAdblock = adblock; // автотест: сколько скриптлетов и что получают сайты
   adblock.topUrlOf = (d) => topUrlOf(d);
   // запасной путь для списков рекламы: через VPN Liquid, если он включён
   let listsSes = null, listsProxy = '';
