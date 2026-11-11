@@ -596,7 +596,12 @@ test('вкладки перетаскиваются: меняются места
   await win.mouse.up();
   // новое окно — то, у которого в адресе extra=1 (событие window могло прийти и от другого окна)
   let w2 = null;
-  await expect.poll(() => { w2 = app.windows().find((p) => /[?&]extra=1/.test(p.url())) || null; return !!w2; }, { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => { w2 = app.windows().find((p) => /[?&]extra=1/.test(p.url())) || null; return !!w2; }, { timeout: 15_000 }).toBe(true).catch(async (e) => {
+    // для разбора: какие окна видит браузер и Playwright, сколько вкладок осталось
+    console.log('TEAR', JSON.stringify({ main: await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL().slice(-60))).catch(String),
+      pw: app.windows().map((p) => p.url().slice(-60)), tabs: await win.evaluate(() => tabs.length).catch(String), before }));
+    throw e;
+  });
   await w2.waitForLoadState('domcontentloaded');
   await expect.poll(() => w2.evaluate(() => typeof active !== 'undefined' && !!active).catch(() => false), { timeout: 15_000 }).toBe(true);
   await expect.poll(() => w2.evaluate(() => (active && active.wv ? active.wv.getURL() : '')).catch(() => ''), { timeout: 20_000 }).toContain('/form.html');
