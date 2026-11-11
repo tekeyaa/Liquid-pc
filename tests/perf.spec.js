@@ -165,10 +165,12 @@ test('опыты: окно во время загрузки', async () => {
   // Делим syncChrome: адрес / классы body / только вкладка; и пробуем изоляцию панелей (contain + свой слой)
   // v4 (после правки: признак загрузки на #bar, кружок и «стоп» без смены раскладки, выделение без пустых записей):
   // если окно больше не мешает — «обычный» ≈ «без updateTab»
-  const MODES = ['обычный', 'без syncChrome', 'без updateTab'];
+  // CI 42942841332 (после правки): обычный 818/790, без syncChrome 751/682, без updateTab 709/638 — разрыв остался.
+  // v5: по одному источнику перерисовки окна: выделение вкладки, полоса загрузки, кружок, заголовок вкладки
+  const MODES = ['обычный', 'без updateTab', 'без выделения', 'без полосы', 'без кружка', 'без заголовка'];
   await win.evaluate(() => {
     window.__orig = {}; for (const f of ['updateTab', 'saveSession', 'guardScan', 'historyAdd', 'historyTitle', 'syncChrome', 'syncOmniExtras']) window.__orig[f] = window[f];
-    const st = document.createElement('style'); st.id = 'abIso'; st.textContent = '#tabsrow,#bar{contain:layout paint style;will-change:transform}'; st.disabled = true; document.head.appendChild(st);
+    const st = document.createElement('style'); st.id = 'abIso'; st.textContent = ''; st.disabled = true; document.head.appendChild(st);
     // копия syncChrome с выключателями частей
     window.__sc = (noUrl, noBody) => function () {
       if (!active) return;
@@ -183,17 +185,22 @@ test('опыты: окно во время загрузки', async () => {
       window.syncOmniExtras && window.syncOmniExtras(active);
     };
     // что именно меняется в окне за одну загрузку (по первому кругу «обычного»)
-    window.__muts = [];
-    new MutationObserver((ms) => { if (!window.__rec) return; for (const m of ms) { const t = m.target.nodeType === 1 ? m.target : m.target.parentElement; window.__muts.push(`${m.type}:${t?.id || t?.className?.toString().slice(0, 20) || t?.tagName}${m.attributeName ? '@' + m.attributeName : ''}`); } })
+    window.__muts = []; window.__gl = []; window.__t0 = 0;
+    // где активная вкладка и полоса вкладок на каждом кадре загрузки — двигается ли выделение по делу
+    window.__geo = new Set();
+    const geo = () => { if (window.__rec) { const e = active.el, b = document.getElementById('tabs'); window.__geo.add([e.offsetLeft, e.offsetTop, e.offsetWidth, e.offsetHeight, b.offsetWidth, b.offsetHeight].join(',')); } requestAnimationFrame(geo); };
+    requestAnimationFrame(geo);
+    new MutationObserver((ms) => { if (!window.__rec) return; for (const m of ms) { const t = m.target.nodeType === 1 ? m.target : m.target.parentElement; window.__muts.push(`${m.type}:${t?.id || t?.className?.toString().slice(0, 20) || t?.tagName}${m.attributeName ? '@' + m.attributeName : ''}`);
+      if (t?.classList?.contains('glider') && window.__gl.length < 12) window.__gl.push(Math.round(performance.now() - window.__t0) + ' ' + t.getAttribute('style')); } })
       .observe(document.documentElement, { subtree: true, attributes: true, childList: true, characterData: true });
   });
   const setMode = (m) => win.evaluate((m) => {
     for (const f of Object.keys(window.__orig)) window[f] = window.__orig[f];
-    document.getElementById('abIso').disabled = m !== 'изоляция панелей';
-    if (m === 'без syncChrome') window.syncChrome = () => {};
+    const css = { 'без выделения': '.tab-glider{display:none!important}', 'без полосы': '#progress{display:none!important}', 'без кружка': '.tab .spin{display:none!important}' };
+    const st = document.getElementById('abIso'); st.textContent = css[m] || ''; st.disabled = !css[m];
     if (m === 'без updateTab') window.updateTab = () => {};
-    if (m === 'без адреса') window.syncChrome = window.__sc(true, false);
-    if (m === 'без body.loading') window.syncChrome = window.__sc(false, true);
+    // заголовок вкладки не меняется во время загрузки (остальное — как обычно)
+    if (m === 'без заголовка') window.updateTab = (t) => { const ti = t.title; t.title = t.el.querySelector('.title').textContent; try { window.__orig.updateTab(t); } finally { t.title = ti; } };
   }, m);
   const res = Object.fromEntries(MODES.map((m) => [m, []])); const out0 = {};
   for (let r = 0; r < 9; r++) {
@@ -203,12 +210,12 @@ test('опыты: окно во время загрузки', async () => {
       await win.evaluate((u) => navigate(u), `${base}/article.html?ab=${k}`);
       await expect.poll(async () => (await url()).includes(`ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
       await win.waitForTimeout(300);
-      if (r === 1 && m === 'обычный') await win.evaluate(() => { window.__rec = true; });
+      if (r === 1 && m === 'обычный') await win.evaluate(() => { window.__rec = true; window.__t0 = performance.now(); });
       await win.evaluate((u) => navigate(u), `${base}/heavy.html?ab=${k}`);
       await expect.poll(async () => (await url()).includes(`heavy.html?ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
       const ms = await inTab(`(() => { const n = performance.getEntriesByType('navigation')[0]; return Math.round(n.loadEventEnd - n.startTime); })()`);
       if (r) res[m].push(ms); // первый круг — разогрев
-      if (r === 1 && m === 'обычный') out0.muts = await win.evaluate(() => { window.__rec = false; const c = {}; for (const x of window.__muts) c[x] = (c[x] || 0) + 1; return c; });
+      if (r === 1 && m === 'обычный') Object.assign(out0, await win.evaluate(() => { window.__rec = false; const c = {}; for (const x of window.__muts) c[x] = (c[x] || 0) + 1; return { muts: c, glider: window.__gl, geo: [...window.__geo].slice(0, 12) }; }));
       await win.waitForTimeout(300);
     }
   }
