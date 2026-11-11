@@ -21,6 +21,16 @@ function report(where, err) {
 }
 const IS_FRAME = (() => { try { return window.top !== window; } catch { return true; } })();
 
+// ---------- 0. Скриптлеты блокировщика рекламы (json-prune, set-constant…) ----------
+// Должны встать раньше скриптов сайта: YouTube кладёт данные плеера с рекламой прямо в HTML страницы.
+// Поэтому — синхронный вопрос основному процессу (там лишь поиск по готовому движку) и вставка в мир страницы
+// сразу, до её скриптов. Пусто — если блокировщик или скриптлеты выключены, сайт в исключениях или правил нет
+if (!IS_FRAME && /^https?:$/.test(location.protocol)) {
+  let scripts = [];
+  try { scripts = ipcRenderer.sendSync('adblock:scripts', location.href) || []; } catch {}
+  for (const s of scripts) { try { webFrame.executeJavaScript(s).catch(() => {}); } catch {} }
+}
+
 // Вставка своей разметки. YouTube и другие сайты включают Trusted Types: любой разбор HTML-строки
 // (innerHTML, DOMParser, даже в отдельном документе) там запрещён. Поэтому разбираем свою разметку сами
 // и собираем элементы через createElement — это защита сайта не трогает.

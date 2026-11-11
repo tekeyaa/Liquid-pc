@@ -8,7 +8,7 @@ const crypto = require('crypto');
 // Не получилось — null, тогда соберём здесь, как раньше.
 // Списки и готовый движок ходят через диск, а не через postMessage: передача 6,5 МБ текста в процесс сборки
 // занимала основной процесс на 2,6 с (замер профиля в автотестах) — на каждом суточном обновлении, даже без изменений
-function buildAside(parts, oldHash, out) {
+function buildAside(parts, oldHash, out, resources) {
   return new Promise((done) => {
     let child;
     try { child = require('electron').utilityProcess.fork(path.join(__dirname, 'adblock-build.js'), [], { serviceName: 'Liquid — сборка блокировщика' }); }
@@ -16,18 +16,25 @@ function buildAside(parts, oldHash, out) {
     // не успел или упал — НЕ собираем в основном процессе (это минута подвисаний всего браузера на слабом ПК):
     // остаёмся на прежнем движке и пробуем позже. В основном процессе — только если отдельный процесс не запустить
     const t = setTimeout(() => { try { child.kill(); } catch {} done({ fail: 'сборка не успела за 3 минуты' }); }, 180e3);
-    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(m.same ? { same: true, hash: m.hash } : m.file ? { file: m.file, hash: m.hash } : { buf: new Uint8Array(m.buf), hash: m.hash }); else { console.warn('adblock build', m && m.error); done({ fail: 'сборка: ' + (m && m.error) }); } });
+    child.once('message', (m) => { clearTimeout(t); if (m && m.ok) done(m.same ? { same: true, hash: m.hash } : m.file ? { file: m.file, hash: m.hash, resErr: m.resErr } : { buf: new Uint8Array(m.buf), hash: m.hash, resErr: m.resErr }); else { console.warn('adblock build', m && m.error); done({ fail: 'сборка: ' + (m && m.error) }); } });
     child.once('exit', () => { clearTimeout(t); done({ fail: 'процесс сборки завершился' }); });
-    child.postMessage({ parts, exceptions: EXCEPTIONS, oldHash, out });
+    child.postMessage({ parts, exceptions: EXCEPTIONS, oldHash, out, resources });
   });
 }
 
 // Наши исключения из списков. Правило EasyList прячет весь ролик Shorts, если в его контейнере есть рекламный блок;
 // YouTube переиспользует контейнеры, блок остаётся — и обычные Shorts пропадают вместе с кнопками.
-// Рекламные ролики в Shorts и так вырезаются правилами json-prune из ответа YouTube.
+// Рекламные ролики в Shorts вырезают скриптлеты json-prune из ответа YouTube — но только когда загружены ресурсы
+// uBlock (RESOURCES ниже) и включена настройка «Вырезать рекламу внутри страниц». Без них Shorts-реклама остаётся видна.
 const EXCEPTIONS = [
   'youtube.com#@##shorts-inner-container > .ytd-shorts:has(> .ytd-reel-video-renderer > ytd-ad-slot-renderer)',
 ];
+// Ресурсы uBlock: тела скриптлетов (json-prune, set-constant…) и заглушки для $redirect. Без них правила вида
+// youtube.com##+js(json-prune, …) в списках есть, а внедрять нечего — YouTube получал 0 скриптов вместо ~30
+const RESOURCES = 'https://raw.githubusercontent.com/ghostery/adblocker/master/packages/adblocker/assets/ublock-origin/resources.json';
+// каналы, по которым скрипт-предзагрузка Ghostery (во всех фреймах сессии) просит косметику
+const IPC_INJECT = '@ghostery/adblocker/inject-cosmetic-filters', IPC_MO = '@ghostery/adblocker/is-mutation-observer-enabled';
+
 function withExceptions(lib, engine) {
   try {
     const CF = lib.CosmeticFilter || require('@ghostery/adblocker').CosmeticFilter;
@@ -49,8 +56,10 @@ class AdBlock {
     this.sessions = new Set();
     this.allow = new Set(); // сайты, где блокировщик выключен
     this.enabled = true;
+    this.scripts = true; // скриптлеты (settings.adScripts)
     this.counts = new Map(); // webContentsId -> число заблокированных на текущей странице
     this.onCount = () => {};
+    this.hookScripts();
   }
 
   async init(fetchFn) {
@@ -62,9 +71,10 @@ class AdBlock {
       if (fs.existsSync(this.cacheFile)) {
         const t0 = Date.now();
         this.blocker = ElectronBlocker.deserialize(new Uint8Array(await fs.promises.readFile(this.cacheFile)));
-        const dt = Date.now() - t0; if (dt > 150) console.info(`[adblock] движок из кэша загружен за ${dt} мс`);
+        this.loadMs = Date.now() - t0; if (this.loadMs > 150) console.info(`[adblock] движок из кэша загружен за ${this.loadMs} мс`);
       }
     } catch { this.blocker = null; }
+    if (this.blocker) this.logScripts('из кэша');
     const stale = !fs.existsSync(this.cacheFile) || Date.now() - fs.statSync(this.cacheFile).mtimeMs > 864e5;
     // 2) свежие списки (первый запуск — ждём, дальше — фоном)
     // Каждый список качаем отдельно: прямо, потом через зеркало, потом другими путями (VPN). Не скачался —
@@ -80,7 +90,8 @@ class AdBlock {
         const base = lib.adsAndTrackingLists || lib.fullLists;
         let fresh;
         if (base) {
-          const got = await Promise.all([...base, ...RU].map((u) => this.fetchList(u, fetchFn)));
+          // ресурсы скриптлетов — так же, как списки: сеть → зеркало → VPN → копия с диска
+          const [res, ...got] = await Promise.all([RESOURCES, ...base, ...RU].map((u) => this.fetchList(u, fetchFn)));
           const missing = got.filter((g) => !g.text).map((g) => g.url);
           // какой-то список не скачался и копии нет. Движок уже есть — оставляем его (в нём все списки) и пробуем позже.
           // Движка нет (первый запуск или новое имя кэша) — собираем из того, что есть: без одного списка лучше,
@@ -88,43 +99,62 @@ class AdBlock {
           if (missing.length && (this.blocker || missing.length > got.length / 2)) throw new Error('не скачались и нет копии: ' + missing.join(', '));
           if (missing.length) console.info(`[adblock] собираю без ${missing.length} списков (не скачались): ${missing.join(', ')}`);
           const net = got.filter((g) => g.text && g.from !== 'кэш').length;
-          this.lastNet = net === got.length;
+          // ресурсы не скачались и копии нет — собираем без них (как раньше), повторим через полчаса вместе со списками
+          if (!res.text) console.info('[adblock] ресурсы скриптлетов не скачались — движок без скриптлетов, попробую через полчаса');
+          this.lastNet = net === got.length && !!res.text && res.from !== 'кэш';
+          const resPart = res.file ? { file: res.file } : res.text ? { text: res.text } : null;
           // списки не изменились с прошлой сборки — пересобирать незачем; сравнивает и собирает служебный процесс
           const hashFile = this.cacheFile + '.sha256';
           let old = ''; try { old = await fs.promises.readFile(hashFile, 'utf8'); } catch {}
           const t0 = Date.now();
           // процессу сборки — пути к сохранённым спискам (текстом — только если сохранить на диск не вышло)
-          const r = await buildAside(got.map((g) => (g.file ? { file: g.file } : { text: g.text })), this.blocker ? old : '', this.cacheFile + '.new');
+          // отпечаток считается и по ресурсам: после обновления Liquid движок пересоберётся один раз (с ними), дальше — только при изменениях
+          // автотест: свои правила для тестового сайта — в сборку, как ещё один список (без пересборки движка в основном процессе)
+          const testRules = process.env.LIQUID_TEST && process.env.LIQUID_ADBLOCK_RULES ? [{ text: process.env.LIQUID_ADBLOCK_RULES }] : [];
+          const r = await buildAside([...got.map((g) => (g.file ? { file: g.file } : { text: g.text })), ...testRules], this.blocker ? old : '', this.cacheFile + '.new', resPart);
           if (r && r.fail) throw new Error(r.fail); // попробуем через полчаса (finally), прежний движок работает
           if (r && r.same) { console.info(`[adblock] списки не изменились (${net} из ${got.length} из сети) — пересборка не нужна`); return; }
+          if (r && r.resErr) console.warn('adblock resources', r.resErr); // формат ресурсов не подошёл — движок без скриптлетов
           let hash = r && r.hash;
           const buf = r && (r.file ? new Uint8Array(await fs.promises.readFile(r.file)) : r.buf);
           built = buf;
-          if (buf) { const t1 = Date.now(); fresh = ElectronBlocker.deserialize(buf); const dt = Date.now() - t1; if (dt > 150) console.info(`[adblock] новый движок загружен за ${dt} мс`); }
+          if (buf) { const t1 = Date.now(); fresh = ElectronBlocker.deserialize(buf); const dt = this.loadMs = Date.now() - t1; if (dt > 150) console.info(`[adblock] новый движок загружен за ${dt} мс`); }
           else {
             const text = got.map((g) => g.text).join('\n');
-            hash = crypto.createHash('sha256').update(text).update(EXCEPTIONS.join('\n')).digest('hex');
+            const h = crypto.createHash('sha256').update(text).update(EXCEPTIONS.join('\n'));
+            if (res.text) h.update('\n#resources\n').update(res.text);
+            hash = h.digest('hex');
             if (this.blocker && old === hash) { console.info('[adblock] списки не изменились — пересборка не нужна'); return; }
             fresh = ElectronBlocker.parse(text, { enableCompression: true, loadCosmeticFilters: true, loadNetworkFilters: true, integrityCheck: false }); withExceptions(lib, fresh);
+            if (res.text) { try { fresh.updateResources(res.text, hash.slice(0, 16)); } catch (e) { console.warn('adblock resources', e.message); } }
           }
           if (!missing.length) fs.promises.writeFile(hashFile, hash).catch(() => {}); // неполная сборка — пересоберём, когда скачается всё
-          console.info(`[adblock] сборка за ${Date.now() - t0} мс ${buf ? 'в отдельном процессе' : 'в основном процессе'}`);
+          console.info(`[adblock] сборка за ${Date.now() - t0} мс ${buf ? 'в отдельном процессе' : 'в основном процессе'}${buf ? ` (движок ${(buf.length / 1048576).toFixed(2)} МБ, загружен за ${this.loadMs} мс)` : ''}`);
           console.info(`[adblock] списки обновлены: ${net} из ${got.length} из сети${got.some((g) => g.from === 'зеркало') ? ' (часть через зеркало)' : ''}${net < got.length - missing.length ? ', остальные из сохранённой копии' : ''}${missing.length ? `, ${missing.length} не скачались — попробую через полчаса` : ''}`);
         } else { fresh = await ElectronBlocker.fromPrebuiltAdsAndTracking(fetchFn); withExceptions(lib, fresh); }
         // готовый двоичный движок — без повторной упаковки; собранный в отдельном процессе уже лежит рядом, его просто переименовываем
         if (built && fs.existsSync(this.cacheFile + '.new')) fs.promises.rename(this.cacheFile + '.new', this.cacheFile).catch(() => {});
         else fs.promises.writeFile(this.cacheFile, Buffer.from(built || fresh.serialize())).catch(() => {});
-        const was = this.blocker;
         this.blocker = fresh;
-        if (was) for (const s of this.sessions) { try { was.disableBlockingInSession(s); } catch {} this.attach(s); }
-        else for (const s of this.sessions) this.attach(s);
+        // косметика и скриптлеты берут движок из this.blocker при каждом запросе; сетевой обработчик — переставляем
+        for (const s of this.sessions) this.attach(s);
+        this.logScripts('после обновления');
       } catch (e) { console.warn('adblock lists', e.message); this.lastNet = false; }
       finally {
         // не всё пришло из сети — пробуем ещё раз через полчаса (не больше 6 раз за запуск); пересборка — только если списки изменились
         if (!this.lastNet && (this.retries = (this.retries || 0) + 1) <= 6) setTimeout(refresh, 30 * 60e3);
       }
     };
-    if (!this.blocker) await refresh(); else if (stale) refresh();
+    // движок из кэша собран без ресурсов (прежние версии Liquid их не загружали) — обновляем сразу, а не через сутки.
+    // Не чаще раза в 6 часов: если ресурсы не качаются совсем, не гоняем все списки на каждом запуске
+    const tryFile = this.cacheFile + '.restry';
+    let noRes = false;
+    if (this.blocker && !this.scriptletCount()) {
+      let last = 0; try { last = fs.statSync(tryFile).mtimeMs; } catch {}
+      noRes = Date.now() - last > 6 * 3600e3;
+      if (noRes) fs.promises.writeFile(tryFile, String(Date.now())).catch(() => {});
+    }
+    if (!this.blocker) await refresh(); else if (stale || noRes) refresh();
     if (this.blocker) for (const s of this.sessions) this.attach(s);
     return !!this.blocker;
   }
@@ -166,10 +196,19 @@ class AdBlock {
   attach(sess) {
     const b = this.blocker;
     if (!b || sess.__liquidAdblock === b) return;
-    b.enableBlockingInSession(sess); // косметика (скрытие баннеров) + сетевые правила
-    // Его обработчик ответов стоит на каждом запросе, а нужен только для редких правил $csp на страницах.
-    // Снимаем: каждый файл каждого сайта больше не ждёт основной процесс лишний раз
-    try { sess.webRequest.onHeadersReceived(null); } catch {}
+    // Раньше — b.enableBlockingInSession(sess). Ghostery регистрирует свои каналы ipcMain.handle на ВСЁ приложение,
+    // и для второй сессии (окно инкогнито) это бросало «second handler»: сетевые правила там не вставали.
+    // Теперь каналы — свои, один раз (hookIpc), а в сессию ставим только скрипт-предзагрузку и сетевой фильтр.
+    // Его обработчик ответов ($csp) не ставим вовсе: он ждал основной процесс на каждом файле каждого сайта
+    this.hookIpc();
+    if (!sess.__liquidAdPreload) {
+      const file = preloadPath();
+      try {
+        if (file && sess.registerPreloadScript) sess.registerPreloadScript({ type: 'frame', filePath: file });
+        else if (file) sess.setPreloads([...sess.getPreloads(), file]);
+        sess.__liquidAdPreload = true;
+      } catch (e) { console.warn('adblock preload', e.message); }
+    }
     // Перехватываем сетевой фильтр, чтобы работали «выключить на этом сайте» и счётчик
     sess.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (d, cb) => {
       // адрес страницы разбираем, только если есть сайты-исключения (раньше — на каждый запрос)
@@ -185,7 +224,82 @@ class AdBlock {
     sess.__liquidAdblock = b;
   }
 
+  // блокировщик работает на этой странице: включён и сайт не в «рекламе разрешено»
+  activeFor(url) { return this.enabled && /^https?:/i.test(url || '') && !(this.allow.size && this.allow.has(this.hostOf(url))); }
+
+  hookIpc() {
+    if (this.ipcHooked) return;
+    this.ipcHooked = true;
+    const { ipcMain } = require('electron');
+    for (const ch of [IPC_INJECT, IPC_MO]) { try { ipcMain.removeHandler(ch); } catch {} }
+    // косметика (CSS-скрытие) — как в Ghostery, но с учётом выключателя и сайтов-исключений (раньше CSS вставлялся и там).
+    // Скриптлеты отсюда не внедряем: их раньше и синхронно вставляет webview-preload.js (см. scriptsFor)
+    ipcMain.handle(IPC_INJECT, (e, url, msg) => {
+      const b = this.blocker;
+      if (!b || !this.activeFor(url)) return;
+      const { hostname, domain } = this.parseUrl(url);
+      const first = msg === undefined;
+      const { active, styles } = b.getCosmeticsFilters({
+        url, hostname, domain, classes: msg?.classes, hrefs: msg?.hrefs, ids: msg?.ids,
+        getBaseRules: first, getInjectionRules: false, getExtendedRules: false, getRulesFromHostname: first, getRulesFromDOM: !first,
+        callerContext: { frameId: e.frameId, processId: e.processId, lifecycle: msg?.lifecycle },
+      });
+      if (active !== false && styles.length) e.sender.insertCSS(styles, { cssOrigin: 'user' }).catch(() => {});
+    });
+    ipcMain.handle(IPC_MO, () => !!(this.blocker && this.blocker.config.enableMutationObserver));
+  }
+
+  // Скриптлеты (json-prune, set-constant…) должны встать ДО скриптов страницы: YouTube кладёт данные плеера с рекламой
+  // прямо в HTML. Асинхронный путь Ghostery (запрос → ответ → executeJavaScript) успевал уже после них.
+  // Поэтому webview-preload.js спрашивает синхронно и вставляет сам. Слушатель — с самого старта, до загрузки движка,
+  // и ответ — всегда: на синхронный вопрос без ответа страница ждала бы вечно
+  hookScripts() {
+    try {
+      require('electron').ipcMain.on('adblock:scripts', (e, url) => {
+        let out = [];
+        try { out = this.scriptsFor(url); } catch (err) { console.warn('adblock scripts', err.message); }
+        e.returnValue = out;
+      });
+    } catch (e) { console.warn('adblock scripts hook', e.message); }
+  }
+
+  parseUrl(url) {
+    try { const r = require('@ghostery/adblocker-electron').Request.fromRawDetails({ url }); return { hostname: r.hostname || '', domain: r.domain || '' }; }
+    catch { return { hostname: this.hostOf(url), domain: '' }; }
+  }
+
+  // скрипты для верхнего фрейма страницы url: [] — если скриптлеты выключены, сайт в исключениях или правил нет
+  scriptsFor(url) {
+    const b = this.blocker;
+    if (!b || !this.scripts || !this.activeFor(url)) return [];
+    const { hostname, domain } = this.parseUrl(url);
+    if (!hostname) return [];
+    const { active, scripts } = b.getCosmeticsFilters({ url, hostname, domain, getBaseRules: false, getInjectionRules: true, getExtendedRules: false, getRulesFromHostname: true, getRulesFromDOM: false });
+    if (active === false || !scripts.length) return [];
+    this.injected = (this.injected || 0) + 1;
+    return scripts;
+  }
+
+  scriptletCount() { try { return ((this.blocker && this.blocker.resources && this.blocker.resources.scriptlets) || []).length; } catch { return 0; } }
+  logScripts(when) {
+    const n = this.scriptletCount();
+    console.info(n ? `[adblock] скриптлетов доступно: ${n} (${when})${this.scripts ? '' : ' — выключены в настройках'}`
+      : `[adblock] скриптлеты пока недоступны (${when}): ресурсы uBlock ещё не загружены — реклама внутри YouTube и др. не вырезается`);
+  }
+  // для настроек: строка под выключателем (автоматическое ограничение — не молча)
+  scriptsInfo() {
+    if (!this.blocker) return 'Блокировщик ещё загружается';
+    const n = this.scriptletCount();
+    return n ? `Доступно скриптлетов: ${n}` : 'Пока недоступно: не скачались ресурсы uBlock — повторю через полчаса';
+  }
+
   resetCount(id) { this.counts.set(id, 0); this.onCount(id, 0); }
 }
 
-module.exports = { AdBlock };
+// скрипт-предзагрузка Ghostery (просит косметику по IPC_INJECT); пакет — зависимость @ghostery/adblocker-electron
+function preloadPath() {
+  try { return require.resolve('@ghostery/adblocker-electron-preload', { paths: [path.dirname(require.resolve('@ghostery/adblocker-electron'))] }); }
+  catch (e) { console.warn('adblock preload path', e.message); return null; }
+}
+
+module.exports = { AdBlock, RESOURCES };
