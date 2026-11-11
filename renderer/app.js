@@ -354,27 +354,18 @@ setInterval(memPressureCheck, 30e3);
 
 // События вкладки во время загрузки (начало, переход, заголовок, конец) идут пачками — вид вкладки и панели
 // обновляем один раз за кадр, а не на каждое событие. Окно свёрнуто (кадров нет) — через 100 мс
-// Каждое такое обновление — кадр окна, а кадр окна во время загрузки отнимает время у самой загрузки (замеры: окно
-// без обновлений грузит страницу на 50–100 мс быстрее). Поэтому начало и конец загрузки (кружок, полоска, «стоп»)
-// показываем сразу, а адрес и заголовок — не чаще раза в 100 мс: переход и заголовок попадают в один кадр
-const TAB_GAP = 100;
 const tabDirty = new Set();
-let tabRaf = 0, tabTo = 0, tabSoon = false, tabLast = 0;
+let tabRaf = 0, tabTo = 0;
 function flushTabs() {
   cancelAnimationFrame(tabRaf); clearTimeout(tabTo); tabRaf = tabTo = 0;
-  tabLast = performance.now();
   const list = [...tabDirty]; tabDirty.clear();
   for (const t of list) if (tabs.includes(t)) updateTab(t);
 }
 function queueTab(tab) {
   tabDirty.add(tab);
-  const urgent = !!tab.loading !== !!tab.shownLoading;
-  if (tabRaf && (tabSoon || !urgent)) return;
-  cancelAnimationFrame(tabRaf); clearTimeout(tabTo);
-  const wait = urgent ? 0 : Math.max(0, tabLast + TAB_GAP - performance.now());
-  const go = () => { tabRaf = requestAnimationFrame(flushTabs); tabTo = setTimeout(flushTabs, 100); };
-  tabSoon = !wait;
-  if (wait) { tabRaf = -1; tabTo = setTimeout(go, wait); } else go();
+  if (tabRaf) return;
+  tabRaf = requestAnimationFrame(flushTabs);
+  tabTo = setTimeout(flushTabs, 100);
 }
 // несрочное (проверка сайта, запись истории и сессии) — когда окно свободно, но не позже чем через 1,5 с
 const whenIdle = (fn) => (window.requestIdleCallback ? requestIdleCallback(() => fn(), { timeout: 1500 }) : setTimeout(fn, 300));
@@ -382,7 +373,6 @@ window.whenIdle = whenIdle;
 
 function updateTab(tab) {
   const { el } = tab;
-  tab.shownLoading = !!tab.loading;
   el.classList.toggle('loading', !!tab.loading);
   const title = isInternal(tab.url) ? (tab.url.startsWith(ERRPAGE.split('#')[0]) ? 'Не открылось' : 'Новая вкладка') : (tab.title || tab.url);
   setProp(el.querySelector('.title'), 'textContent', title);

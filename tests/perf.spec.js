@@ -169,7 +169,8 @@ test('опыты: окно во время загрузки', async () => {
   // v5: по одному источнику перерисовки окна: выделение вкладки, полоса загрузки, кружок, заголовок вкладки
   // CI 42943853120 (v5): по отдельности ничего (выделение −7, полоса +30, кружок 0, заголовок +6), без updateTab −50…−63:
   // всё делается в одном кадре, дорог сам кадр окна. v6: адрес и заголовок не чаще раза в 100 мс (queueTab) против «как раньше»
-  const MODES = ['обычный', 'как раньше', 'без updateTab'];
+  // CI 42944874723 (v6): обычный 755/759, как раньше 747/758 (≈0 — число кадров не главное), без updateTab 663/652.
+  const MODES = ['обычный', 'без updateTab'];
   await win.evaluate(() => {
     window.__orig = {}; for (const f of ['updateTab', 'saveSession', 'guardScan', 'historyAdd', 'historyTitle', 'syncChrome', 'syncOmniExtras']) window.__orig[f] = window[f];
     const st = document.createElement('style'); st.id = 'abIso'; st.textContent = ''; st.disabled = true; document.head.appendChild(st);
@@ -187,7 +188,6 @@ test('опыты: окно во время загрузки', async () => {
       window.syncOmniExtras && window.syncOmniExtras(active);
     };
     // что именно меняется в окне за одну загрузку (по первому кругу «обычного»)
-    window.__q0 = window.queueTab;
     window.__muts = []; window.__gl = []; window.__t0 = 0;
     // где активная вкладка и полоса вкладок на каждом кадре загрузки — двигается ли выделение по делу
     window.__geo = new Set();
@@ -202,7 +202,6 @@ test('опыты: окно во время загрузки', async () => {
     const css = { 'без выделения': '.tab-glider{display:none!important}', 'без полосы': '#progress{display:none!important}', 'без кружка': '.tab .spin{display:none!important}' };
     const st = document.getElementById('abIso'); st.textContent = css[m] || ''; st.disabled = !css[m];
     if (m === 'без updateTab') window.updateTab = () => {};
-    window.queueTab = m === 'как раньше' ? (tab) => { tabDirty.add(tab); if (window.__qr) return; window.__qr = requestAnimationFrame(() => { window.__qr = 0; flushTabs(); }); } : window.__q0;
     // заголовок вкладки не меняется во время загрузки (остальное — как обычно)
     if (m === 'без заголовка') window.updateTab = (t) => { const ti = t.title; t.title = t.el.querySelector('.title').textContent; try { window.__orig.updateTab(t); } finally { t.title = ti; } };
   }, m);
@@ -223,6 +222,40 @@ test('опыты: окно во время загрузки', async () => {
       await win.waitForTimeout(300);
     }
   }
+  // v7: трасса Chromium (все процессы) на 4 загрузках heavy в каждом режиме — кто занят: окно, вкладка, основной, GPU
+  const pids = await app.evaluate(({ webContents }) => webContents.getAllWebContents().map((w) => ({ t: w.getType(), u: w.getURL().slice(0, 40), pid: w.getOSProcessId() })));
+  const trace = {};
+  for (const m of ['обычный', 'без updateTab', 'без updateTab', 'обычный']) {
+    await setMode(m);
+    await app.evaluate(({ contentTracing }) => contentTracing.startRecording({ included_categories: ['toplevel', 'viz', 'gpu', 'cc', 'disabled-by-default-devtools.timeline'] }));
+    for (let r = 0; r < 4; r++) {
+      const k = `tr${m.length}-${r}-${Object.keys(trace).length}`;
+      await win.evaluate((u) => navigate(u), `${base}/article.html?ab=${k}`);
+      await expect.poll(async () => (await url()).includes(`ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
+      await win.waitForTimeout(300);
+      await win.evaluate((u) => navigate(u), `${base}/heavy.html?ab=${k}`);
+      await expect.poll(async () => (await url()).includes(`heavy.html?ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
+      await win.waitForTimeout(300);
+    }
+    const file = await app.evaluate(({ contentTracing }, f) => contentTracing.stopRecording(f), path.join(ROOT, 'test-results', `trace-${Date.now()}.json`));
+    try {
+      const j = JSON.parse(fs.readFileSync(file, 'utf8')); const ev = j.traceEvents || j;
+      const pn = {}, tn = {};
+      for (const e of ev) if (e.ph === 'M') { if (e.name === 'process_name') pn[e.pid] = e.args.name; if (e.name === 'thread_name') tn[e.pid + ':' + e.tid] = e.args.name; }
+      const who = (pid) => { const w = pids.filter((x) => x.pid === pid).map((x) => x.t + (x.t === 'webview' ? '' : '')).join('+'); return (pn[pid] || pid) + (w ? `[${w}]` : ''); };
+      const t = trace[m] = trace[m] || { busy: {}, ev: {} };
+      for (const e of ev) {
+        if (e.ph !== 'X' || !e.dur) continue;
+        const key = who(e.pid) + '/' + (tn[e.pid + ':' + e.tid] || e.tid);
+        if (e.cat === 'toplevel') t.busy[key] = (t.busy[key] || 0) + e.dur / 1000;
+        else { const k2 = key + ' ' + e.name; t.ev[k2] = (t.ev[k2] || 0) + e.dur / 1000; }
+      }
+      fs.unlinkSync(file);
+    } catch (e) { trace[m] = { err: e.message }; }
+  }
+  for (const m in trace) for (const f of ['busy', 'ev']) if (trace[m][f]) trace[m][f] = Object.entries(trace[m][f]).sort((a, b) => b[1] - a[1]).slice(0, f === 'busy' ? 12 : 25).map(([k, v]) => `${k}: ${Math.round(v)}`);
+  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'трасса (мс за 8 загрузок, обычный)', pids, ...trace['обычный'] }) + '\n');
+  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'трасса (мс за 8 загрузок, без updateTab)', ...trace['без updateTab'] }) + '\n');
   await setMode('обычный');
   const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
   const out = { mode: 'опыт: окно во время загрузки (один запуск, чередование)', ...out0 };
