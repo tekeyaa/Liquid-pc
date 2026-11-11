@@ -162,15 +162,16 @@
     const web = isWeb(tab.url);
     $('#starBtn').classList.toggle('show', web && !L.incognito);
     $('#starBtn').classList.toggle('on', web && isBookmarked(tab.url));
-    $('#starBtn').title = isBookmarked(tab.url) ? 'Убрать из закладок (Ctrl+D)' : 'Добавить в закладки (Ctrl+D)';
+    setProp($('#starBtn'), 'title', isBookmarked(tab.url) ? 'Убрать из закладок (Ctrl+D)' : 'Добавить в закладки (Ctrl+D)');
     $('#trBtn').classList.toggle('show', web && !!(tab.page?.foreign || tab.translated));
     $('#trBtn').classList.toggle('on', !!tab.translated);
     const host = hostOf(tab.url);
     const allowed = (settings.adAllow || []).includes(host);
     const adOn = settings.adblock !== false && web && !allowed;
     $('#adBtn').classList.toggle('off', !adOn);
-    $('#adBtn').title = !web ? 'Блокировщик рекламы' : allowed ? `Реклама на ${host} не блокируется` : `Заблокировано: ${tab.ads || 0}`;
-    $('#adCount').textContent = adOn && tab.ads ? (tab.ads > 99 ? '99+' : tab.ads) : '';
+    setProp($('#adBtn'), 'title', !web ? 'Блокировщик рекламы' : allowed ? `Реклама на ${host} не блокируется` : `Заблокировано: ${tab.ads || 0}`);
+    // счётчик рекламы меняется во время загрузки много раз — перерисовываем адресную строку, только если число другое
+    setProp($('#adCount'), 'textContent', String(adOn && tab.ads ? (tab.ads > 99 ? '99+' : tab.ads) : ''));
   }
   window.syncOmniExtras = syncOmniExtras;
   window.onTabActivated = syncOmniExtras;

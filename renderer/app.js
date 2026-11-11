@@ -1,5 +1,7 @@
 /* Liquid — логика интерфейса */
 const $ = (s) => document.querySelector(s);
+// записать свойство элемента, только если оно изменилось: даже тот же текст заново — это пересчёт раскладки и перерисовка
+const setProp = (el, k, v) => { if (el && el[k] !== v) el[k] = v; };
 const L = window.liquid;
 const NEWTAB = new URL('newtab.html', location.href).href;
 const ERRPAGE = new URL('error.html', location.href).href;
@@ -373,8 +375,8 @@ function updateTab(tab) {
   const { el } = tab;
   el.classList.toggle('loading', !!tab.loading);
   const title = isInternal(tab.url) ? (tab.url.startsWith(ERRPAGE.split('#')[0]) ? 'Не открылось' : 'Новая вкладка') : (tab.title || tab.url);
-  el.querySelector('.title').textContent = title;
-  el.title = title + (tab.sleeping ? (tab.sleptWhy === 'память' ? '\n💤 Усыплена — не хватало памяти. Проснётся при клике' : '\n💤 Спит — проснётся при клике') : '');
+  setProp(el.querySelector('.title'), 'textContent', title);
+  setProp(el, 'title', title + (tab.sleeping ? (tab.sleptWhy === 'память' ? '\n💤 Усыплена — не хватало памяти. Проснётся при клике' : '\n💤 Спит — проснётся при клике') : ''));
   if (tab === active) syncChrome();
 }
 
@@ -618,7 +620,7 @@ function syncChrome() {
   if (!active) return;
   const { wv, url, loading } = active;
   const urlInput = $('#url');
-  if (document.activeElement !== urlInput) urlInput.value = isInternal(url) ? '' : decodeSafe(url);
+  if (document.activeElement !== urlInput) setProp(urlInput, 'value', isInternal(url) ? '' : decodeSafe(url));
   $('#omni').classList.toggle('https', url.startsWith('https://'));
   renderGuard(active);
   const showLoad = loading && !isInternal(url);
@@ -629,8 +631,8 @@ function syncChrome() {
     clearTimeout(syncChrome.t);
     syncChrome.t = setTimeout(() => document.body.classList.remove('loaded'), 600);
   }
-  $('#back').disabled = !active.canBack;
-  $('#fwd').disabled = !active.canFwd;
+  setProp($('#back'), 'disabled', !active.canBack);
+  setProp($('#fwd'), 'disabled', !active.canFwd);
   window.syncOmniExtras && window.syncOmniExtras(active);
 }
 function decodeSafe(u) { try { return decodeURI(u); } catch { return u; } }
@@ -950,9 +952,9 @@ function renderGuard(tab) {
   if (tab !== active) return;
   const omni = $('#omni');
   const g = tab.guard;
-  if (!g) { delete omni.dataset.guard; $('#danger').classList.remove('open'); return; }
-  omni.dataset.guard = g.verdict;
-  $('#shield').title = GUARD_TITLE[g.verdict] + (g.reason ? '\n' + g.reason : '');
+  if (!g) { if ('guard' in omni.dataset) delete omni.dataset.guard; $('#danger').classList.remove('open'); return; }
+  if (omni.dataset.guard !== g.verdict) omni.dataset.guard = g.verdict;
+  setProp($('#shield'), 'title', GUARD_TITLE[g.verdict] + (g.reason ? '\n' + g.reason : ''));
   if (g.verdict !== 'danger') $('#danger').classList.remove('open');
 }
 // окна входа и оплаты: страницу разбирает основной процесс, вердикт считаем здесь теми же правилами, что для вкладок
