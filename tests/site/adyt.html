@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Fake YouTube ads</title>
+<style>
+  body { margin: 0; background: #0f0f0f; color: #fff; font: 14px sans-serif; }
+  #watch { position: relative; width: 854px; height: 480px; margin: 20px; background: #000; }
+  #watch video { width: 100%; height: 100%; display: block; }
+  #lq-test-banner { width: 300px; height: 50px; background: #c00; }
+</style>
+<script>
+  // Как у YouTube: данные плеера с рекламой — прямо в HTML, разбираются раньше всего остального.
+  // Скриптлеты блокировщика должны успеть встать до этого скрипта (json-prune / set-constant из правил автотеста).
+  var ytInitialPlayerResponse = { adPlacements: [{ ad: 1 }], playerAds: [{ ad: 1 }], videoDetails: { videoId: 'test' } };
+  var parsed = JSON.parse('{"adPlacements":[{"ad":1}],"playerAds":[{"ad":1}],"videoDetails":{"videoId":"test"}}');
+  window.lqAdCheck = {
+    early: !('adPlacements' in parsed) && !('playerAds' in parsed) && !!parsed.videoDetails,
+    constant: ytInitialPlayerResponse.adPlacements === undefined && !!ytInitialPlayerResponse.videoDetails,
+  };
+</script>
+</head>
+<body>
+<div id="lq-test-banner">реклама</div>
+<div id="watch"><video id="v" src="b.webm" muted autoplay loop playsinline></video></div>
+<script>
+  // ответ «плеера» после загрузки страницы (как запрос /player при переходе между роликами)
+  window.lqLater = () => { const r = JSON.parse('{"adPlacements":[1],"playerAds":[1],"videoDetails":{"videoId":"next"}}'); return !('adPlacements' in r) && !!r.videoDetails; };
+</script>
+</body></html>

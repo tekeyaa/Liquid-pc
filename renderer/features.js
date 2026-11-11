@@ -664,6 +664,9 @@
   const renderUa = () => $('#uaMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (settings.uaMode || 'chrome')));
   $('#uaMode').addEventListener('click', async (e) => { const b = e.target.closest('button'); if (!b) return; settings = await L.settings.set({ uaMode: b.dataset.v }); renderUa(); window.dropSpare?.(); });
   $('#adblockOn').onchange = async (e) => { settings = await L.settings.set({ adblock: e.target.checked }); active?.wv?.reload(); syncOmniExtras(active); };
+  // скриптлеты uBlock (json-prune и др.): строка под выключателем — сколько доступно или почему пока нет
+  const renderAdScripts = () => { $('#adScripts').checked = settings.adScripts !== false; $('#adScriptsInfo').textContent = settings.adScripts === false ? 'Выключено' : settings.adScriptsInfo || ''; };
+  $('#adScripts').onchange = async (e) => { settings = await L.settings.set({ adScripts: e.target.checked }); renderAdScripts(); active?.wv?.reload(); };
   $('#dlAsk').onchange = async (e) => { settings = await L.settings.set({ dlAsk: e.target.checked }); };
   $('#sleepAll').onclick = async () => {
     let n = 0;
@@ -686,7 +689,7 @@
     } catch {}
   }
   window.refreshMem = refreshMem;
-  window.onSettingsOpen = () => { renderThemeUi(); setTimeout(refreshMem, 300); };
+  window.onSettingsOpen = () => { renderThemeUi(); setTimeout(refreshMem, 300); L.settings.get().then((x) => { settings = x; renderAdScripts(); }).catch(() => {}); };
 
   // ================= Старт =================
   window.featuresInit = () => {
@@ -695,6 +698,7 @@
     $('#memSaver').checked = settings.memSaver !== false;
     $('#restore').checked = settings.restore !== false;
     $('#adblockOn').checked = settings.adblock !== false;
+    renderAdScripts();
     renderUa();
     $('#dlAsk').checked = !!settings.dlAsk;
     renderVpnExtras();

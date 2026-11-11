@@ -18,8 +18,18 @@ Liquid Player открывается); поправить adblock-bench и не�
   (adAllow, enabled, adScripts).
 - npm-реестр из контейнера недоступен; исходники ghostery v2.20.3 — в scratchpad/ghostery-adblocker.
 
-## Сделано
-- (пока ничего)
+## Сделано (коммит «скриптлеты: ресурсы uBlock, раннее внедрение…»)
+- main/adblock.js: RESOURCES (resources.json ghostery master) качается через fetchList вместе со списками; путь к файлу → adblock-build.js;
+  отпечаток включает ресурсы; нет ресурсов — сборка без них + строка в журнале + повтор через 30 мин (lastNet=false).
+  Движок из кэша без скриптлетов → refresh сразу (не чаще раза в 6 ч, файл adblock-engine-ru4.bin.restry).
+- attach() больше не зовёт enableBlockingInSession: свои ipcMain.handle для каналов Ghostery (один раз, hookIpc),
+  registerPreloadScript(frame, preload Ghostery) на каждую сессию, свой onBeforeRequest. CSS — с учётом enabled/adAllow.
+- Скриптлеты: webview-preload.js (верхний фрейм, http/https) → ipcRenderer.sendSync('adblock:scripts') → webFrame.executeJavaScript
+  каждого скрипта ДО скриптов страницы. Слушатель ставится в конструкторе AdBlock (ответ всегда, [] без движка).
+- settings.adScripts (по умолч. вкл), adScriptsInfo в publicSettings; переключатель + строка в renderer (index.html, features.js).
+- Журнал: «скриптлетов доступно: N (из кэша|после обновления)» или «скриптлеты пока недоступны…»; в строке сборки — размер движка и время загрузки.
+- TEST: global.__lqAdblock (addTestRules, scriptletCount). Тест «скриптлеты блокировщика…» + tests/site/adyt.html.
+- adblock-bench: ресурсы берёт по RESOURCES из main/adblock.js.
 
 ## В работе / следующий шаг
-- main/adblock.js: fetch ресурсов, сборка с ресурсами в adblock-build.js, отпечаток, переопределение onInjectCosmeticFilters.
+- Дождаться CI на ветке, разобрать падения (особенно: правило для хоста 127.0.0.1, синхронность webFrame.executeJavaScript, окно инкогнито).
