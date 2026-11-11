@@ -123,7 +123,8 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
 let spareWv = null, spareT = 0;
 function makeSpare() {
   clearTimeout(spareT);
-  spareT = setTimeout(() => {
+  // запуск webview — тяжёлая задача окна: делаем её, когда окно свободно, а не посреди анимации вкладок
+  spareT = setTimeout(() => (window.requestIdleCallback || setTimeout)(() => {
     if (spareWv || document.hidden) return;
     try { if (localStorage.getItem('liquid.noSpare')) return; } catch {} // для замеров «без заготовки»
     const wv = document.createElement('webview');
@@ -135,7 +136,7 @@ function makeSpare() {
     wv.addEventListener('dom-ready', () => { wv.__ready = true; }, { once: true });
     $('#views').appendChild(wv);
     spareWv = wv;
-  }, 1200);
+  }, { timeout: 2000 }), 1200);
 }
 function takeSpare() {
   const wv = spareWv;
@@ -166,6 +167,10 @@ function attachWebview(tab, url) {
   tab.sleeping = false;
   tab.loading = true;
   tab.el.classList.remove('sleeping');
+  tab.sleptWhy = '';
+  // проснулась из сна — возвращаем прокрутку, на которой её усыпили
+  const sc = tab.scroll; tab.scroll = null;
+  if (sc && sc.url === url) wv.addEventListener('did-finish-load', () => { try { quiet(wv.executeJavaScript(`scrollTo(${+sc.x || 0}, ${+sc.y || 0})`)); } catch {} }, { once: true });
   const { fav, el } = tab;
 
   wv.addEventListener('dom-ready', () => {
@@ -182,6 +187,7 @@ function attachWebview(tab, url) {
     if (e.channel !== 'liquid') return;
     const m = e.args[0] || {};
     if (m.type === 'nav') { mouseNav(tab, m.dir); return; }
+    if (m.type === 'typed') { tab.typed = !!m.on; return; } // человек печатает на странице — сам браузер её не усыпит
     window.onPageMsg && window.onPageMsg(tab, m);
   });
   const onNav = (e) => {
@@ -191,7 +197,7 @@ function attachWebview(tab, url) {
     updateTab(tab);
   };
   wv.addEventListener('did-navigate', (e) => {
-    fav.src = 'favicon.svg'; tab.favicon = ''; tab.guard = null; tab.page = {}; tab.translated = false; tab.ads = 0;
+    fav.src = 'favicon.svg'; tab.favicon = ''; tab.guard = null; tab.page = {}; tab.translated = false; tab.ads = 0; tab.typed = false;
     onNav(e);
     if (/^https?:/.test(e.url)) {
       window.historyAdd && window.historyAdd(tab, e.url);
@@ -258,31 +264,80 @@ for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
   }, true);
 }
 
-function sleepTab(tab) {
+function sleepTab(tab, why) {
   if (!tab.wv || tab === active || tab.playing) return false;
-  tab.wv.remove();
+  // Перед сном запоминаем, докуда страница прокручена — проснётся на том же месте. Ответа ждём недолго:
+  // вкладка уже считается спящей, а её webview убирается сразу после ответа (или через 0,8 с)
+  const wv = tab.wv;
+  wv.style.visibility = 'hidden';
+  let gone = false;
+  const drop = () => { if (gone) return; gone = true; wv.remove(); };
+  try {
+    const url = tab.url;
+    Promise.race([wv.executeJavaScript('[scrollX, scrollY]'), new Promise((r) => setTimeout(r, 800))])
+      .then((s) => { if (Array.isArray(s) && (s[0] || s[1]) && tab.url === url) tab.scroll = { url, x: s[0], y: s[1] }; }, () => {})
+      .finally(drop);
+  } catch { drop(); }
   tab.wv = null;
   tab.wcId = null;
   tab.sleeping = true;
+  tab.sleptWhy = why || '';
   tab.loading = false;
+  tab.typed = false;
   tab.el.classList.add('sleeping');
   tab.el.classList.remove('playing');
+  updateTab(tab);
   return true;
 }
+// Сам браузер не усыпляет вкладку, где человек начал что-то печатать (форма, письмо, комментарий) — текст пропал бы
+const autoSleepable = (t) => t.wv && t !== active && !t.playing && !t.typed && !t.pinned;
 // фоновые вкладки засыпают сами
 setInterval(() => {
   const mins = Number(settings.sleepAfter ?? 20);
   if (!mins) return;
   const now = Date.now();
-  for (const t of tabs) if (t.wv && t !== active && now - t.lastActive > mins * 60e3) sleepTab(t);
+  for (const t of tabs) if (autoSleepable(t) && now - t.lastActive > mins * 60e3) sleepTab(t);
 }, 60e3);
+// Не хватает памяти: вкладки вместе занимают больше порога (Настройки → Скорость, по умолчанию 1,5 ГБ) — усыпляем
+// самые давно не открывавшиеся фоновые, не дожидаясь срока. Не молча: сообщение, пометка на вкладке и строка в журнале
+async function memPressureCheck() {
+  const limit = Number(settings.sleepMem ?? 1536);
+  if (!limit) return 0;
+  const cand = tabs.filter(autoSleepable);
+  if (!cand.length) return 0;
+  let m; try { m = await L.mem(); } catch { return 0; }
+  // у нескольких вкладок бывает общий процесс — считаем каждый процесс один раз
+  const byPid = new Map();
+  for (const x of m.tabs || []) if (x.pid) byPid.set(x.pid, x.mb);
+  let total = [...byPid.values()].reduce((a, b) => a + b, 0);
+  if (total <= limit) return 0;
+  const before = total;
+  const pidOf = new Map((m.tabs || []).map((x) => [x.wcId, x.pid]));
+  let n = 0;
+  for (const t of cand.sort((a, b) => a.lastActive - b.lastActive)) {
+    if (total <= limit * 0.85) break; // с запасом, чтобы не усыплять по одной каждые полминуты
+    if (!autoSleepable(t)) continue;
+    const pid = pidOf.get(t.wcId);
+    if (!sleepTab(t, 'память')) continue;
+    n++;
+    if (pid && !tabs.some((o) => o.wv && pidOf.get(o.wcId) === pid)) { total -= byPid.get(pid) || 0; byPid.delete(pid); }
+  }
+  if (n) {
+    const k = n % 10 === 1 && n % 100 !== 11 ? 'фоновую вкладку' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'фоновые вкладки' : 'фоновых вкладок';
+    toast(`Усыпил ${n} ${k} — не хватало памяти`);
+    L.diag.log('info', 'память', `Усыпил фоновых вкладок: ${n} — вкладки занимали ${before} МБ при пороге ${limit} МБ (Настройки → Скорость)`);
+  }
+  return n;
+}
+window.memPressureCheck = memPressureCheck;
+setInterval(memPressureCheck, 30e3);
 
 function updateTab(tab) {
   const { el } = tab;
   el.classList.toggle('loading', !!tab.loading);
   const title = isInternal(tab.url) ? (tab.url.startsWith(ERRPAGE.split('#')[0]) ? 'Не открылось' : 'Новая вкладка') : (tab.title || tab.url);
   el.querySelector('.title').textContent = title;
-  el.title = title + (tab.sleeping ? '\n💤 Спит — проснётся при клике' : '');
+  el.title = title + (tab.sleeping ? (tab.sleptWhy === 'память' ? '\n💤 Усыплена — не хватало памяти. Проснётся при клике' : '\n💤 Спит — проснётся при клике') : '');
   if (tab === active) syncChrome();
 }
 

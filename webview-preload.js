@@ -2505,6 +2505,20 @@ document.addEventListener('pointerdown', (e) => preconnect(e.target.closest && e
   window.addEventListener('keydown', act, { capture: true, passive: true });
 }
 
+// ---------- введённый текст: такую вкладку браузер сам не усыпляет (текст в форме пропал бы) ----------
+// Одно сообщение на страницу — когда человек начал печатать; отправил форму — снова можно усыплять
+{
+  let typed = false;
+  const TEXT = /^(text|email|search|url|tel|number|)$/;
+  document.addEventListener('input', (e) => {
+    if (typed || !e.isTrusted) return;
+    const t = e.target;
+    if (!t || !(t.isContentEditable || t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && TEXT.test(t.type || '')))) return;
+    typed = true; toHost({ type: 'typed', on: true });
+  }, { capture: true, passive: true });
+  document.addEventListener('submit', () => { if (typed) { typed = false; toHost({ type: 'typed', on: false }); } }, { capture: true, passive: true });
+}
+
 // ---------- боковые кнопки мыши: назад / вперёд (Electron сам их не обрабатывает) ----------
 for (const ev of ['mousedown', 'mouseup', 'auxclick']) {
   window.addEventListener(ev, (e) => {
