@@ -10,7 +10,7 @@ test.beforeAll(async () => {
     if (p === '/px') { res.writeHead(200, { 'content-type': 'image/gif', 'cache-control': 'no-store' }); res.end(PX); return; }
     if (p === '/js') { res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' }); res.end('window.__n=(window.__n||0)+1;'); return; }
     const f = path.join(SITE, p); if (!fs.existsSync(f)) { res.writeHead(404); res.end(); return; }
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(fs.readFileSync(f)); // как обычный сайт: без запрета кэша
+    res.writeHead(200, { 'content-type': f.endsWith('.webm') ? 'video/webm' : 'text/html; charset=utf-8' }); res.end(fs.readFileSync(f)); // как обычный сайт: без запрета кэша
   });
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok)); base = `http://127.0.0.1:${server.address().port}`;
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
@@ -36,6 +36,46 @@ test('эталон: Chromium', async () => {
   const s = loads.slice(1).sort((x, y) => x - y);
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
   fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: 'Chromium (эталон)', loadMedianMs: s[Math.floor(s.length / 2)], loads }) + '\n');
+});
+
+// Память: сколько занимает Liquid целиком и по типам процессов (МБ) — пустая вкладка; 5 сайтов; те же 5, из них 4 спят.
+// Первым тестом — пока браузер свежий. workingSet — «Память» в диспетчере задач, private — только своя (без общих библиотек)
+test('память', async () => {
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_NOADBLOCK || !!process.env.LIQUID_PERF_NOHOOKS || !!process.env.LIQUID_PERF_WCV || !!process.env.LIQUID_PERF_LOADONLY, 'один раз');
+  test.setTimeout(240_000);
+  const snap = async (name) => {
+    await win.waitForTimeout(4000); // страницы догрузились, процессы успокоились
+    const m = await app.evaluate(({ app, webContents }) => {
+      const urlOf = new Map();
+      for (const w of webContents.getAllWebContents()) { try { if (w.getType() === 'webview' || globalThis.__lqTabViews?.isTab(w)) urlOf.set(w.getOSProcessId(), w.getURL()); } catch {} }
+      return { metrics: app.getAppMetrics().map((x) => ({ pid: x.pid, type: x.type, name: x.name || x.serviceName || '', ws: x.memory?.workingSetSize || 0, priv: x.memory?.privateBytes || 0, url: urlOf.get(x.pid) || '' })), main: process.memoryUsage() };
+    });
+    const MB = (kb) => Math.round(kb / 1024);
+    const by = {};
+    for (const x of m.metrics) {
+      const k = x.type === 'Tab' ? (x.url ? 'Tab' : 'Tab (окно и служебные)') : x.type;
+      by[k] = by[k] || { n: 0, ws: 0, priv: 0 }; by[k].n++; by[k].ws += x.ws; by[k].priv += x.priv;
+    }
+    for (const k in by) { by[k].ws = MB(by[k].ws); by[k].priv = MB(by[k].priv); }
+    const tabsMb = m.metrics.filter((x) => x.url).map((x) => `${(x.url.split('/').pop() || x.url).slice(0, 24)}:${MB(x.ws)}`);
+    return { name, totalWs: MB(m.metrics.reduce((a, x) => a + x.ws, 0)), totalPriv: MB(m.metrics.reduce((a, x) => a + x.priv, 0)), procs: m.metrics.length, by, tabs: tabsMb,
+      main: { rss: Math.round(m.main.rss / 1048576), heapUsed: Math.round(m.main.heapUsed / 1048576) } };
+  };
+  const out = [];
+  out.push(await snap('пустая вкладка'));
+  const pages = ['article.html', 'heavy.html', 'form.html', 'fakeyt.html', 'video.html'];
+  await win.evaluate((u) => navigate(u), `${base}/${pages[0]}`);
+  for (const p of pages.slice(1)) await win.evaluate((u) => createTab(u), `${base}/${p}`);
+  await expect.poll(() => win.evaluate(() => tabs.length === 5 && tabs.every((t) => t.wv && !t.loading)), { timeout: 60_000 }).toBe(true);
+  out.push(await snap('5 сайтов'));
+  const slept = await win.evaluate(() => tabs.filter((t) => t !== active).map((t) => sleepTab(t)).filter(Boolean).length);
+  const s3 = await snap(`5 сайтов, ${slept} спят`);
+  out.push(s3);
+  s3.freedWs = out[1].totalWs - s3.totalWs; s3.freedPriv = out[1].totalPriv - s3.totalPriv; // сколько освободил сон
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
+  for (const o of out) fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify({ mode: (process.env.LIQUID_TAB_ENGINE === 'view' ? 'новый движок (view): ' : '') + 'память (МБ)', ...o }) + '\n');
+  // обратно к одной вкладке — для следующих замеров
+  await win.evaluate(() => { for (const t of tabs.slice(1)) closeTab(t); activate(tabs[0]); });
 });
 
 // новая вкладка с сайтом: от нажатия до загрузки — с заготовленной вкладкой и без неё

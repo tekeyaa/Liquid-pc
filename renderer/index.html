@@ -425,6 +425,16 @@
               <option value="0">Никогда</option>
             </select>
           </label>
+          <label class="field">
+            <span>Не хватает памяти — усыплять раньше</span>
+            <select id="sleepMem">
+              <option value="1024">Вкладки заняли больше 1 ГБ</option>
+              <option value="1536">Больше 1,5 ГБ</option>
+              <option value="2048">Больше 2 ГБ</option>
+              <option value="3072">Больше 3 ГБ</option>
+              <option value="0">Никогда</option>
+            </select>
+          </label>
           <label class="switch-row"><span>Экономия памяти (меньше фоновых процессов, нужен перезапуск)</span><input type="checkbox" id="memSaver" class="switch" /></label>
           <button id="sleepAll" class="btn ghost wide" style="margin-top:8px">Усыпить все фоновые вкладки</button>
           <h4>Эксперименты</h4>

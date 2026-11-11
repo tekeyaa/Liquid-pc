@@ -218,8 +218,25 @@ if (firstInstance) diag.log('info', 'main', `Запуск Liquid ${app.getVersio
 // Датчик заминок основного процесса: пока он занят, окно не отвечает на клики, а запросы сайтов ждут.
 // Каждая заминка дольше 300 мс — в журнал (в автотестах — всегда, у пользователя — тоже, это дёшево)
 {
-  let last = Date.now();
-  setInterval(() => { const now = Date.now(), lag = now - last - 100; last = now; if (lag > 300) diag.log('warn', 'заминка', `Основной процесс был занят ${lag} мс`); }, 100).unref?.();
+  // Вместе с задержкой меряем, сколько процессора основной процесс за это время потратил сам: если почти нисколько —
+  // он не работал, а ждал: процессор заняли страницы, видео, другие программы, или ждал процесс видеокарты
+  let last = Date.now(), cpu = process.cpuUsage();
+  setInterval(() => {
+    const now = Date.now(), lag = now - last - 100, c = process.cpuUsage(cpu); last = now; cpu = process.cpuUsage();
+    if (lag <= 300) return;
+    const own = Math.round((c.user + c.system) / 1000);
+    diag.log('warn', 'заминка', own * 2 < lag + 100 ? `Основной процесс ждал ${lag} мс (своя работа ${own} мс — процессор был занят другими процессами или ждал видеокарту)` : `Основной процесс был занят ${lag} мс (своя работа ${own} мс)`);
+  }, 100).unref?.();
+}
+// Приоритет основного процесса (Windows) — «выше обычного». Страницы, видео и видеокарта остаются с обычным: когда
+// они загружают процессор целиком, клики, вкладки и запросы сайтов не ждут своей очереди. (Замер 1.36: заминки
+// основного процесса в 0,3–3,5 с были ожиданием, а не его собственной работой.) Окну браузера приоритет не поднимаем:
+// по замеру новые вкладки от этого грузились медленнее — окно отнимало процессор у страницы
+if (process.platform === 'win32' && bootSettings.uiPriority !== false) {
+  try {
+    os.setPriority(process.pid, os.constants.priority.PRIORITY_ABOVE_NORMAL);
+    diag.log('info', 'скорость', 'Основному процессу Liquid — приоритет «выше обычного»: окно отвечает, даже когда страницы и видео загружают процессор');
+  } catch (e) { diag.log('warn', 'скорость', 'Приоритет основного процесса не поднят: ' + e.message); }
 }
 
 // Экономия памяти: без кэша страниц «назад/вперёд». (Замеры 1.12: во вкладках-webview Chromium этот кэш
@@ -291,7 +308,7 @@ function publicSettings() {
     hasClaudeKey: !!s.claudeKey, model: s.model || 'claude-sonnet-5-5',
     search: s.search || 'google', vpnAuto: !!s.vpnAuto, guard: s.guard !== false, fps: s.fps === '60' ? '60' : 'auto', claudeMode: s.claudeMode || (s.claudeKey ? 'api' : 'web'),
     vpnMode: s.vpnMode || 'smart', autoVpn: s.autoVpn !== false, vpnSites: (s.vpnSites || []).join('\n'), learned: s.learned || [],
-    memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, tabEngine: s.tabEngine === 'view' ? 'view' : 'webview', tabEngineNow: tabEngine(), restore: s.restore !== false, adblock: s.adblock !== false,
+    memSaver: s.memSaver !== false, sleepAfter: s.sleepAfter ?? 20, sleepMem: s.sleepMem ?? 1536, tabEngine: s.tabEngine === 'view' ? 'view' : 'webview', tabEngineNow: tabEngine(), restore: s.restore !== false, adblock: s.adblock !== false,
     adAllow: s.adAllow || [], dlAsk: !!s.dlAsk,
     superRes: ['off', 'mid', 'max'].includes(s.superRes) ? s.superRes : 'off', srHdr: !!s.srHdr, vidBar: s.vidBar !== false, lpAuto: s.lpAuto !== false, lpSmooth: s.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'anime'].includes(s.srNet) ? s.srNet : 'auto', srGan: Number.isFinite(s.srGan) ? s.srGan : 50, srMaxG: s.srMaxG || 8, srPreG: [0, 2, 4].includes(s.srPreG) ? s.srPreG : 0, srContent: ['auto', 'video', 'anime'].includes(s.srContent) ? s.srContent : 'auto',
     srDeband: s.srDeband !== false, srTwo: s.srTwo !== false, uaMode: Identity.MODES.includes(s.uaMode) ? s.uaMode : 'chrome', rtxAutoTrain: !!s.rtxAutoTrain, rtxTrainHours: [3, 6, 12].includes(s.rtxTrainHours) ? s.rtxTrainHours : 0, rtxLearn: !!s.rtxLearn, rtxLearnGb: Number(s.rtxLearnGb) || 1, rtxLearnWatch: s.rtxLearnWatch !== false,
@@ -1602,6 +1619,7 @@ function registerIpc() {
     if (patch.learnedRemove) s.learned = (s.learned || []).filter((x) => x !== patch.learnedRemove);
     if ('memSaver' in patch) s.memSaver = !!patch.memSaver;
     if ('sleepAfter' in patch) s.sleepAfter = Number(patch.sleepAfter) || 0;
+    if ('sleepMem' in patch) s.sleepMem = Math.max(0, Number(patch.sleepMem) || 0); // МБ на все вкладки, 0 — не усыплять по памяти
     if ('tabEngine' in patch) s.tabEngine = patch.tabEngine === 'view' ? 'view' : 'webview';
     if ('restore' in patch) s.restore = !!patch.restore;
     if ('dlAsk' in patch) s.dlAsk = !!patch.dlAsk;
@@ -1700,7 +1718,7 @@ function registerIpc() {
       return b.length <= 20 * 1048576 ? new Uint8Array(b) : null;
     } catch { return null; }
   });
-  ipcMain.handle('sr:ravu', (_e, r) => { try { return ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
+  ipcMain.handle('sr:ravu', async (_e, r) => { try { return await ravu.load(String(r)); } catch (err) { console.warn('[liquid] RAVU:', err.message); return null; } });
   ipcMain.handle('video:prefs', () => { const st = loadSettings(); return { sr: ['off', 'mid', 'max'].includes(st.superRes) ? st.superRes : 'off', srHdr: !!st.srHdr, bar: st.vidBar !== false, lpAuto: st.lpAuto !== false, lpSmooth: st.lpSmooth !== false, srNet: ['auto', 'rtx2', 'pro', 'anime'].includes(st.srNet) ? st.srNet : 'auto', gan: Number.isFinite(st.srGan) ? st.srGan : 50, maxG: st.srMaxG || 8, preG: [0, 2, 4].includes(st.srPreG) ? st.srPreG : 0, srContent: ['auto', 'video', 'anime'].includes(st.srContent) ? st.srContent : 'auto', learn: !!st.rtxLearn, deband: st.srDeband !== false, two: st.srTwo !== false }; });
   // режим обучения: вкладка YouTube сообщает «у этого ролика есть 1080p и 4K» — в очередь
   ipcMain.on('rtx:seen', (e, m) => { if (isTab(e.sender) && rtxLearn && rtxLearn.on() && m) rtxLearn.add(String(m.id || ''), String(m.title || ''), 'auto'); });
@@ -2046,8 +2064,9 @@ function registerIpc() {
     const f = uniquePath(app.getPath('downloads'), `Liquid-отчёт ${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}-${p2(d.getMinutes())}.txt`);
     let full = diag.report(sys(), 400) + '\n\n## Полный журнал за сегодня\n';
     diag.flush(); // строки, которые ещё копятся в памяти, — в файл, чтобы попали в отчёт
-    try { full += fs.readFileSync(diag.file(), 'utf8').slice(-400_000); } catch {}
-    fs.writeFileSync(f, full);
+    await diag.writing;
+    try { full += (await fs.promises.readFile(diag.file(), 'utf8')).slice(-400_000); } catch {}
+    await fs.promises.writeFile(f, full);
     return f;
   });
   ipcMain.on('diag:clear', () => diag.clear());
@@ -2067,7 +2086,7 @@ function registerIpc() {
     for (const v of byPid.values()) total += v;
     const tabs = webContents.getAllWebContents().filter((w) => isTab(w)).map((w) => {
       let pid = 0; try { pid = w.getOSProcessId(); } catch {}
-      return { wcId: w.id, mb: Math.round((byPid.get(pid) || 0) / 1024) };
+      return { wcId: w.id, pid, mb: Math.round((byPid.get(pid) || 0) / 1024) };
     });
     return { totalMb: Math.round(total / 1024), tabs };
   });

@@ -658,6 +658,7 @@
   renderPerms();
 
   $('#sleepAfter').onchange = async (e) => { settings = await L.settings.set({ sleepAfter: +e.target.value }); };
+  $('#sleepMem').onchange = async (e) => { settings = await L.settings.set({ sleepMem: +e.target.value }); };
   $('#memSaver').onchange = async (e) => { settings = await L.settings.set({ memSaver: e.target.checked }); toast('Применится после перезапуска браузера'); };
   $('#restore').onchange = async (e) => { settings = await L.settings.set({ restore: e.target.checked }); };
   $('#tabEngine').onchange = async (e) => {
@@ -695,6 +696,7 @@
   // ================= Старт =================
   window.featuresInit = () => {
     $('#sleepAfter').value = String(settings.sleepAfter ?? 20);
+    $('#sleepMem').value = String(settings.sleepMem ?? 1536);
     $('#memSaver').checked = settings.memSaver !== false;
     $('#restore').checked = settings.restore !== false;
     $('#tabEngine').value = settings.tabEngine === 'view' ? 'view' : 'webview';
