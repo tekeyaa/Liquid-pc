@@ -23,7 +23,7 @@ test.afterAll(async () => { await app?.close().catch(() => {}); server?.closeAll
 const inTab = async (js) => { const id = await win.evaluate(() => active.wv.getWebContentsId()); return app.evaluate(({ webContents }, [i, c]) => webContents.fromId(i).executeJavaScript(c), [id, js]); };
 const url = () => win.evaluate(() => active.wv.getURL());
 // опыты «без части работы» (переменные окружения только для замеров): обычные замеры памяти и плавности в них не нужны
-const EXP = !!(process.env.LIQUID_PERF_NOADBLOCK || process.env.LIQUID_PERF_NOHOOKS || process.env.LIQUID_PERF_NOSEND || process.env.LIQUID_PERF_NOUI || process.env.LIQUID_PERF_NOBAR);
+const EXP = !!(process.env.LIQUID_PERF_AB || process.env.LIQUID_PERF_NOADBLOCK || process.env.LIQUID_PERF_NOHOOKS || process.env.LIQUID_PERF_NOSEND || process.env.LIQUID_PERF_NOUI || process.env.LIQUID_PERF_NOBAR);
 // что делает окно во время загрузки вкладки: NOUI — окно не обновляет вкладку, историю, сессию, проверку сайта и полоску;
 // NOBAR — только без анимаций загрузки (полоска и кружок на вкладке)
 const expUi = () => win.evaluate(([noUi, noBar]) => {
@@ -113,7 +113,7 @@ test('новые вкладки', async () => {
 });
 
 test('замеры', async () => {
-  test.skip(!!process.env.LIQUID_PERF_CHROMIUM, 'только эталон');
+  test.skip(!!process.env.LIQUID_PERF_CHROMIUM || !!process.env.LIQUID_PERF_AB, 'только эталон');
   test.setTimeout(240_000);
   const out = { loads: [], backs: [] };
   await expUi();
@@ -154,6 +154,45 @@ test('замеры', async () => {
   const r = { mode: process.env.LIQUID_PERF_NOUI ? `окно не обновляет вкладку: ${process.env.LIQUID_PERF_NOUI} (опыт)` : process.env.LIQUID_PERF_NOBAR ? 'без анимации загрузки (опыт)' : process.env.LIQUID_PERF_NOSEND ? 'без подмены заголовков (опыт)' : process.env.LIQUID_PERF_NOPRELOAD ? 'голый webview (без перехватов и preload)' : process.env.LIQUID_PERF_NOHOOKS ? 'без перехватов запросов' : process.env.LIQUID_PERF_NOADBLOCK ? 'без блокировщика' : 'обычный', why: out.backs.map((b) => b.why).filter(Boolean)[0] || '', version: require(path.join(ROOT, 'package.json')).version, loadMedianMs: med(out.loads.slice(1)), backMedianMs: med(out.backs.slice(1).map((b) => b.ms)), backFromCache: out.backs.filter((b) => b.bf).length + '/' + out.backs.length, loads: out.loads, backs: out.backs.map((b) => b.ms) };
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true }); fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(r) + '\n');
   console.log('PERF', JSON.stringify(r));
+});
+
+// Опыт (LIQUID_PERF_AB=1): что в окне мешает загрузке. Режимы чередуются в ОДНОМ запуске браузера (между запусками
+// разброс серверов ±40 мс больше самого эффекта): обычный, окно не трогает вкладку, только без полоски/кружка, только без DOM
+test('опыты: окно во время загрузки', async () => {
+  test.skip(!process.env.LIQUID_PERF_AB, 'только по запросу');
+  test.setTimeout(400_000);
+  const MODES = ['обычный', 'всё выкл', 'без полоски', 'без обновлений вкладки'];
+  await win.evaluate(() => {
+    window.__orig = {}; for (const f of ['updateTab', 'saveSession', 'guardScan', 'historyAdd', 'historyTitle', 'syncChrome', 'syncOmniExtras']) window.__orig[f] = window[f];
+    const st = document.createElement('style'); st.id = 'abBar'; st.textContent = '#progress,.tab .spin{display:none!important;animation:none!important}'; st.disabled = true; document.head.appendChild(st);
+  });
+  const setMode = (m) => win.evaluate((m) => {
+    const off = (fs) => { for (const f of Object.keys(window.__orig)) window[f] = fs.includes(f) ? () => {} : window.__orig[f]; };
+    const all = Object.keys(window.__orig);
+    document.getElementById('abBar').disabled = !(m === 'всё выкл' || m === 'без полоски');
+    off(m === 'всё выкл' ? all : m === 'без обновлений вкладки' ? ['updateTab', 'syncChrome', 'syncOmniExtras'] : []);
+  }, m);
+  const res = Object.fromEntries(MODES.map((m) => [m, []]));
+  for (let r = 0; r < 9; r++) {
+    for (const m of r % 2 ? [...MODES].reverse() : MODES) {
+      await setMode(m);
+      const k = `${r}-${m.length}`;
+      await win.evaluate((u) => navigate(u), `${base}/article.html?ab=${k}`);
+      await expect.poll(async () => (await url()).includes(`ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
+      await win.waitForTimeout(300);
+      await win.evaluate((u) => navigate(u), `${base}/heavy.html?ab=${k}`);
+      await expect.poll(async () => (await url()).includes(`heavy.html?ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
+      const ms = await inTab(`(() => { const n = performance.getEntriesByType('navigation')[0]; return Math.round(n.loadEventEnd - n.startTime); })()`);
+      if (r) res[m].push(ms); // первый круг — разогрев
+      await win.waitForTimeout(300);
+    }
+  }
+  await setMode('обычный');
+  const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const out = { mode: 'опыт: окно во время загрузки (один запуск, чередование)' };
+  for (const m of MODES) out[m] = { median: med(res[m]), all: res[m] };
+  fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
+  fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(out) + '\n');
 });
 
 // Плавность интерфейса: длительность кадров, пока идут анимации (меню, вкладки, панель Claude, настройки).
