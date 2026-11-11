@@ -161,19 +161,38 @@ test('замеры', async () => {
 test('опыты: окно во время загрузки', async () => {
   test.skip(!process.env.LIQUID_PERF_AB, 'только по запросу');
   test.setTimeout(400_000);
-  // прошлый опыт (CI 42938985359): «всё выкл» и «без updateTab/syncChrome/syncOmniExtras» −70…−80 мс, «без полоски» 0 — делим дальше
-  const MODES = ['обычный', 'без updateTab', 'без классов загрузки', 'без syncOmniExtras', 'без syncChrome'];
+  // CI 42940172896: без updateTab −80…−100, без syncChrome −60…−85, без syncOmniExtras −40, без классов загрузки −25.
+  // Делим syncChrome: адрес / классы body / только вкладка; и пробуем изоляцию панелей (contain + свой слой)
+  const MODES = ['обычный', 'без syncChrome', 'без адреса', 'без body.loading', 'изоляция панелей'];
   await win.evaluate(() => {
     window.__orig = {}; for (const f of ['updateTab', 'saveSession', 'guardScan', 'historyAdd', 'historyTitle', 'syncChrome', 'syncOmniExtras']) window.__orig[f] = window[f];
-    const st = document.createElement('style'); st.id = 'abBar'; st.textContent = '#progress,.tab .spin{display:none!important;animation:none!important}'; st.disabled = true; document.head.appendChild(st);
+    const st = document.createElement('style'); st.id = 'abIso'; st.textContent = '#tabsrow,#bar{contain:layout paint style;will-change:transform}'; st.disabled = true; document.head.appendChild(st);
+    // копия syncChrome с выключателями частей
+    window.__sc = (noUrl, noBody) => function () {
+      if (!active) return;
+      const { url, loading } = active;
+      const urlInput = $('#url');
+      if (!noUrl && document.activeElement !== urlInput) setProp(urlInput, 'value', isInternal(url) ? '' : decodeURI(url));
+      $('#omni').classList.toggle('https', url.startsWith('https://'));
+      renderGuard(active);
+      if (!noBody) document.body.classList.toggle('loading', loading && !isInternal(url));
+      setProp($('#back'), 'disabled', !active.canBack);
+      setProp($('#fwd'), 'disabled', !active.canFwd);
+      window.syncOmniExtras && window.syncOmniExtras(active);
+    };
+    // что именно меняется в окне за одну загрузку (по первому кругу «обычного»)
+    window.__muts = [];
+    new MutationObserver((ms) => { if (!window.__rec) return; for (const m of ms) { const t = m.target.nodeType === 1 ? m.target : m.target.parentElement; window.__muts.push(`${m.type}:${t?.id || t?.className?.toString().slice(0, 20) || t?.tagName}${m.attributeName ? '@' + m.attributeName : ''}`); } })
+      .observe(document.documentElement, { subtree: true, attributes: true, childList: true, characterData: true });
   });
   const setMode = (m) => win.evaluate((m) => {
-    const off = (fs) => { for (const f of Object.keys(window.__orig)) window[f] = fs.includes(f) ? () => {} : window.__orig[f]; };
-    off(m === 'без updateTab' ? ['updateTab'] : m === 'без syncOmniExtras' ? ['syncOmniExtras'] : m === 'без syncChrome' ? ['syncChrome'] : []);
-    // всё как обычно, но вкладка и панель не узнают, что идёт загрузка: нет кружка, полоски, смены кнопки «обновить»
-    if (m === 'без классов загрузки') window.updateTab = (t) => { const l = t.loading; t.loading = false; window.__orig.updateTab(t); t.loading = l; };
+    for (const f of Object.keys(window.__orig)) window[f] = window.__orig[f];
+    document.getElementById('abIso').disabled = m !== 'изоляция панелей';
+    if (m === 'без syncChrome') window.syncChrome = () => {};
+    if (m === 'без адреса') window.syncChrome = window.__sc(true, false);
+    if (m === 'без body.loading') window.syncChrome = window.__sc(false, true);
   }, m);
-  const res = Object.fromEntries(MODES.map((m) => [m, []]));
+  const res = Object.fromEntries(MODES.map((m) => [m, []])); const out0 = {};
   for (let r = 0; r < 9; r++) {
     for (const m of r % 2 ? [...MODES].reverse() : MODES) {
       await setMode(m);
@@ -181,16 +200,18 @@ test('опыты: окно во время загрузки', async () => {
       await win.evaluate((u) => navigate(u), `${base}/article.html?ab=${k}`);
       await expect.poll(async () => (await url()).includes(`ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
       await win.waitForTimeout(300);
+      if (r === 1 && m === 'обычный') await win.evaluate(() => { window.__rec = true; });
       await win.evaluate((u) => navigate(u), `${base}/heavy.html?ab=${k}`);
       await expect.poll(async () => (await url()).includes(`heavy.html?ab=${k}`) && (await inTab('document.readyState')) === 'complete', { timeout: 30_000 }).toBe(true);
       const ms = await inTab(`(() => { const n = performance.getEntriesByType('navigation')[0]; return Math.round(n.loadEventEnd - n.startTime); })()`);
       if (r) res[m].push(ms); // первый круг — разогрев
+      if (r === 1 && m === 'обычный') out0.muts = await win.evaluate(() => { window.__rec = false; const c = {}; for (const x of window.__muts) c[x] = (c[x] || 0) + 1; return c; });
       await win.waitForTimeout(300);
     }
   }
   await setMode('обычный');
   const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-  const out = { mode: 'опыт: окно во время загрузки (один запуск, чередование)' };
+  const out = { mode: 'опыт: окно во время загрузки (один запуск, чередование)', ...out0 };
   for (const m of MODES) out[m] = { median: med(res[m]), all: res[m] };
   fs.mkdirSync(path.join(ROOT, 'test-results'), { recursive: true });
   fs.appendFileSync(path.join(ROOT, 'test-results', 'perf.json'), JSON.stringify(out) + '\n');
