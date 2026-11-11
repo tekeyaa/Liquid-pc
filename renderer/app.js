@@ -120,12 +120,19 @@ function createTab(url, { background = false, lazy = false, title = '', favicon 
 // Заготовленная вкладка: процесс страницы запускается заранее, в фоне. Новой вкладке не нужно ждать
 // запуска процесса (на Windows это 100–300 мс) — она берёт готовую и сразу начинает грузить сайт.
 // (Запасной процесс самого Chromium вкладкам Liquid не подходит: у них своя сессия.)
-let spareWv = null, spareT = 0;
+// Заготовка держит целый процесс (~100 МБ в диспетчере задач), поэтому она есть не всегда:
+// — пока открыта только новая вкладка (пустой браузер), её нет: отсюда новую вкладку открывают редко;
+// — окно свёрнуто (или закрыто другими окнами) дольше SPARE_IDLE_MIN минут — выгружаем, со строкой в журнале;
+// — после использования новая готовится не сразу, а когда окно свободно.
+let spareWv = null, spareT = 0, spareIdleT = 0;
+const SPARE_IDLE_MIN = 3;
+const wantSpare = () => !document.hidden && tabs.some((t) => !isInternal(t.url));
 function makeSpare() {
-  clearTimeout(spareT);
+  if (spareWv || spareT) return; // уже есть или уже готовится
   // запуск webview — тяжёлая задача окна: делаем её, когда окно свободно, а не посреди анимации вкладок
   spareT = setTimeout(() => (window.requestIdleCallback || setTimeout)(() => {
-    if (spareWv || document.hidden) return;
+    spareT = 0;
+    if (spareWv || !wantSpare()) return;
     try { if (localStorage.getItem('liquid.noSpare')) return; } catch {} // для замеров «без заготовки»
     const wv = document.createElement('webview');
     wv.setAttribute('partition', PARTITION);
@@ -143,12 +150,21 @@ function takeSpare() {
   if (!wv || !wv.__ready) return null;
   spareWv = null;
   wv.classList.remove('spare');
-  makeSpare(); // следующую — заготавливаем снова
+  makeSpare(); // следующую — заготавливаем снова, когда окно освободится
   return wv;
 }
+function freeSpare() { clearTimeout(spareT); spareT = 0; if (spareWv) { spareWv.remove(); spareWv = null; return true; } return false; }
 window.spareReady = () => !!(spareWv && spareWv.__ready);
 // заготовка помнит, кем представляться (сменили в настройках) — делаем новую
-window.dropSpare = () => { if (spareWv) { spareWv.remove(); spareWv = null; } makeSpare(); };
+window.dropSpare = () => { freeSpare(); makeSpare(); };
+// окно долго свёрнуто — заготовка не нужна: отдаём память (не молча — строка в журнале); вернётся, когда окно откроют
+document.addEventListener('visibilitychange', () => {
+  clearTimeout(spareIdleT);
+  if (!document.hidden) { makeSpare(); return; }
+  spareIdleT = setTimeout(() => {
+    if (document.hidden && freeSpare()) L.diag.log('info', 'память', `Заготовка новой вкладки выгружена: окно свёрнуто дольше ${SPARE_IDLE_MIN} мин — освобождено около 100 МБ. Вернётся, когда окно откроют`);
+  }, SPARE_IDLE_MIN * 60e3);
+});
 
 function attachWebview(tab, url) {
   // Заготовка подходит, если вкладка открывается сразу с адресом (а не просыпается из сна со своей историей)
@@ -177,10 +193,11 @@ function attachWebview(tab, url) {
     if (!tab.wcId) { tab.wcId = wv.getWebContentsId(); applyNav(tab); }
     if (isInternal(tab.url) && window.sendTheme) window.sendTheme(wv);
   });
-  wv.addEventListener('page-title-updated', (e) => { tab.title = e.title; updateTab(tab); window.historyTitle && window.historyTitle(tab); });
+  wv.addEventListener('page-title-updated', (e) => { tab.title = e.title; queueTab(tab); window.historyTitle && window.historyTitle(tab); });
   wv.addEventListener('page-favicon-updated', (e) => { if (e.favicons?.length) { tab.favicon = e.favicons[e.favicons.length - 1]; fav.src = tab.favicon; saveSession(); } });
-  wv.addEventListener('did-start-loading', () => { tab.loading = true; updateTab(tab); });
-  wv.addEventListener('did-stop-loading', () => { tab.loading = false; updateTab(tab); guardScan(tab); saveSession(); });
+  wv.addEventListener('did-start-loading', () => { tab.loading = true; queueTab(tab); });
+  // проверка сайта лезет в страницу (executeJavaScript) — не в момент окончания загрузки, а когда окно и вкладка свободны
+  wv.addEventListener('did-stop-loading', () => { tab.loading = false; queueTab(tab); whenIdle(() => { if (tab.wv === wv) guardScan(tab); }); saveSession(); });
   wv.addEventListener('media-started-playing', () => { el.classList.add('playing'); tab.playing = true; });
   wv.addEventListener('media-paused', () => { el.classList.remove('playing'); tab.playing = false; });
   wv.addEventListener('ipc-message', (e) => {
@@ -194,7 +211,8 @@ function attachWebview(tab, url) {
     if (e.isMainFrame === false) return;
     if (e.url) tab.url = e.url; // адрес приходит в самом событии — синхронно спрашивать вкладку не нужно
     if (isInternal(tab.url)) { fav.src = 'favicon.svg'; tab.favicon = ''; }
-    updateTab(tab);
+    else if (!spareWv) makeSpare(); // в пустом браузере заготовки нет — открыли сайт, теперь пригодится
+    queueTab(tab);
   };
   wv.addEventListener('did-navigate', (e) => {
     fav.src = 'favicon.svg'; tab.favicon = ''; tab.guard = null; tab.page = {}; tab.translated = false; tab.ads = 0; tab.typed = false;
@@ -331,6 +349,25 @@ async function memPressureCheck() {
 }
 window.memPressureCheck = memPressureCheck;
 setInterval(memPressureCheck, 30e3);
+
+// События вкладки во время загрузки (начало, переход, заголовок, конец) идут пачками — вид вкладки и панели
+// обновляем один раз за кадр, а не на каждое событие. Окно свёрнуто (кадров нет) — через 100 мс
+const tabDirty = new Set();
+let tabRaf = 0, tabTo = 0;
+function flushTabs() {
+  cancelAnimationFrame(tabRaf); clearTimeout(tabTo); tabRaf = tabTo = 0;
+  const list = [...tabDirty]; tabDirty.clear();
+  for (const t of list) if (tabs.includes(t)) updateTab(t);
+}
+function queueTab(tab) {
+  tabDirty.add(tab);
+  if (tabRaf) return;
+  tabRaf = requestAnimationFrame(flushTabs);
+  tabTo = setTimeout(flushTabs, 100);
+}
+// несрочное (проверка сайта, запись истории и сессии) — когда окно свободно, но не позже чем через 1,5 с
+const whenIdle = (fn) => (window.requestIdleCallback ? requestIdleCallback(() => fn(), { timeout: 1500 }) : setTimeout(fn, 300));
+window.whenIdle = whenIdle;
 
 function updateTab(tab) {
   const { el } = tab;
@@ -519,7 +556,7 @@ if (extraWin) document.body.classList.add('extra-win');
 function saveSession() {
   if (L.incognito || extraWin) return;
   clearTimeout(saveT);
-  saveT = setTimeout(writeSession, 400);
+  saveT = setTimeout(() => whenIdle(writeSession), 400);
 }
 function writeSession() {
   const data = {

@@ -17,12 +17,13 @@
   let histT = 0;
   // окон может быть несколько, история у них общая: перед записью добавляем то, что записали другие окна
   const mergeHistory = () => { const other = lsGet('liquid.history', {}); for (const k in other) if (!history[k] || other[k].at > history[k].at) history[k] = other[k]; };
-  const saveHistory = () => { if (L.incognito) return; clearTimeout(histT); histT = setTimeout(() => {
+  // запись — когда окно свободно: история бывает большой, разбор и запись её целиком — не во время загрузки страницы
+  const saveHistory = () => { if (L.incognito) return; clearTimeout(histT); histT = setTimeout(() => (window.whenIdle || setTimeout)(() => {
     mergeHistory();
     const keys = Object.keys(history);
     if (keys.length > 4000) keys.sort((a, b) => history[a].at - history[b].at).slice(0, keys.length - 4000).forEach((k) => delete history[k]);
     lsSet('liquid.history', history);
-  }, 800); };
+  }), 800); };
   const saveBookmarks = () => lsSet('liquid.bookmarks', bookmarks);
   window.addEventListener('storage', (e) => {
     if (e.key === 'liquid.history' && !L.incognito) mergeHistory();
